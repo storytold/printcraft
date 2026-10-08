@@ -4,7 +4,7 @@
 
 Every asset PdfCraft includes, bundles or uses to build its published material, with its author, source and licence. The policy is in [AGENTS.md](AGENTS.md) §1. The machine-readable list, with SHA-256 hashes, is [ATTRIBUTION.toml](ATTRIBUTION.toml). Licence texts are kept beside the assets and summarised in [NOTICE](NOTICE).
 
-## In this repository (260)
+## In this repository (261)
 
 | Asset | Title | Author | Licence | Source | Used for |
 |---|---|---|---|---|---|
@@ -268,6 +268,7 @@ Every asset PdfCraft includes, bundles or uses to build its published material, 
 | `packaging/macos/dmg/background.svg` | PdfCraft macOS DMG window background | @XusBadia | MIT OR Apache-2.0 | Original work for this repository, derived from the PdfCraft app icon (assets/app-icon/pdfcraft.svg, referenced via an SVG image element, not copied) | Finder window of the macOS DMG; rendered to background.tiff by packaging/macos/dmg/generate.py |
 | `packaging/macos/dmg/background.tiff` | PdfCraft macOS DMG window background (rendered) | @XusBadia | MIT OR Apache-2.0 | Rendered from packaging/macos/dmg/background.svg by packaging/macos/dmg/generate.py | 1x + 2x HiDPI 16-colour palette TIFF copied into the macOS DMG by packaging/macos/package.sh; includes the app icon and the free LittleCMS built-in sRGB profile |
 | `crates/sign/tests/data/x509-rsa-sha1.pdf` | One-page PDF with a legacy adbe.x509.rsa_sha1 signature by the RSA test key | PdfCraft contributors | MIT OR Apache-2.0 | Contributor-original: hand-written PDF objects; signature made with `openssl dgst -sha1 -sign` over its byte ranges (see crates/sign/tests/data/README.md) | Signature validation tests (crates/sign/tests/pdf.rs): the legacy adbe.x509.rsa_sha1 format |
+| `crates/sign/data/builtin-roots.der` | Root certificates of CAs for PDF signatures (DigiCert, GlobalSign, Sectigo, Entrust, QuoVadis, Certum, WISeKey) | The certificate authorities named in builtin-roots.toml | LicenseRef-Public-Domain | Each root from its CA's own repository (URLs in crates/sign/data/builtin-roots.toml), never from Adobe; pinned by SHA-256 and rebuilt by `cargo xtask trust-roots`, which fails on any difference. Pins were compared with Mozilla's TLS and S/MIME root sets, and for Entrust.net 2048 and OISTE WISeKey Global Root GB CA with the root inside a signed PDF. All 22 downloads were re-verified against their pins on 2026-10-10. A root certificate is public key and name data published by its CA for everyone to install; no copyright is claimed or known. | Optional trust anchors for signature validation (crates/sign/src/trust.rs), off unless the user switches them on (sign_trust builtin_roots) |
 
 ## Compiled in through dependencies (6)
 

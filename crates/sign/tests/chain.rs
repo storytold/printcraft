@@ -189,7 +189,7 @@ fn verdict(leaf: Party, embedded: Vec<Certificate>, anchor: &Certificate) -> (St
     let doc = Document::open(Arc::new(fixture())).unwrap();
     let opts = SignOptions { page: 0, rect: None, date: "D:20260601120000Z".into(), ..SignOptions::default() };
     let signed = pdfcraft_sign::sign(&doc, &id, &opts).unwrap();
-    let trust = TrustStore { certs: vec![anchor.clone()] };
+    let trust = TrustStore { certs: vec![anchor.clone()], ..TrustStore::default() };
     let s = signatures(&Document::open(Arc::new(signed.clone())).unwrap(), &signed, &trust).into_iter().rfind(|s| s.signed).unwrap();
     (s.status, s.details)
 }
@@ -295,4 +295,59 @@ fn unreadable_constraint_extensions_fail_closed() {
     let garbage = ext("2.5.29.19", &[0x30, 0x05, 0x01]);
     let c = issue("Garbled Constraints", None, FOREVER, &[garbage]);
     assert!(c.cert.has_basic_constraints && !c.cert.is_ca && !c.cert.may_issue());
+}
+
+/// Like `verdict`, but with a whole `TrustStore`.
+fn verdict_with(leaf: Party, embedded: Vec<Certificate>, trust: &TrustStore) -> (Status, Vec<String>) {
+    let id = DigitalId { key: leaf.key, certificate: leaf.cert, chain: embedded, friendly_name: None };
+    let doc = Document::open(Arc::new(fixture())).unwrap();
+    let opts = SignOptions { page: 0, rect: None, date: "D:20260601120000Z".into(), ..SignOptions::default() };
+    let signed = pdfcraft_sign::sign(&doc, &id, &opts).unwrap();
+    let s = signatures(&Document::open(Arc::new(signed.clone())).unwrap(), &signed, trust).into_iter().rfind(|s| s.signed).unwrap();
+    (s.status, s.details)
+}
+
+#[test]
+fn trust_sets_are_off_by_default_and_a_loaded_list_is_named_when_it_vouches() {
+    use pdfcraft_sign::trust::TrustList;
+    let r = root();
+    let i = ca("Issuing CA", &r, None);
+    let leaf = |cn: &str| end_entity(cn, &i);
+    let list = TrustList::from_bytes("Test List", &r.cert.raw).unwrap();
+
+    // Nothing is trusted unless asked for: no list, no built-in roots.
+    let none = TrustStore::default();
+    assert!(!none.builtin_roots && none.lists.is_empty() && none.certs.is_empty());
+    let (status, details) = verdict_with(leaf("Signer A"), vec![i.cert.clone()], &none);
+    assert_eq!(status, Status::Unknown, "{details:?}");
+
+    // With the list loaded, the same signature is valid and says which list vouched.
+    let with_list = TrustStore { lists: vec![list.clone()], ..TrustStore::default() };
+    let (status, details) = verdict_with(leaf("Signer B"), vec![i.cert.clone()], &with_list);
+    assert_eq!(status, Status::Valid, "{details:?}");
+    assert!(details.iter().any(|d| d.contains("Test List")), "{details:?}");
+
+    // The built-in roots are not these roots, so switching them on changes nothing here.
+    let builtin = TrustStore { builtin_roots: true, ..TrustStore::default() };
+    let (status, _) = verdict_with(leaf("Signer C"), vec![i.cert.clone()], &builtin);
+    assert_eq!(status, Status::Unknown);
+
+    // A list does not make a subscriber a CA: the forged identity stays unknown.
+    let subscriber = end_entity("Ordinary Subscriber", &r);
+    let forged = end_entity("Forged Identity", &subscriber);
+    let (status, details) = verdict_with(forged, vec![subscriber.cert.clone()], &with_list);
+    assert_eq!(status, Status::Unknown, "{details:?}");
+}
+
+#[test]
+fn the_builtin_roots_only_anchor_when_switched_on() {
+    // Trust is decided by `source_of`, which is what validation uses.
+    let first = pdfcraft_sign::trust::builtin_roots().first().unwrap();
+    let off = TrustStore::default();
+    assert_eq!(off.source_of(first), None);
+    let on = TrustStore { builtin_roots: true, ..TrustStore::default() };
+    assert_eq!(on.source_of(first), Some(pdfcraft_sign::TrustSource::BuiltinRoots));
+    // The user's own list wins when both apply.
+    let both = TrustStore { certs: vec![first.clone()], builtin_roots: true, ..TrustStore::default() };
+    assert_eq!(both.source_of(first), Some(pdfcraft_sign::TrustSource::User));
 }

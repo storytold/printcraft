@@ -11,6 +11,8 @@ mod layers;
 mod macos_integration;
 mod parity;
 mod screenshots;
+mod trust_lists;
+mod trust_roots;
 mod version;
 
 type Command = fn(&[String]) -> anyhow::Result<()>;
@@ -35,6 +37,16 @@ const COMMANDS: &[(&str, &str, Command)] = &[
     ("text-oracle", "Compare text extraction with pdftotext over corpus/ (word F1; target median ≥ 0.97)", gates::text_oracle),
     ("screenshots", "Regenerate the README screenshots in docs/images/ and their ATTRIBUTION entries", screenshots::run),
     ("models", "Fetch the OCR models (ATTRIBUTION.toml kind = \"model\") into assets/models/, verified by SHA-256", assets::models),
+    (
+        "trust-lists",
+        "Write dist/trust/eutl-qualified-ca.der (or --out FILE) from the EU Trusted Lists: a trust list to load with `sign_trust eu_trusted_list` (needs network and curl)",
+        trust_lists::run,
+    ),
+    (
+        "trust-roots",
+        "Rebuild crates/sign/data/builtin-roots.der from builtin-roots.toml: fetch each root from its CA and check its pinned SHA-256 (needs network and curl)",
+        trust_roots::run,
+    ),
     ("demo-pdf", "Build dist/demo/pdfcraft-showcase.pdf (needs Google Chrome or Chromium)", demo_pdf::run),
 ];
 

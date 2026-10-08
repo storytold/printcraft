@@ -1567,6 +1567,28 @@ fn comment_summary_includes_replies_to_replies() {
 }
 
 #[test]
+fn several_trust_changes_revalidate_the_open_documents_once() {
+    let mut s = Session::default();
+    // Each setter changes one thing and revalidates.
+    s.set_builtin_roots(true);
+    s.set_trusted_certificates(Vec::new());
+    assert_eq!(s.revalidations, 2);
+    // One `update_trust` changes any number of things and revalidates once.
+    let list = sign::trust::TrustList::from_bytes("Test list", &sign::trust::builtin_roots()[0].raw).unwrap();
+    s.update_trust(|trust| {
+        trust.builtin_roots = false;
+        trust.certs = sign::trust::builtin_roots()[..2].to_vec();
+        trust.set_list("Test list", Some(list));
+    });
+    assert_eq!(s.revalidations, 3);
+    assert!(!s.builtin_roots());
+    assert_eq!((s.trusted_certificates().len(), s.trust_lists().len()), (2, 1));
+    // Replacing a list by name, and removing it.
+    s.set_trust_list("Test list", None);
+    assert!(s.trust_lists().is_empty());
+}
+
+#[test]
 fn signing_saving_trusting_and_commenting_afterwards() {
     let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
     let digital_id = sign::pkcs12::open(&p12, "test").unwrap();

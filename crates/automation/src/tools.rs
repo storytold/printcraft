@@ -635,8 +635,14 @@ pub fn tools() -> Vec<ToolDef> {
                 }),
                 &["doc", "id", "out"],
             )),
-        t("sign_trust", "Trust certificates", "Add certificates (.cer/.crt/.pem/.der, or the certificates in a .p12 with `password`) to the trusted certificates used to validate signatures, or clear the list (clear: true). Every open document is revalidated. Returns the trusted list.").with(schema(
-            json!({ "paths": { "type": "array", "items": { "type": "string" } }, "password": { "type": "string" }, "clear": { "type": "boolean" } }),
+        t("sign_trust", "Trust certificates", "Add certificates (.cer/.crt/.pem/.der, or the certificates in a .p12 with `password`) to the trusted certificates used to validate signatures, or clear the list (clear: true). Two optional trust sets are off until switched on: `builtin_roots` (roots of commercial CAs embedded in PdfCraft) and `eu_trusted_list` (the path of a file made by `cargo xtask trust-lists`, the EU Trusted Lists' qualified CAs; false removes it). The changes of one call are applied together, or not at all if an argument is bad, and every open document is revalidated once. Returns the trusted list, whether the built-in roots are on and the loaded trust lists.").with(schema(
+            json!({
+                "paths": { "type": "array", "items": { "type": "string" } },
+                "password": { "type": "string" },
+                "clear": { "type": "boolean" },
+                "builtin_roots": { "type": "boolean" },
+                "eu_trusted_list": { "type": ["string", "boolean"] }
+            }),
             &[],
         )),
         t("comment_mark", "Mark a comment with a checkmark", "Mark or unmark a comment with a checkmark (Acrobat: Mark with checkmark), recorded as a private reply. Undoable.").with(schema(

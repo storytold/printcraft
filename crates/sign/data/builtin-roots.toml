@@ -1,0 +1,147 @@
+# Roots PdfCraft can trust when the user switches them on (crates/sign/src/trust.rs; off by
+# default), for the commercial CAs behind most non-qualified PDF signatures. Each is fetched from the CA's own
+# repository, never from Adobe (AGENTS.md 1.1), and pinned by the SHA-256 of its DER encoding:
+# `cargo xtask trust-roots` refetches them all, fails on any difference and rewrites
+# builtin-roots.der. `checked_against` names the independent source the pin was compared with:
+#   mozilla-tls    Mozilla's TLS root program (as shipped by curl.se/ca and ca-certificates)
+#   mozilla-email  Mozilla's S/MIME trust set (closer to document signing than TLS)
+#   signed-pdf     the root inside a DocuSign-signed PDF's signature, byte for byte
+# Adding a root is a trust decision: say why in the commit.
+
+[[root]]
+name = "DigiCert Assured ID Root CA"
+url = "https://cacerts.digicert.com/DigiCertAssuredIDRootCA.crt"
+sha256 = "3e9099b5015e8f486c00bcea9d111ee721faba355a89bcf1df69561e3dc6325c"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "DigiCert Assured ID Root G2"
+url = "https://cacerts.digicert.com/DigiCertAssuredIDRootG2.crt"
+sha256 = "7d05ebb682339f8c9451ee094eebfefa7953a114edb2f44949452fab7d2fc185"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "DigiCert Global Root CA"
+url = "https://cacerts.digicert.com/DigiCertGlobalRootCA.crt"
+sha256 = "4348a0e9444c78cb265e058d5e8944b4d84f9662bd26db257f8934a443c70161"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "DigiCert Global Root G2"
+url = "https://cacerts.digicert.com/DigiCertGlobalRootG2.crt"
+sha256 = "cb3ccbb76031e5e0138f8dd39a23f9de47ffc35e43c1144cea27d46a5ab1cb5f"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "DigiCert Global Root G3"
+url = "https://cacerts.digicert.com/DigiCertGlobalRootG3.crt"
+sha256 = "31ad6648f8104138c738f39ea4320133393e3a18cc02296ef97c2ac9ef6731d0"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "DigiCert High Assurance EV Root CA"
+url = "https://cacerts.digicert.com/DigiCertHighAssuranceEVRootCA.crt"
+sha256 = "7431e5f4c3c1ce4690774f0b61e05440883ba9a01ed00ba6abd7806ed3b118cf"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "DigiCert Trusted Root G4"
+url = "https://cacerts.digicert.com/DigiCertTrustedRootG4.crt"
+sha256 = "552f7bdcf1a7af9e6ce672017f4f12abf77240c78e761ac203d1d9d20ac89988"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "GlobalSign Root CA (R1)"
+url = "https://secure.globalsign.com/cacert/root-r1.crt"
+sha256 = "ebd41040e4bb3ec742c9e381d31ef2a41a48b6685c96e7cef3c1df6cd4331c99"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "GlobalSign Root CA - R3"
+url = "https://secure.globalsign.com/cacert/root-r3.crt"
+sha256 = "cbb522d7b7f127ad6a0113865bdf1cd4102e7d0759af635a7cf4720dc963c53b"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "GlobalSign Root CA - R6"
+url = "https://secure.globalsign.com/cacert/root-r6.crt"
+sha256 = "2cabeafe37d06ca22aba7391c0033d25982952c453647349763a3ab5ad6ccf69"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "GlobalSign ECC Root CA - R5"
+url = "https://secure.globalsign.com/cacert/root-r5.crt"
+sha256 = "179fbc148a3dd00fd24ea13458cc43bfa7f59c8182d783a513f6ebec100c8924"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "USERTrust RSA Certification Authority"
+url = "http://crt.sectigo.com/USERTrustRSACertificationAuthority.crt"
+sha256 = "e793c9b02fd8aa13e21c31228accb08119643b749c898964b1746d46c3d4cbd2"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "USERTrust ECC Certification Authority"
+url = "http://crt.sectigo.com/USERTrustECCCertificationAuthority.crt"
+sha256 = "4ff460d54b9c86dabfbcfc5712e0400d2bed3fbc4d4fbdaa86e06adcd2a9ad7a"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "AAA Certificate Services (Comodo/Sectigo)"
+url = "http://crt.comodoca.com/AAACertificateServices.crt"
+sha256 = "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "Entrust Root Certification Authority - G2"
+url = "https://web.entrust.com/root-certificates/entrust_g2_ca.cer"
+sha256 = "43df5774b03e7fef5fe40d931a7bedf1bb2e6b42738c4e6d3841103d3aa7f339"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "Entrust Root Certification Authority - EC1"
+url = "https://web.entrust.com/root-certificates/entrust_ec1_ca.cer"
+sha256 = "02ed0eb28c14da45165c566791700d6451d7fb56f0b2ab1d3b8eb070e56edff5"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "Entrust Root Certification Authority - G4"
+url = "https://web.entrust.com/root-certificates/entrust_g4_ca.cer"
+sha256 = "db3517d1f6732a2d5ab97c533ec70779ee3270a62fb4ac4238372460e6f01e88"
+checked_against = "mozilla-email"
+
+[[root]]
+name = "QuoVadis Root CA 2 G3"
+url = "https://cacerts.digicert.com/QuoVadisRootCA2G3.crt"
+sha256 = "8fe4fb0af93a4d0d67db0bebb23e37c71bf325dcbcdd240ea04daf58b47e1840"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "Certum Trusted Network CA"
+url = "https://www.certum.pl/CTNCA.crt"
+sha256 = "5c58468d55f58e497e743982d2b50010b6d165374acf83a7d4a32db768c4408e"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "Certum Trusted Root CA"
+url = "https://repository.certum.pl/ctrca.cer"
+sha256 = "fe7696573855773e37a95e7ad4d9cc96c30157c15d31765ba9b15704e1ae78fd"
+checked_against = "mozilla-tls"
+
+[[root]]
+name = "Entrust.net Certification Authority (2048)"
+url = "https://web.entrust.com/root-certificates/entrust_2048_ca.cer"
+sha256 = "6dc47172e01cbcb0bf62580d895fe2b8ac9ad4f873801e0c10b9c837d21eb177"
+checked_against = "signed-pdf"
+
+# Added for Documenso, whose signing certificates (WISeKey CertifyID Personal GB CA 3) chain to it.
+# The pin is the root as found, byte for byte, in the signature of a Documenso-signed PDF and in
+# Mozilla's root set (the system bundle of the build machine). `url` is the file WISeKey publishes
+# (the one Mozilla's CA inclusion record names, `owgrgbca.crt`): it hashes to the pin, and its
+# SHA-1 fingerprint, 0F:F9:40:76:18:D3:D7:6A:4B:98:F0:A8:35:9E:0C:FD:27:AC:CC:ED, is the one in
+# that record. (`owgrgb.crt`, which this entry first had, answers 403.)
+[[root]]
+name = "OISTE WISeKey Global Root GB CA"
+url = "https://public.wisekey.com/crt/owgrgbca.crt"
+sha256 = "6b9c08e86eb0f767cfad65cd98b62149e5494a67f5845e7bd1ed019f27b86bd6"
+checked_against = "mozilla-tls"

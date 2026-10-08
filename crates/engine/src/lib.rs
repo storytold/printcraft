@@ -1935,8 +1935,12 @@ pub struct Session {
     next_id: u64,
     /// Seconds since the Unix epoch, injected so saves are deterministic in tests.
     clock: Option<fn() -> i64>,
-    /// Certificates trusted for signing (Acrobat: Trusted Certificates).
+    /// What is trusted for signing: the user's certificates (Acrobat: Trusted Certificates) and the
+    /// optional trust sets.
     trust: Arc<TrustStore>,
+    /// How often every open document's signatures were validated again after a trust change.
+    #[cfg(test)]
+    revalidations: usize,
     /// Preferences ▸ JavaScript ▸ Enable Acrobat JavaScript, inverted (on by default).
     js_off: bool,
     /// Preferences ▸ Date format, when not the default (see [`dates`]).
@@ -2995,9 +2999,49 @@ impl Session {
         &self.trust.certs
     }
 
+    /// Change the trust store and revalidate every open document's signatures, once, however
+    /// many changes `change` makes: revalidating runs chain building and signature verification
+    /// for every signature, against every certificate of every trust list.
+    pub fn update_trust(&mut self, change: impl FnOnce(&mut TrustStore)) {
+        let mut trust = (*self.trust).clone();
+        change(&mut trust);
+        self.trust = Arc::new(trust);
+        self.revalidate_signatures();
+    }
+
     /// Replace the trusted certificates and revalidate every open document's signatures.
     pub fn set_trusted_certificates(&mut self, certs: Vec<pdfcraft_sign::Certificate>) {
-        self.trust = Arc::new(TrustStore { certs });
+        self.update_trust(|trust| trust.certs = certs);
+    }
+
+    /// Whether the roots embedded in PdfCraft ([`pdfcraft_sign::trust::builtin_roots`]) are
+    /// trusted too. Off until the user switches it on; they are not part of
+    /// [`Session::trusted_certificates`].
+    pub fn builtin_roots(&self) -> bool {
+        self.trust.builtin_roots
+    }
+
+    /// Trust (or stop trusting) the embedded roots and revalidate every open document.
+    pub fn set_builtin_roots(&mut self, on: bool) {
+        self.update_trust(|trust| trust.builtin_roots = on);
+    }
+
+    /// The trust lists the user loaded (e.g. the EU Trusted Lists' qualified CAs), none by default.
+    pub fn trust_lists(&self) -> &[pdfcraft_sign::trust::TrustList] {
+        &self.trust.lists
+    }
+
+    /// Load `list` (replacing a list of the same name), or with `None` remove the list called
+    /// `name`, and revalidate every open document.
+    pub fn set_trust_list(&mut self, name: &str, list: Option<pdfcraft_sign::trust::TrustList>) {
+        self.update_trust(|trust| trust.set_list(name, list));
+    }
+
+    fn revalidate_signatures(&mut self) {
+        #[cfg(test)]
+        {
+            self.revalidations += 1;
+        }
         for doc in &mut self.docs {
             doc.trust = self.trust.clone();
             if let Some(e) = doc.editor.as_ref() {

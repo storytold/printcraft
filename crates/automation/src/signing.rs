@@ -2,11 +2,16 @@
 //! document, and manage trusted certificates. Rectangles are points from the top-left of the
 //! displayed page.
 
+use std::io::Read;
+
 use pdfcraft_engine::sign::{self, Certificate, DigitalId, Modification, Name, PrivateKey};
 use pdfcraft_engine::{SignOptions, SignatureInfo, SignatureStatus};
 use serde_json::{Value, json};
 
 use crate::{Args, Automation, Result, ToolError, failed, write_atomic};
+
+/// The name the EU Trusted List file is loaded under (`sign_trust eu_trusted_list`).
+const EU_LIST: &str = "EU Trusted List";
 
 fn bad(m: impl Into<String>) -> ToolError {
     ToolError::InvalidArgs(m.into())
@@ -192,8 +197,10 @@ impl Automation {
     }
 
     pub(crate) fn sign_trust(&mut self, a: &Args) -> Result<Value> {
-        let mut certs: Vec<Certificate> =
-            if a.opt_bool("clear")?.unwrap_or(false) { Vec::new() } else { self.session.trusted_certificates().to_vec() };
+        // Every argument is read and checked first, so a bad one changes nothing, and the changes
+        // are applied together: the open documents are revalidated once, not once per change.
+        let clear = a.opt_bool("clear")?.unwrap_or(false);
+        let mut certs: Vec<Certificate> = if clear { Vec::new() } else { self.session.trusted_certificates().to_vec() };
         let paths: Vec<String> = match a.get("paths") {
             None => Vec::new(),
             Some(v) => v
@@ -203,6 +210,7 @@ impl Automation {
                 .map(|p| p.as_str().map(str::to_string).ok_or_else(|| bad("paths must be strings")))
                 .collect::<Result<_>>()?,
         };
+        let certs_changed = clear || !paths.is_empty();
         for p in paths {
             let path = self.resolve(&p, false)?;
             let bytes = std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
@@ -219,7 +227,40 @@ impl Automation {
                 }
             }
         }
-        self.session.set_trusted_certificates(certs);
-        Ok(json!({ "trusted": self.session.trusted_certificates().iter().map(cert_json).collect::<Vec<_>>() }))
+        // The optional trust sets, both off until asked for. `None`: not mentioned, left alone.
+        let builtin_roots = a.opt_bool("builtin_roots")?;
+        let eu_list = match a.get("eu_trusted_list") {
+            None => None,
+            Some(Value::Bool(false) | Value::Null) => Some(None),
+            Some(Value::String(p)) => {
+                let path = self.resolve(p, false)?;
+                // One byte more than allowed is read, so an oversize file (or one that grows, or a
+                // device) is refused by `from_bytes` instead of being read whole.
+                let mut bytes = Vec::new();
+                std::fs::File::open(&path)
+                    .and_then(|f| f.take(sign::trust::MAX_LIST_BYTES as u64 + 1).read_to_end(&mut bytes))
+                    .map_err(|e| failed(format!("{}: {e}", path.display())))?;
+                Some(Some(sign::trust::TrustList::from_bytes(EU_LIST, &bytes).map_err(failed)?))
+            }
+            Some(_) => return Err(bad("eu_trusted_list must be the path of a trust list file, or false")),
+        };
+        if certs_changed || builtin_roots.is_some() || eu_list.is_some() {
+            self.session.update_trust(|trust| {
+                if certs_changed {
+                    trust.certs = certs;
+                }
+                if let Some(on) = builtin_roots {
+                    trust.builtin_roots = on;
+                }
+                if let Some(list) = eu_list {
+                    trust.set_list(EU_LIST, list);
+                }
+            });
+        }
+        Ok(json!({
+            "trusted": self.session.trusted_certificates().iter().map(cert_json).collect::<Vec<_>>(),
+            "builtin_roots": self.session.builtin_roots(),
+            "trust_lists": self.session.trust_lists().iter().map(|l| json!({ "name": l.name, "certificates": l.certs.len() })).collect::<Vec<_>>(),
+        }))
     }
 }

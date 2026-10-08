@@ -475,13 +475,17 @@ pub fn subject_of(raw: &[u8]) -> Option<Name> {
 /// `pathLenConstraint` allows the CA certificates below it, and (when `at` is given) it was valid
 /// then. Stops at a self-signed certificate. Certificates embedded in a document are in `pool`
 /// too, so an ordinary end-entity certificate must never be accepted as an issuer.
-pub fn build_chain<'a>(leaf: &'a Certificate, pool: &'a [Certificate], at: Option<Time>) -> Vec<&'a Certificate> {
+pub fn build_chain<'a>(leaf: &'a Certificate, pool: impl IntoIterator<Item = &'a Certificate> + Clone, at: Option<Time>) -> Vec<&'a Certificate> {
     build_chain_noted(leaf, pool, at).0
 }
 
 /// [`build_chain`], and why it stopped where it did if a certificate that matched the issuer by
 /// name and signature was refused.
-pub fn build_chain_noted<'a>(leaf: &'a Certificate, pool: &'a [Certificate], at: Option<Time>) -> (Vec<&'a Certificate>, Option<String>) {
+pub fn build_chain_noted<'a>(
+    leaf: &'a Certificate,
+    pool: impl IntoIterator<Item = &'a Certificate> + Clone,
+    at: Option<Time>,
+) -> (Vec<&'a Certificate>, Option<String>) {
     let mut chain = vec![leaf];
     let mut refused = None;
     while chain.len() < 10 {
@@ -492,7 +496,7 @@ pub fn build_chain_noted<'a>(leaf: &'a Certificate, pool: &'a [Certificate], at:
         // CA certificates between `last` and the leaf: what a candidate's pathLenConstraint limits.
         let below = chain.len() - 1;
         let mut found = None;
-        for c in pool.iter().filter(|c| c.subject.raw == last.issuer.raw && !chain.contains(c) && last.signed_by(&c.public_key)) {
+        for c in pool.clone().into_iter().filter(|c| c.subject.raw == last.issuer.raw && !chain.contains(c) && last.signed_by(&c.public_key)) {
             let why = if !c.may_issue() {
                 Some("is not a CA certificate that may issue certificates")
             } else if c.path_len.is_some_and(|n| below > n as usize) {

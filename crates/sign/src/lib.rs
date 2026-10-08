@@ -19,6 +19,7 @@ pub mod pkcs12;
 pub mod revocation;
 mod rsa_pad;
 pub mod timestamp;
+pub mod trust;
 #[cfg(target_os = "windows")]
 pub mod windows;
 pub mod x509;
@@ -26,8 +27,8 @@ pub mod x509;
 pub use der::Time;
 pub use keys::{DigestAlg, PrivateKey, PublicKey};
 pub use pdf::{
-    Appearance, DigestCache, Modification, SignOptions, SignatureInfo, Status, TrustStore, list as signatures, sign, sign_with_timestamp,
-    timestamp_document, validate,
+    Appearance, DigestCache, Modification, SignOptions, SignatureInfo, Status, TrustSource, TrustStore, list as signatures, sign,
+    sign_with_timestamp, timestamp_document, validate,
 };
 pub use pkcs12::DigitalId;
 pub use timestamp::{TimestampAuthority, TimestampQuery, TimestampToken};

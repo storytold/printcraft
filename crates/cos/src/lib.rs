@@ -46,6 +46,8 @@ pub enum CosError {
     WrongPassword,
     #[error("unsupported security: {0}")]
     Security(String),
+    #[error("the document is digitally signed; rewriting it would invalidate the signatures")]
+    SignedDocument,
     #[error("internal lock poisoned")]
     Poisoned,
     #[error("this document was opened read-only with a decode limit and cannot be saved")]

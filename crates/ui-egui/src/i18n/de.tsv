@@ -2184,3 +2184,7 @@ key	Space	Leertaste
 	Collapse all	Alle einklappen
 	Remove page	Seite entfernen
 	Remove {n} pages	{n} Seiten entfernen
+	Reload documents when their files change on disk	Dokumente neu laden, wenn sich ihre Dateien auf dem Datenträger ändern
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Diese Datei wurde auf dem Datenträger geändert. Lade sie neu, um die neue Version zu sehen; deine nicht gespeicherten Änderungen gehen dabei verloren.
+	Reload	Neu laden
+	Couldn't reload {name}: {e}	{name} konnte nicht neu geladen werden: {e}

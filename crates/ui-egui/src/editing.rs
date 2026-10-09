@@ -473,6 +473,8 @@ impl PdfCraftApp {
             self.notify_fmt("Couldn't save {name}: {e}", &[("name", dest), ("e", &e.to_string())]);
             return false;
         }
+        // Our own write is not a change on disk to reload (#431).
+        self.watch.known_now(id, dest);
         match self.session.mark_saved(id, bytes, Some(dest.to_string())) {
             Ok(()) => {
                 self.forget_recovery(id);
@@ -480,6 +482,8 @@ impl PdfCraftApp {
                     && let Some(view) = self.views.iter_mut().find(|v| v.id == id)
                 {
                     view.document_changed(&doc.info);
+                    // Saving over a version that changed on disk keeps this one: nothing to ask.
+                    view.disk_changed = false;
                 }
                 self.notify_fmt("Saved {name}", &[("name", &short_name(dest))]);
                 true

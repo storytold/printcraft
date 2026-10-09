@@ -2184,3 +2184,7 @@ key	Space	スペース
 	Collapse all	すべて折りたたむ
 	Remove page	ページを削除
 	Remove {n} pages	{n} ページを削除
+	Reload documents when their files change on disk	ディスク上のファイルが変更されたら文書を再読み込みする
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	このファイルはディスク上で変更されました。再読み込みすると新しいバージョンが表示されますが、未保存の変更は失われます。
+	Reload	再読み込み
+	Couldn't reload {name}: {e}	{name} を再読み込みできませんでした: {e}

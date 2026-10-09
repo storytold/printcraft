@@ -2206,3 +2206,7 @@ key	Space	مسافة
 	Collapse all	طي الكل
 	Remove page	إزالة الصفحة
 	Remove {n} pages	إزالة {n} صفحات
+	Reload documents when their files change on disk	إعادة تحميل المستندات عند تغيّر ملفاتها على القرص
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	تغيّر هذا الملف على القرص. أعد تحميله لعرض النسخة الجديدة؛ ستفقد تغييراتك غير المحفوظة.
+	Reload	إعادة تحميل
+	Couldn't reload {name}: {e}	تعذّرت إعادة تحميل {name}: {e}

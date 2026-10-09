@@ -2182,3 +2182,7 @@ key	Space	Szóköz
 	Collapse all	Összes összecsukása
 	Remove page	Oldal eltávolítása
 	Remove {n} pages	{n} oldal eltávolítása
+	Reload documents when their files change on disk	Dokumentumok újratöltése, ha a fájljuk megváltozik a lemezen
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Ez a fájl megváltozott a lemezen. Töltsd újra az új változat megtekintéséhez; a nem mentett módosításaid elvesznek.
+	Reload	Újratöltés
+	Couldn't reload {name}: {e}	{name} újratöltése nem sikerült: {e}

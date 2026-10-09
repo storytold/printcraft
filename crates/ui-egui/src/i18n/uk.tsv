@@ -2207,3 +2207,7 @@ key	Space	Пробіл
 	Collapse all	Згорнути всі
 	Remove page	Видалити сторінку
 	Remove {n} pages	Видалити сторінки: {n}
+	Reload documents when their files change on disk	Перезавантажувати документи, коли їхні файли змінюються на диску
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Цей файл змінено на диску. Перезавантажте його, щоб побачити нову версію; незбережені зміни буде втрачено.
+	Reload	Перезавантажити
+	Couldn't reload {name}: {e}	Не вдалося перезавантажити {name}: {e}

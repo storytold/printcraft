@@ -2,13 +2,13 @@
 //! (removing what they cover for good) or clear them.
 
 use pdfcraft_engine::{
-    Edit, Hidden, NewAnnotation, REDACT_MAX_WORDS, REDACTION_CODE_SETS, RedactPattern, RedactionCodeSet, Shape, Style, find_pattern, rect_quad,
-    redact_word_list,
+    Edit, Hidden, NewAnnotation, REDACT_MAX_WORDS, REDACTION_CODE_SETS, RedactPattern, RedactProof, RedactReport, RedactionCodeSet, Shape, Style,
+    find_pattern, rect_quad, redact_word_list,
 };
 use serde_json::{Value, json};
 
 use crate::comments::{DEFAULT_AUTHOR, parse_color};
-use crate::{Args, Automation, Result, ToolError, failed};
+use crate::{Args, Automation, Result, ToolError, failed, summary};
 
 impl Automation {
     pub(crate) fn redact_mark(&mut self, a: &Args) -> Result<Value> {
@@ -142,10 +142,29 @@ impl Automation {
         if before == 0 {
             return Err(failed("there are no redaction marks to apply (see redact_mark)"));
         }
-        let mut out = self.apply(a, Edit::ApplyRedactions { pages })?;
+        // All or nothing: on any error the document is exactly as it was. The error says which
+        // page or step failed, never what the page contained.
+        let id = self.doc(a)?.id;
+        let report = self.session.apply_reporting(id, Edit::ApplyRedactions { pages }).map_err(failed)?;
         let after = self.doc(a)?.redaction_marks();
-        out["applied"] = json!(before - after);
+        let mut out = summary(self.doc(a)?);
+        out["applied"] = json!(before.saturating_sub(after));
         out["marks_pending"] = json!(after);
+        // "complete": every mark was applied. "partial": the pages asked for were redacted and
+        // marks on other pages are still pending (nothing is removed there yet).
+        out["status"] = json!(if after == 0 { "complete" } else { "partial" });
+        // The checks run when the marks were applied and passed (otherwise the call failed above
+        // and nothing changed). They are evidence, not a guarantee: see `caveats`.
+        out["checked_at_apply"] = json!(true);
+        out["caveats"] = json!([
+            "Text that exists only as pixels of an image is not text and is not searched.",
+            "The check ran on the document as redacted. Saving writes the file again and checks only that it reopens with the same page count.",
+        ]);
+        if let Some(r) = report {
+            out["report"] = report_json(&r.report);
+            out["sanitized"] = sanitized_json(&r.report);
+            out["proof"] = proof_json(&r.proof);
+        }
         Ok(out)
     }
 
@@ -184,4 +203,50 @@ impl Automation {
         out["removed"] = json!(before.saturating_sub(after));
         Ok(out)
     }
+}
+
+/// What a redaction removed, per category (counts only: never the removed content).
+fn report_json(r: &RedactReport) -> Value {
+    json!({
+        "marks": r.marks,
+        "pages": r.pages,
+        "text_glyphs": r.glyphs,
+        "images_removed": r.images_removed,
+        "images_cleared": r.images_cleared,
+        "paths_removed": r.paths_removed,
+        "paths_clipped": r.paths_clipped,
+        "forms_rewritten": r.forms_rewritten,
+        "forms_removed": r.forms_removed,
+        "annotations": r.annotations,
+        "form_fields": r.fields,
+        "tags": r.tags,
+    })
+}
+
+/// What the redaction sanitized around the removed content: counts per category, and how many
+/// layers were held hidden (their names can be as revealing as the content, so only the count).
+fn sanitized_json(r: &RedactReport) -> Value {
+    let counts: serde_json::Map<String, Value> = r.sanitized.iter().map(|(h, n)| (h.id().to_string(), json!(n))).collect();
+    json!({ "counts": counts, "total": r.sanitized.iter().map(|c| c.1).sum::<usize>(), "layers": r.layers.len() })
+}
+
+/// The proof of a redaction, shareable: whether it passed, how many problems it found, and the
+/// status of each region and surface. Never the removed text (nor how much of it there was).
+fn proof_json(p: &RedactProof) -> Value {
+    json!({
+        "passed": p.passed(),
+        "survivors": p.survivors(),
+        "unswept_surfaces": p.unswept(),
+        "unverifiable_regions": p.unverifiable(),
+        "regions": p.entries.iter().map(|e| json!({
+            "page": e.page + 1,
+            "area": e.region,
+            "status": format!("{:?}", e.status),
+        })).collect::<Vec<_>>(),
+        "surfaces": p.surfaces.iter().map(|s| json!({
+            "surface": format!("{:?}", s.surface),
+            "verdict": format!("{:?}", s.verdict),
+            "scanned": s.scanned,
+        })).collect::<Vec<_>>(),
+    })
 }

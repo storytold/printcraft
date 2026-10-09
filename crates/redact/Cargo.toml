@@ -17,5 +17,6 @@ pdfcraft-forms = { workspace = true }
 pdfcraft-edit = { workspace = true }
 pdfcraft-annot = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]

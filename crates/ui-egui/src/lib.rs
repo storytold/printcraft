@@ -613,6 +613,8 @@ pub struct PdfCraftApp {
     pub redact_prefs: RedactPrefs,
     pub redact_pages_draft: RedactPagesDraft,
     pub redact_search: RedactSearchDraft,
+    /// The apply-redactions confirmation was acknowledged (reset whenever it opens).
+    pub redact_ack: bool,
     pub hidden_draft: HiddenDraft,
     pub print_draft: PrintDraft,
     pub link_draft: Option<LinkDraft>,
@@ -695,10 +697,26 @@ fn rgb_triple(v: &serde_json::Value) -> Option<[f64; 3]> {
     Some(out)
 }
 
+/// The session of an app. On the web the standard library's hash seed is fixed, so the browser's
+/// random numbers go into the file identifiers of rewritten files (an identifier only has to be
+/// unique, not unpredictable).
+fn new_session() -> Session {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut entropy = [0u8; 16];
+        for b in &mut entropy {
+            *b = (js_sys::Math::random() * 256.0) as u8;
+        }
+        return Session::new().with_id_entropy(entropy);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    Session::new()
+}
+
 impl PdfCraftApp {
     pub fn new() -> Self {
         Self {
-            session: Session::new(),
+            session: new_session(),
             views: Vec::new(),
             active: None,
             mode: Mode::AllTools,
@@ -836,6 +854,7 @@ impl PdfCraftApp {
             redact_prefs: RedactPrefs::default(),
             redact_pages_draft: RedactPagesDraft::default(),
             redact_search: RedactSearchDraft::default(),
+            redact_ack: false,
             hidden_draft: HiddenDraft::default(),
             print_draft: PrintDraft::default(),
             link_draft: None,

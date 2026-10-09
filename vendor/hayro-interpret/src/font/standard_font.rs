@@ -59,7 +59,12 @@ impl StandardFont {
         }
     }
 
-    pub(crate) fn get_width(&self, mut name: &str) -> Option<f32> {
+    /// PdfCraft patch: public, so the exact standard-14 widths can be reused (from_text writes
+    /// the /Widths from these attributed metrics instead of a second copy of the AFM data).
+    ///
+    /// The advance width of the glyph called `name`, in glyph units (1/1000 em). `None` when
+    /// the font has no such glyph.
+    pub fn get_width(&self, mut name: &str) -> Option<f32> {
         // <https://github.com/apache/pdfbox/blob/129aafe26548c1ff935af9c55cb40a996186c35f/pdfbox/src/main/java/org/apache/pdfbox/pdmodel/font/PDSimpleFont.java#L340>
         if name == ".notdef" {
             return Some(250.0);

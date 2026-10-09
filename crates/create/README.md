@@ -16,6 +16,6 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
   resolution (1–1200 dpi), without resampling or recompressing image pixels. Use 72 dpi
   for one point per pixel, or `ImageResolution::Embedded` for the same behavior as
   `from_images`. The largest page side is still capped at 14,400 points;
-- `from_text(text, …)`: plain text set in Helvetica, wrapped and paginated.
+- `from_text(text, …)`: plain text set in Helvetica, wrapped and paginated. The font carries the exact widths of the WinAnsi codes 32 to 255 (Latin letters with accents, punctuation, the euro sign), so the text can be redacted precisely later. Characters outside WinAnsi are written as `?`.
 
 Every function returns a `pdfcraft_cos::Document`; the caller writes it.

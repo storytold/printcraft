@@ -1120,7 +1120,12 @@
 	Apply redactions	墨消しを適用
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	墨消しマーク 1 件を適用します。マークの下にあるテキスト、画像、描画、および重なる注釈とフォームフィールドは完全に削除されます。
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	墨消しマーク {n} 件を適用します。マークの下にあるテキスト、画像、描画、および重なる注釈とフォームフィールドは完全に削除されます。
-	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	処理後に文書を保存してください。保存時にファイル全体を書き直し、削除した内容の痕跡を残しません。
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	適用すると文書も無害化されます。しおり、名前付き宛先、添付ファイル、文書情報、メタデータ、XFA フォームデータは削除され、非表示のレイヤーは永久に非表示のままロックされます。
+	This cannot be undone: applying redactions clears the undo history.	この操作は元に戻せません。墨消しを適用すると、取り消し履歴が消去されます。
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	結果は新しい名前で保存してください。保存時にファイル全体を書き直し、削除した内容の痕跡を残しません。元のファイルはそのまま残ります。
+	I understand that the redacted content is removed for good	墨消しした内容が完全に削除されることを理解しました
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	適用時に確認済み: 1 か所の領域に、削除したテキストは残っていませんでした。画像のピクセルとしてのみ存在するテキストは検索されません。
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	適用時に確認済み: {n} か所の領域に、削除したテキストは残っていませんでした。画像のピクセルとしてのみ存在するテキストは検索されません。
 	Select the items to remove from this document.	この文書から削除する項目を選択してください。
 	Metadata	メタデータ
 	File attachments	添付ファイル

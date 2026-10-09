@@ -694,14 +694,27 @@ impl Automation {
             None => PathBuf::from(doc.path.clone().ok_or_else(|| failed("the document has never been saved: pass a path"))?),
         };
         let same_file = doc.path.as_deref().is_some_and(|p| Path::new(p) == target);
+        // Redacted (or sanitized) output replaces the source only when asked to, and is always a full rewrite.
+        let redacted = doc.has_unsaved_redaction();
+        if redacted && same_file && !a.opt_bool("overwrite_source")?.unwrap_or(false) {
+            return Err(failed(
+                "the document has applied redactions or removed hidden information: saving in place would replace the original file. Save to a new path, or pass overwrite_source: true",
+            ));
+        }
         // Saving to a new file is a full rewrite unless asked otherwise, like Save As.
-        let full = a.opt_bool("full")?.unwrap_or(!same_file);
+        let full = redacted || a.opt_bool("full")?.unwrap_or(!same_file);
         let flatten_fill_sign = a.opt_bool("flatten_fill_sign")?.unwrap_or(false);
         if flatten_fill_sign {
             self.apply(a, Edit::FlattenFillSign)?;
         }
         let bytes = if full { self.session.save_full_bytes(id) } else { self.session.save_bytes(id) }.map_err(failed)?;
-        write_atomic(&target, &bytes)?;
+        if redacted {
+            // Checked before anything is replaced; the temporary file is owner-only.
+            self.session.verify_save(id, &bytes).map_err(failed)?;
+            pdfcraft_engine::write_private_atomic(&target, &bytes).map_err(|e| failed(format!("{}: {e}", target.display())))?;
+        } else {
+            write_atomic(&target, &bytes)?;
+        }
         let path = target.to_string_lossy().into_owned();
         self.session.mark_saved(id, bytes.clone(), Some(path.clone())).map_err(failed)?;
         Ok(json!({ "path": path, "bytes": bytes.len(), "incremental": !full, "document": summary(self.doc(a)?) }))

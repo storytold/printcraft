@@ -17,7 +17,7 @@ pdfcraft-fonts = { workspace = true }
 thiserror.workspace = true
 base64 = "0.22"
 sha1 = "0.11"
-sha2 = "0.11"
+sha2 = { workspace = true }
 p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 p384 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 # Verification only: P-521 and the Brainpool curves German qualified-signature cards use.

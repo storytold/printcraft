@@ -1095,7 +1095,12 @@ comment menu	Edit	సవరించు
 	Apply redactions	రెడాక్షన్‌లను వర్తింపజేయి
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	మీరు 1 రెడాక్షన్ గుర్తును వర్తింపజేయబోతున్నారు. గుర్తు కింద ఉన్న టెక్స్ట్, చిత్రాలు, డ్రాయింగ్‌లు, అలాగే దానితో అతివ్యాప్తి చెందే వ్యాఖ్యలు, ఫారం ఫీల్డ్‌లు శాశ్వతంగా తీసివేయబడతాయి.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	మీరు {n} రెడాక్షన్ గుర్తులను వర్తింపజేయబోతున్నారు. గుర్తుల కింద ఉన్న టెక్స్ట్, చిత్రాలు, డ్రాయింగ్‌లు, అలాగే వాటితో అతివ్యాప్తి చెందే వ్యాఖ్యలు, ఫారం ఫీల్డ్‌లు శాశ్వతంగా తీసివేయబడతాయి.
-	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	తర్వాత పత్రాన్ని సేవ్ చేయండి: సేవ్ చేసినప్పుడు ఫైల్ మొత్తం మళ్లీ రాయబడుతుంది, కాబట్టి తీసివేసిన కంటెంట్ ఆనవాలు కూడా అందులో మిగలదు.
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	వర్తింపజేయడం పత్రాన్ని కూడా శుభ్రపరుస్తుంది: బుక్‌మార్క్‌లు, పేరున్న గమ్యాలు, జోడింపులు, పత్రం సమాచారం, మెటాడేటా మరియు XFA ఫారమ్ డేటా తొలగించబడతాయి, దాచిన లేయర్లు శాశ్వతంగా దాచబడినట్లు లాక్ చేయబడతాయి.
+	This cannot be undone: applying redactions clears the undo history.	దీన్ని రద్దు చేయలేరు: రెడాక్షన్‌లను వర్తింపజేస్తే రద్దు చరిత్ర క్లియర్ అవుతుంది.
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	ఫలితాన్ని కొత్త పేరుతో సేవ్ చేయండి: సేవ్ చేసినప్పుడు ఫైల్ మొత్తం తిరిగి వ్రాయబడుతుంది, తీసివేసిన కంటెంట్ ఆనవాళ్లు ఉండవు, అసలు ఫైల్ అలాగే ఉంటుంది.
+	I understand that the redacted content is removed for good	రెడాక్ట్ చేసిన కంటెంట్ శాశ్వతంగా తొలగించబడుతుందని నేను అర్థం చేసుకున్నాను
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	వర్తింపజేసినప్పుడు తనిఖీ చేయబడింది: 1 ప్రాంతంలో తొలగించిన వచనం కనిపించలేదు. చిత్రంలో పిక్సెల్‌లుగా మాత్రమే ఉన్న వచనం శోధించబడదు.
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	వర్తింపజేసినప్పుడు తనిఖీ చేయబడింది: {n} ప్రాంతాలలో తొలగించిన వచనం కనిపించలేదు. చిత్రంలో పిక్సెల్‌లుగా మాత్రమే ఉన్న వచనం శోధించబడదు.
 	Select the items to remove from this document.	ఈ పత్రం నుండి తీసివేయాల్సిన అంశాలను ఎంచుకోండి.
 	Metadata	మెటాడేటా
 	File attachments	ఫైల్ జోడింపులు

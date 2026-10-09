@@ -132,7 +132,7 @@ pub fn tools() -> Vec<ToolDef> {
         t(
             "doc_save",
             "Save a document",
-            "Save to its own file (an incremental update, which keeps signatures valid) or to a new path (a full rewrite). The write is atomic. flatten_fill_sign bakes Fill & Sign text, marks and signatures into the page first and removes those annotations; other comments and form fields stay. Omit it, or pass false, to leave them editable.",
+            "Save to its own file (an incremental update, which keeps signatures valid) or to a new path (a full rewrite). The write is atomic. After redact_apply, doc_remove_hidden or any other removal of hidden information the output is always a full rewrite, checked (it reopens with the same page count) before it is written with owner-only permissions; saving it over the original file needs overwrite_source: true. flatten_fill_sign bakes Fill & Sign text, marks and signatures into the page first and removes those annotations; other comments and form fields stay. Omit it, or pass false, to leave them editable.",
         )
         .destructive()
         .cmd("file.save")
@@ -141,7 +141,8 @@ pub fn tools() -> Vec<ToolDef> {
                 "doc": doc(),
                 "path": { "type": "string", "description": "Save as this file. Omit to save in place." },
                 "full": { "type": "boolean", "description": "Force a full rewrite (or, with false, an incremental update)." },
-                "flatten_fill_sign": { "type": "boolean", "description": "Bake Fill & Sign marks into the page before writing. Default false." }
+                "flatten_fill_sign": { "type": "boolean", "description": "Bake Fill & Sign marks into the page before writing. Default false." },
+                "overwrite_source": { "type": "boolean", "description": "Allow redacted or sanitized output to replace the file the document was opened from." }
             }),
             &["doc"],
         )),
@@ -408,7 +409,7 @@ pub fn tools() -> Vec<ToolDef> {
         t(
             "redact_apply",
             "Apply redactions",
-            "Apply the redaction marks (all, or those on pages): text, images, vectors, comments and form fields under them are removed for good and boxes are drawn in their place. A verification pass fails the operation if anything readable remains. Undoable until saved; the saved file no longer contains the content.",
+            "Apply the redaction marks (all, or those on pages): text, images, vectors, comments and form fields under them are removed for good and boxes are drawn in their place. A check of the redacted document fails the operation if readable text from the marked areas remains, and then nothing is changed (all or nothing); it is evidence, not a guarantee, and does not search text that exists only as pixels of an image. It also sanitizes, like doc_remove_hidden with every category: bookmarks, named destinations, attachments, document information, XMP metadata and XFA form data are deleted, and hidden layers are kept but locked permanently hidden (the result's sanitized counts say how many). Refused for signed documents. Not undoable: the undo history is cleared. The result lists what was removed per category and says whether marks are still pending (status partial) or all were applied (status complete). Save with doc_save to a new path.",
         )
         .destructive()
         .with(schema(json!({ "doc": doc(), "pages": pages("whose marks to apply (default: all)") }), &["doc"])),

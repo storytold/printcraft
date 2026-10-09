@@ -819,7 +819,12 @@
 	Apply redactions	应用密文
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	即将应用 1 个密文标记。标记下的文本、图像和绘图，以及与其重叠的注释和表单域，将被永久删除。
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	即将应用 {n} 个密文标记。标记下的文本、图像和绘图，以及与其重叠的注释和表单域，将被永久删除。
-	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	之后请保存文档：保存将重写整个文件，使删除的内容不留痕迹。
+	This cannot be undone: applying redactions clears the undo history.	此操作无法撤销：应用密文标记会清除撤销历史。
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	请将结果另存为新名称：保存将重写整个文件，使删除的内容不留痕迹，原文件保持不变。
+	I understand that the redacted content is removed for good	我了解被密文标记的内容将被永久删除
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	应用时已检查：1 个区域中未发现已删除的文本。仅以图像像素形式存在的文本不会被搜索。
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	应用时已检查：{n} 个区域中未发现已删除的文本。仅以图像像素形式存在的文本不会被搜索。
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	应用同时会清理文档：书签、命名目标、附件、文档信息、元数据和 XFA 表单数据将被删除，隐藏图层将被永久锁定隐藏。
 	Select the items to remove from this document.	选择要从本文档中删除的项目。
 	Metadata	元数据
 	File attachments	文件附件

@@ -674,6 +674,16 @@ pub(crate) fn read_to_unicode(dict: &Dict<'_>, cmap_resolver: &CMapResolverFn) -
         })
 }
 
+// PdfCraft patch: public read access to the WinAnsi encoding, so the standard-14 widths can be
+// looked up per code (PdfCraft's from_text /Widths) instead of a second copy of the tables.
+/// The glyph name the WinAnsi encoding gives `code`. Codes the encoding leaves undefined draw
+/// the bullet glyph when they are above 40, as the PDF specification (Annex D) describes;
+/// `None` for the rest.
+pub fn win_ansi_glyph(code: u8) -> Option<&'static str> {
+    use generated::win_ansi;
+    win_ansi::get(code)
+}
+
 // When mapping to glyphs, some fonts might only have a glyph for the "normalized"
 // name.
 pub(crate) fn normalized_glyph_name(mut name: &str) -> &str {

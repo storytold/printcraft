@@ -80,7 +80,7 @@ fn strict_decoding_exposes_damage_the_tolerant_decoder_hides() {
     // Cut the compressed data short: the tolerant decoder returns the prefix without complaint.
     let mut cut = good.clone();
     let keep = cut.raw.len() / 2;
-    cut.raw = Arc::new(cut.raw.get(..keep).unwrap_or_default().to_vec());
+    cut.raw = Arc::new(cut.raw.get(..keep).unwrap_or_default().to_vec()).into();
     let prefix = cut.decoded_within(1 << 20).unwrap();
     assert!(prefix.len() < data.len(), "the lenient API keeps hiding the damage");
     assert!(matches!(cut.decoded_strict_within(1 << 20), Err(CosError::Filter(_))));

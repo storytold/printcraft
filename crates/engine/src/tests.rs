@@ -1535,6 +1535,25 @@ fn added_images_rotate_flip_and_crop_as_drawn() {
 }
 
 #[test]
+fn reload_reads_the_new_file_into_the_same_document() {
+    let (mut s, id) = session_with(2);
+    let other = s.open("other.pdf", None, Arc::new(fixture(1)), None).unwrap();
+    s.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+    let before = s.get(id).unwrap().edit_generation();
+    s.reload(id, Arc::new(fixture(3))).unwrap();
+    let d = s.get(id).unwrap();
+    assert_eq!((d.id, d.name.as_str()), (id, "fixture.pdf"), "same document, same name");
+    assert_eq!(page_texts(&s, id), ["Page 1", "Page 2", "Page 3"], "the new version");
+    assert!(!d.dirty && d.can_undo().is_none(), "nothing unsaved, nothing to undo");
+    assert!(d.edit_generation() > before, "caches keyed by the generation see a change");
+    assert_eq!(s.docs().iter().map(|d| d.id).collect::<Vec<_>>(), [id, other], "no new tab, same order");
+    // A file that isn't a PDF (yet) leaves the document as it was.
+    assert!(s.reload(id, Arc::new(b"%PDF-1.7 half written".to_vec())).is_err());
+    assert_eq!(page_texts(&s, id).len(), 3);
+    assert_eq!(s.docs().len(), 2);
+}
+
+#[test]
 fn revert_goes_back_to_the_saved_version() {
     let (mut s, id) = session_with(2);
     s.apply(id, Edit::DeletePages { pages: vec![0] }).unwrap();

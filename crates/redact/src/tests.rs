@@ -224,6 +224,109 @@ fn images_are_removed_or_have_their_pixels_cleared() {
     assert_eq!(orig.decoded().unwrap(), [255; 4], "the shared original is untouched");
 }
 
+/// The page's /Resources /XObject dictionary (empty when there is none).
+fn xobjects_of(doc: &Document, page: usize) -> Dict {
+    let p = &pdfcraft_model::pages(doc)[page];
+    let res = doc.resolve(p.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+    res.get(b"XObject").and_then(|x| doc.resolve(x).as_dict().cloned()).unwrap_or_default()
+}
+
+/// An 8×1 Flate gray scan of `scan` samples: the object bytes to put in a page's /XObject, and
+/// the compressed data the saved file must not keep once the object is retired.
+fn flate_scan(scan: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let s = Stream::flate(Dict::new(), scan);
+    let mut v = format!(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n",
+        s.raw.len()
+    )
+    .into_bytes();
+    v.extend_from_slice(&s.raw);
+    v.extend_from_slice(b"\nendstream");
+    (v, s.raw.as_ref().to_vec())
+}
+
+// #389: a partly redacted scanned page stayed extractable: the redaction dropped the `Do` or
+// drew a cleared copy, but the original scan image stayed in the page's resources and in the
+// file, so the "removed" pixels were one object extraction away. These pin the retirement:
+// once no `Do` draws the scan under its old name, the name leaves /Resources /XObject and a
+// full save drops the image object itself.
+
+#[test]
+fn a_superseded_scan_image_is_gone_from_the_saved_file() {
+    // #389, fully covered scan: the `Do` goes, /Im0 leaves the resources, and the saved file
+    // keeps neither the name nor the scan's bytes.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let mut doc = one_page(b"q 8 0 0 8 10 10 cm /Im0 Do Q", "/XObject << /Im0 7 0 R >>", vec![img]);
+    mark(&mut doc, 0, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared), (1, 0), "{r:?}");
+    assert!(!content(&doc, 0).contains("/Im0"), "{}", content(&doc, 0));
+    let xo = xobjects_of(&doc, 0);
+    assert!(!xo.contains(b"Im0"), "the retired name left the resources");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(!saved.windows(4).any(|w| w == b"/Im0"), "the name is not in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the scan's bytes are not in the saved file");
+}
+
+#[test]
+fn a_cleared_scan_copy_replaces_the_original_in_resources() {
+    // #389, partly covered scan: the page draws a cleared copy under a fresh name, /Im0 leaves
+    // the resources, and the saved file keeps the copy's bytes but not the original's.
+    let scan = [0x5Au8, 0x6B, 0x7C, 0x8D, 0x9E, 0xAF, 0xC0, 0xD1];
+    let (img, orig_raw) = flate_scan(&scan);
+    let mut doc = one_page(b"q 8 0 0 8 10 10 cm /Im0 Do Q", "/XObject << /Im0 7 0 R >>", vec![img]);
+    // The mark ends at x 15: its edge touches pixel 4's cell (x 14–15), and any overlap clears
+    // the pixel, so pixels 0–4 go and 5–7 keep their samples.
+    mark(&mut doc, 0, &[[5.0, 5.0, 15.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared), (0, 1), "{r:?}");
+    let c = content(&doc, 0);
+    assert!(!c.contains("/Im0") && c.contains("/PCRedacted1 Do"), "{c}");
+    let xo = xobjects_of(&doc, 0);
+    assert!(!xo.contains(b"Im0"), "the retired name left the resources");
+    let copy = xo.iter().find(|(k, _)| k.starts_with(b"PCRedacted")).map(|(_, v)| v.clone()).expect("the cleared copy");
+    let Object::Stream(s) = &*doc.resolve(&copy) else { panic!() };
+    assert_eq!(s.decoded().unwrap(), [0, 0, 0, 0, 0, scan[5], scan[6], scan[7]], "pixels 0–4 cleared");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(s.raw.len()).any(|w| w == s.raw.as_ref()), "the cleared copy is in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the original scan's samples are not");
+    assert!(!saved.windows(orig_raw.len()).any(|w| w == orig_raw.as_slice()), "the original image object is not");
+}
+
+#[test]
+fn a_second_draw_of_the_scan_does_not_keep_the_original_alive() {
+    // #389, scan drawn twice with one draw covered: the covered draw is dropped, the surviving
+    // draw is remapped to the cleared copy, and the original (its name and its bytes) is gone
+    // from the saved file — the second draw must not keep the superseded image reachable.
+    let scan = [0x5Au8, 0x6B, 0x7C, 0x8D, 0x9E, 0xAF, 0xC0, 0xD1];
+    let (img, orig_raw) = flate_scan(&scan);
+    let mut doc = one_page(b"q 8 0 0 8 10 10 cm /Im0 Do Q q 8 0 0 8 50 50 cm /Im0 Do Q", "/XObject << /Im0 7 0 R >>", vec![img]);
+    // The mark covers the first draw whole; it only clips the second's left pixels.
+    mark(&mut doc, 0, &[[5.0, 5.0, 55.0, 60.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared), (1, 1), "{r:?}");
+    // Exactly one `Do` survives, and it draws the cleared copy.
+    let c = content(&doc, 0);
+    let dos: Vec<Vec<u8>> = pdfcraft_content::parse(c.as_bytes())
+        .ops
+        .iter()
+        .filter(|op| op.op.as_slice() == b"Do")
+        .filter_map(|op| op.operands.first().and_then(Object::as_name).map(<[u8]>::to_vec))
+        .collect();
+    assert_eq!(dos, [b"PCRedacted1".to_vec()], "{c}");
+    let xo = xobjects_of(&doc, 0);
+    assert!(!xo.contains(b"Im0"), "the retired name left the resources");
+    let copy = xo.iter().find(|(k, _)| k.starts_with(b"PCRedacted")).map(|(_, v)| v.clone()).expect("the cleared copy");
+    let Object::Stream(s) = &*doc.resolve(&copy) else { panic!() };
+    assert_eq!(s.decoded().unwrap(), [0, 0, 0, 0, 0, scan[5], scan[6], scan[7]], "the surviving draw's covered pixels");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(s.raw.len()).any(|w| w == s.raw.as_ref()), "the cleared copy is in the saved file");
+    assert!(!saved.windows(4).any(|w| w == b"/Im0"), "the name is not in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the original scan's samples are not");
+    assert!(!saved.windows(orig_raw.len()).any(|w| w == orig_raw.as_slice()), "the original image object is not");
+}
+
 #[test]
 fn vectors_are_removed_or_clipped_and_inline_images_go() {
     let src = b"0 g 10 10 20 20 re f 0 0 300 300 re f q 10 0 0 10 50 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \x80 EI Q 1 0 0 RG 150 150 m 160 160 l S";

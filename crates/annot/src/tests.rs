@@ -582,6 +582,33 @@ fn urls_are_found_in_text() {
 }
 
 #[test]
+fn common_email_addresses_become_mailto_links_with_source_character_ranges() {
+    let source = "İ Contact ada.lovelace+forms@example.co.uk, browse HTTPS://EXAMPLE.ORG; or ask admin@example.org.";
+    let chars: Vec<char> = source.chars().collect();
+    let links = crate::links::find_urls(&chars);
+    let found: Vec<(String, String)> = links
+        .into_iter()
+        .map(|(range, url)| (chars.get(range).unwrap().iter().collect(), url))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("ada.lovelace+forms@example.co.uk".into(), "mailto:ada.lovelace+forms@example.co.uk".into()),
+            ("HTTPS://EXAMPLE.ORG".into(), "HTTPS://EXAMPLE.ORG".into()),
+            ("admin@example.org".into(), "mailto:admin@example.org".into()),
+        ]
+    );
+}
+
+#[test]
+fn malformed_email_addresses_are_not_autolinked() {
+    for invalid in ["a@b", "broken@localhost", "a..b@example.org", "foo@.example.org", "foo@example..org", "foo@example.com@x"] {
+        let input: Vec<char> = invalid.chars().collect();
+        assert!(crate::links::find_urls(&input).is_empty(), "{invalid:?} produced a link");
+    }
+}
+
+#[test]
 fn urls_are_found_after_length_changing_lowercase() {
     // U+0130 (İ) lowercases to "i" plus a combining dot above, so a case-folded copy is longer
     // than the source. The old matcher took the address offset from that copy and sliced the

@@ -296,6 +296,59 @@ pub fn remove_all(doc: &mut Document, pages: Option<&[usize]>) -> Result<usize, 
     Ok(n)
 }
 
+/// Recognise common ASCII mailbox addresses without mistaking domains, partial words or
+/// invalid labels for e-mail links. The returned end is in source-character indices.
+fn email_at(chars: &[char], start: usize) -> Option<(usize, String)> {
+    let local_char = |c: char| c.is_ascii_alphanumeric() || "._+%-".contains(c);
+    let domain_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '.';
+    // Don't create a link starting in the middle of an address.
+    if start > 0 && chars.get(start - 1).is_some_and(|c| local_char(*c) || *c == '@') {
+        return None;
+    }
+    let mut at = start;
+    while chars.get(at).is_some_and(|c| local_char(*c)) {
+        at += 1;
+        if at - start > 64 {
+            return None;
+        }
+    }
+    let local = chars.get(start..at)?;
+    if local.is_empty() || local.first() == Some(&'.') || local.last() == Some(&'.') || local.windows(2).any(|w| w == ['.', '.']) {
+        return None;
+    }
+    if chars.get(at) != Some(&'@') {
+        return None;
+    }
+    let mut end = at + 1;
+    while chars.get(end).is_some_and(|c| domain_char(*c)) {
+        end += 1;
+        if end - at - 1 > 253 {
+            return None;
+        }
+    }
+    while end > at + 1 && chars.get(end - 1) == Some(&'.') {
+        end -= 1;
+    }
+    if chars.get(end).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '@' || *c == '_') {
+        return None;
+    }
+    let domain = chars.get(at + 1..end)?;
+    let mut labels = 0;
+    let mut tld_length = 0;
+    for label in domain.split(|c| *c == '.') {
+        if label.is_empty() || label.len() > 63 || !label.first()?.is_ascii_alphanumeric() || !label.last()?.is_ascii_alphanumeric() {
+            return None;
+        }
+        labels += 1;
+        tld_length = label.len();
+    }
+    if labels < 2 || tld_length < 2 {
+        return None;
+    }
+    let address: String = chars.get(start..end)?.iter().collect();
+    Some((end, format!("mailto:{address}")))
+}
+
 /// Find web addresses in text: `http(s)://…`, `www.…` and bare e-mail addresses become
 /// `mailto:`. Returns character ranges and the URI for each.
 pub fn find_urls(chars: &[char]) -> Vec<(std::ops::Range<usize>, String)> {
@@ -326,6 +379,11 @@ pub fn find_urls(chars: &[char]) -> Vec<(std::ops::Range<usize>, String)> {
                 i = j;
                 continue;
             }
+        }
+        if boundary && let Some((end, uri)) = email_at(chars, i) {
+            out.push((i..end, uri));
+            i = end;
+            continue;
         }
         i += 1;
     }

@@ -1,6 +1,6 @@
 # PDF specification and standards parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first spec-coverage checklist) · **Target:** Adobe Acrobat Pro (Acrobat DC, continuous track 26.002.21931, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (signature trust: the EU Trusted Lists load as an opt-in file; earlier: first spec-coverage checklist) · **Target:** Adobe Acrobat Pro (Acrobat DC, continuous track 26.002.21931, macOS)
 
 How much of ISO 32000-2 (PDF 2.0) and the PDF subset standards PdfCraft implements, set against
 what Acrobat Pro implements. This is PdfCraft's equivalent of a "geometry" or "codec" checklist:
@@ -108,7 +108,7 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 | UR3 usage rights | preserved, Reader-extending is Adobe-only | none (P3) |
 | Seed values | yes | none |
 | Validation: chain, key usage, EKU, critical extensions, changes after signing, signed version | yes | yes; name constraints and issuer critical extensions missing |
-| Trust: own store, OS store, AATL, EUTL | yes | own store only; AATL out of scope; OS and EUTL planned |
+| Trust: own store, OS store, AATL, EUTL | yes | own store; EUTL as an opt-in file and optional built-in roots (off by default, no UI); AATL out of scope; OS store planned |
 | Smart cards and tokens (PKCS #11, CryptoTokenKit) | yes | Windows CNG store (with PIN prompt) only |
 
 ## Subset standards
@@ -129,4 +129,5 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Trust row: the EU Trusted Lists and optional built-in roots exist as opt-in sets (off by default, no UI); the OS store is still planned |
 | 2026-10-10 | major | Created from the code, `vendor/README.md` and `parity/acrobat-features.toml`, against ISO 32000-2 and Acrobat Pro 26.002.21931's documented capabilities |

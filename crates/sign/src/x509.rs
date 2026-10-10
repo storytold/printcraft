@@ -170,6 +170,9 @@ const PROCESSED_EXTENSIONS: [&str; 11] = [
 const DOCUMENT_SIGNING_EKUS: [&str; 6] =
     ["2.5.29.37.0", "1.3.6.1.5.5.7.3.4", "1.3.6.1.5.5.7.3.3", "1.3.6.1.5.5.7.3.36", "1.2.840.113583.1.1.5", "1.3.6.1.4.1.311.10.3.12"];
 
+/// id-kp-timeStamping (RFC 3161 §2.3).
+const EKU_TIME_STAMPING: &str = "1.3.6.1.5.5.7.3.8";
+
 /// The certificate extensions `Certificate::parse` reads, gathered tolerantly: an
 /// extension that does not parse leaves its field at the default instead of failing the
 /// certificate (real-world issuers use encodings with edge cases, e.g. a single-URI CRL
@@ -373,6 +376,13 @@ impl Certificate {
         } else {
             None
         }
+    }
+
+    /// Whether the certificate is meant for signing time-stamp tokens. Unlike a signer, a
+    /// time-stamp authority has to say so: its extended key usage contains id-kp-timeStamping
+    /// (RFC 3161 §2.3), and "any purpose" is not enough.
+    pub fn may_timestamp(&self) -> bool {
+        self.extended_key_usage.as_ref().is_some_and(|purposes| purposes.iter().any(|p| p == EKU_TIME_STAMPING))
     }
 
     /// Issued by itself (subject = issuer and its own key verifies it).

@@ -287,6 +287,22 @@ fn a_trusted_signer_whose_certificate_may_not_sign_is_not_valid() {
 }
 
 #[test]
+fn a_time_stamp_authority_has_to_say_so() {
+    // RFC 3161 §2.3: its extended key usage contains id-kp-timeStamping, unlike a signer, which
+    // may have no extended key usage at all; "any purpose" is not enough.
+    let r = root();
+    let make = |purposes: Option<&[&str]>| signer_with("Authority", &r, &purposes.map(extended_key_usage).into_iter().collect::<Vec<_>>()).cert;
+    assert!(!make(None).may_timestamp());
+    assert!(!make(Some(&[SERVER_AUTH])).may_timestamp());
+    assert!(!make(Some(&["2.5.29.37.0"])).may_timestamp());
+    assert!(!make(Some(&[])).may_timestamp());
+    assert!(make(Some(&["1.3.6.1.5.5.7.3.8"])).may_timestamp());
+    assert!(make(Some(&[SERVER_AUTH, "1.3.6.1.5.5.7.3.8"])).may_timestamp());
+    // Unreadable: no purpose.
+    assert!(!signer_with("Garbled", &r, &[ext("2.5.29.37", &[0xff, 0x00])]).cert.may_timestamp());
+}
+
+#[test]
 fn unreadable_constraint_extensions_fail_closed() {
     // keyUsage present but not a BIT STRING: no usage at all, so no keyCertSign.
     let bad_usage = ext("2.5.29.15", &[0xff, 0x00]);

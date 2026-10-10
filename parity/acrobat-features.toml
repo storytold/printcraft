@@ -6195,7 +6195,7 @@ status = "partial"
 commands = []
 tools = ["sign_trust"]
 evidence = ["crates/sign/src/trust.rs::a_list_reads_concatenated_der_and_rejects_garbage", "crates/sign/tests/chain.rs::trust_sets_are_off_by_default_and_a_loaded_list_is_named_when_it_vouches", "crates/automation/tests/automation.rs::trust_sets_are_off_until_switched_on_through_sign_trust"]
-notes = "Not built in and off by default: `cargo xtask trust-lists` writes the qualified CA services of the EU Trusted Lists (CC BY 4.0) to dist/trust/eutl-qualified-ca.der and the user loads that file (sign_trust eu_trusted_list), kept apart from their own certificates. Chains through such a list still need CA certificates all the way (basicConstraints, keyCertSign, path length, validity). Missing: a UI switch, withdrawn services at the signing time, XML signature checks of the lists, refreshing from the app. Adobe's AATL is not used (Adobe data without an open licence, AGENTS.md section 1.1)"
+notes = "Not built in and off by default: `cargo xtask trust-lists` writes the qualified CA services (CA/QC) of the EU Trusted Lists (CC BY 4.0; 30 national lists, 992 certificates, 1.5 MB on 2026-10-10, fetched over HTTPS only) to dist/trust/eutl-qualified-ca.der and the user loads that file (sign_trust eu_trusted_list), kept apart from their own certificates. With it loaded, the PDF attached to issue 775 (a CAdES signature under Intesa SpA's qualified service) validates as Valid instead of Unknown. Chains through such a list still need CA certificates all the way (basicConstraints, keyCertSign, path length, validity), and the signer's own certificate must allow signing. Missing: a UI switch, qualified time-stamp services (TSA/QTST) as authorities, withdrawn services at the signing time, XML signature checks of the lists, refreshing from the app. Adobe's AATL is not used (Adobe-authored data outside the closed list in AGENTS.md section 1.1 needs the owner's approval)"
 
 [[feature]]
 id = "sign.builtin-roots"
@@ -6206,8 +6206,8 @@ milestone = "M9"
 status = "partial"
 commands = []
 tools = ["sign_trust"]
-evidence = ["crates/sign/src/trust.rs::the_builtin_roots_match_their_manifest", "crates/sign/tests/chain.rs::the_builtin_roots_only_anchor_when_switched_on", "crates/automation/tests/automation.rs::trust_sets_are_off_until_switched_on_through_sign_trust"]
-notes = "22 roots (DigiCert, GlobalSign, Sectigo, Entrust, QuoVadis, Certum, WISeKey), each pinned by SHA-256 in builtin-roots.toml and compared with Mozilla's root sets or a signed PDF; embedded (23 KB) but trusted only when the user switches them on (sign_trust builtin_roots), pending the project owner's decision on built-in trust. The WISeKey download URL is unconfirmed (the build sandbox could not reach it): run `cargo xtask trust-roots`. Missing: a UI switch, IdenTrust, SwissSign, Buypass, Actalis"
+evidence = ["crates/sign/src/trust.rs::the_builtin_roots_match_their_manifest", "crates/sign/tests/chain.rs::the_builtin_roots_only_anchor_when_switched_on", "crates/automation/tests/automation.rs::trust_sets_are_off_until_switched_on_through_sign_trust", "crates/sign/tests/pdf.rs::a_trust_set_does_not_vouch_for_a_timestamp_authority_that_is_not_meant_for_time_stamps", "crates/sign/tests/chain.rs::a_time_stamp_authority_has_to_say_so"]
+notes = "22 roots (DigiCert, GlobalSign, Sectigo, Entrust, QuoVadis, Certum, WISeKey), each pinned by SHA-256 in builtin-roots.toml, compared with Mozilla's root sets or a signed PDF, and re-downloaded from the CA and verified on 2026-10-10; embedded (23 KB) but trusted only when the user switches them on (sign_trust builtin_roots), pending the project owner's decision on built-in trust. A set vouches for a time-stamp authority only if its certificate has the time-stamping purpose; the user's own certificates are never second-guessed. Missing: a UI switch, IdenTrust, SwissSign, Buypass, Actalis"
 
 [[feature]]
 id = "sign.chain-constraints"
@@ -6218,8 +6218,8 @@ milestone = "M9"
 status = "shipped"
 commands = []
 tools = ["sign_list"]
-evidence = ["crates/sign/tests/chain.rs::an_end_entity_certificate_cannot_issue", "crates/sign/tests/chain.rs::a_path_length_constraint_limits_the_cas_below", "crates/sign/tests/chain.rs::issuers_must_have_been_valid_when_it_matters", "crates/sign/tests/chain.rs::a_signature_chaining_through_an_ordinary_certificate_is_not_trusted"]
-notes = "An issuer must be CA:TRUE (an old v1 self-signed root counts), have keyCertSign when it has a key usage, allow the CAs below it (pathLenConstraint) and, with a known signing or token time, have been valid then; the details say why one was refused. Not checked: name constraints, policies, EKU of CAs, revocation of intermediates from the chain itself"
+evidence = ["crates/sign/tests/chain.rs::an_end_entity_certificate_cannot_issue", "crates/sign/tests/chain.rs::a_path_length_constraint_limits_the_cas_below", "crates/sign/tests/chain.rs::issuers_must_have_been_valid_when_it_matters", "crates/sign/tests/chain.rs::a_signature_chaining_through_an_ordinary_certificate_is_not_trusted", "crates/sign/tests/chain.rs::a_v3_self_signed_certificate_without_constraints_is_not_a_root_that_issues", "crates/sign/tests/chain.rs::unreadable_constraint_extensions_fail_closed"]
+notes = "An issuer must be CA:TRUE (an old v1 or v2 self-signed root without constraints counts, a v3 one must say it is a CA), have keyCertSign when it has a key usage, allow the CAs below it (pathLenConstraint) and, with a known signing or token time, have been valid then; a keyUsage, pathLenConstraint or basicConstraints that is present but unreadable restricts, never allows (so does an unreadable extendedKeyUsage). The details say why an issuer was refused. Not checked: name constraints, policies, EKU of CAs, revocation of intermediates from the chain itself"
 
 [[feature]]
 id = "sign.os-trust"

@@ -105,6 +105,13 @@ needs a prompt to open is listed and asks at signing (issue #179).
   and trust lists loaded from a file at run time (`TrustStore::lists`; `cargo xtask trust-lists`
   writes the EU Trusted Lists' qualified CAs to `dist/trust/`, fetched over HTTPS only; nothing of
   the kind is embedded). The details name the set that vouched.
+- **A set vouches for what it is meant for.** The sets trust a CA for everything it issues, and most
+  of those CAs issue TLS certificates. The signer is held to the same rules whatever vouches for it
+  (its certificate must allow signing documents, above); a set also vouches only for a time-stamp
+  authority that says so (id-kp-timeStamping, RFC 3161 §2.3), while the user's own certificates are
+  never second-guessed. An extended key usage that can't be read restricts, never allows. Not
+  checked yet: name constraints, and unknown critical extensions and the extended key usage of the
+  CAs in the chain.
 - **Not Adobe's list.** Adobe's AATL is not used: Adobe-authored data outside the closed list in
   AGENTS.md §1.1 needs the owner's explicit approval, and the EU Trusted Lists (and, planned, the
   operating system's store) cover the same ground. A signer that chains only to an AATL root stays

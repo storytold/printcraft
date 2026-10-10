@@ -1515,3 +1515,23 @@ fn encrypted_documents_take_a_document_timestamp() {
     let print_only = open_pw(&protected(pdfcraft_cos::Algorithm::Aes128, -3900), None);
     assert!(matches!(pdfcraft_sign::timestamp_document(&print_only, &tsa, "D:20261006120000Z"), Err(SignError::Pdf(_))));
 }
+
+#[test]
+fn a_trust_set_does_not_vouch_for_a_timestamp_authority_that_is_not_meant_for_time_stamps() {
+    use pdfcraft_sign::trust::TrustList;
+    let tsa = TestTsa {
+        id: pkcs12::open(&data("rsa-aes.p12"), "test").unwrap(),
+        time: Time { year: 2026, month: 10, day: 6, hour: 12, minute: 0, second: 0 },
+    };
+    assert!(!tsa.id.certificate.may_timestamp(), "the test authority's certificate has no time-stamping purpose");
+    let stamped = pdfcraft_sign::timestamp_document(&open(&fixture()), &tsa, "D:20261006120000Z").unwrap();
+    let stamp = |trust: &TrustStore| signatures(&open(&stamped), &stamped, trust).into_iter().find(|s| s.doc_timestamp).unwrap();
+    // The user trusting this authority themselves is their decision.
+    let mine = TrustStore { certs: vec![tsa.id.certificate.clone()], ..TrustStore::default() };
+    assert_eq!(stamp(&mine).status, Status::Valid);
+    // A loaded list trusting the same certificate does not make it a time-stamp authority.
+    let list = TrustList::from_bytes("Test List", &tsa.id.certificate.raw).unwrap();
+    let s = stamp(&TrustStore { lists: vec![list], ..TrustStore::default() });
+    assert_eq!(s.status, Status::Unknown, "{:?}", s.details);
+    assert!(s.details.iter().any(|d| d.contains("not meant for time stamps")), "{:?}", s.details);
+}

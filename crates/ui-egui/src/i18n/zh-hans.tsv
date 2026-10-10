@@ -541,6 +541,10 @@
 	The signature will be invisible.	签名将不可见。
 	Distinguished name	可分辨名称
 	Labels	标签
+	Graphic	图形
+	Signer's name	签名者姓名
+	Fill & Sign signature	填写与签名中的签名
+	Choose image…	选择图像…
 	Permitted actions after certifying	认证后允许的操作
 	No changes allowed	不允许任何更改
 	Annotations, form fill-in, and digital signatures	注释、填写表单和数字签名

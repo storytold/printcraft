@@ -34,7 +34,21 @@ pub enum SavedSig {
     Image(#[serde(with = "image_data")] SignatureImage),
 }
 
-mod image_data {
+impl SavedSig {
+    /// This signature as the graphic of a visible digital signature. `None` for typed text the
+    /// script font has nothing to draw for.
+    pub fn graphic(&self) -> Option<pdfcraft_engine::sign::Graphic> {
+        match self {
+            SavedSig::Drawn(strokes) => Some(pdfcraft_engine::sign::Graphic::Strokes(
+                strokes.iter().map(|s| s.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect()).collect(),
+            )),
+            SavedSig::Typed(text) => pdfcraft_engine::typed_signature_graphic(text),
+            SavedSig::Image(image) => Some(image.graphic()),
+        }
+    }
+}
+
+pub(crate) mod image_data {
     use base64::Engine as _;
     use pdfcraft_engine::{SignatureImage, signature_image::MAX_SIGNATURE_IMAGE_BYTES};
     use serde::{Deserialize, Deserializer, Serializer};
@@ -308,48 +322,7 @@ pub(crate) fn signature_entries(ui: &mut egui::Ui, app: &mut crate::PdfCraftApp,
                 Stroke::new(1.0, if response.hovered() { t.accent } else { t.border }),
                 egui::StrokeKind::Inside,
             );
-            let preview_rect = rect.shrink(8.0);
-            match saved {
-                SavedSig::Typed(text) => {
-                    let cache = &mut app.saved_signature_previews[i];
-                    if cache.as_ref().is_none_or(|(s, _)| s != saved) {
-                        *cache = Some((
-                            saved.clone(),
-                            ui.ctx().load_texture(format!("saved-{what}"), script_preview(text, 480, 104), egui::TextureOptions::LINEAR),
-                        ));
-                    }
-                    if let Some((_, tex)) = cache {
-                        let size = vec2(480.0, 104.0) * (preview_rect.width() / 480.0).min(preview_rect.height() / 104.0);
-                        painter.image(
-                            tex.id(),
-                            egui::Rect::from_center_size(preview_rect.center(), size),
-                            egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                    }
-                }
-                SavedSig::Image(image) => {
-                    image_preview(ui, preview_rect, image, &mut app.saved_signature_previews[i]);
-                }
-                SavedSig::Drawn(strokes) => {
-                    let bounds = strokes
-                        .iter()
-                        .flatten()
-                        .filter(|p| p.iter().all(|v| v.is_finite()))
-                        .fold(egui::Rect::NOTHING, |r, p| r.union(egui::Rect::from_min_max(pos2(p[0], p[1]), pos2(p[0], p[1]))));
-                    if bounds.is_finite() {
-                        let scale = (preview_rect.width() / bounds.width().max(0.01)).min(preview_rect.height() / bounds.height().max(0.01));
-                        for stroke in strokes {
-                            let pts = stroke
-                                .iter()
-                                .filter(|p| p.iter().all(|v| v.is_finite()))
-                                .map(|p| preview_rect.center() + vec2(p[0] - bounds.center().x, bounds.center().y - p[1]) * scale)
-                                .collect();
-                            painter.add(egui::Shape::line(pts, Stroke::new(1.5, Color32::BLACK)));
-                        }
-                    }
-                }
-            }
+            paint_saved(ui, rect.shrink(8.0), saved, &mut app.saved_signature_previews[i], &format!("saved-{what}"));
             if response.on_hover_text(label("Place saved {what}")).clicked() {
                 command = Some(use_id);
             }
@@ -363,6 +336,47 @@ pub(crate) fn signature_entries(ui: &mut egui::Ui, app: &mut crate::PdfCraftApp,
         ui.add_space(4.0);
     }
     command
+}
+
+/// Draw a saved signature as large as fits in `rect`, centred: typed text and images through
+/// `cache` (a texture named `key`), strokes as lines.
+pub(crate) fn paint_saved(ui: &egui::Ui, rect: egui::Rect, saved: &SavedSig, cache: &mut Option<(SavedSig, egui::TextureHandle)>, key: &str) {
+    let painter = ui.painter_at(rect);
+    match saved {
+        SavedSig::Typed(text) => {
+            if cache.as_ref().is_none_or(|(s, _)| s != saved) {
+                *cache = Some((saved.clone(), ui.ctx().load_texture(key, script_preview(text, 480, 104), egui::TextureOptions::LINEAR)));
+            }
+            if let Some((_, tex)) = cache {
+                let size = vec2(480.0, 104.0) * (rect.width() / 480.0).min(rect.height() / 104.0);
+                painter.image(
+                    tex.id(),
+                    egui::Rect::from_center_size(rect.center(), size),
+                    egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+        SavedSig::Image(image) => image_preview(ui, rect, image, cache),
+        SavedSig::Drawn(strokes) => {
+            let bounds = strokes
+                .iter()
+                .flatten()
+                .filter(|p| p.iter().all(|v| v.is_finite()))
+                .fold(egui::Rect::NOTHING, |r, p| r.union(egui::Rect::from_min_max(pos2(p[0], p[1]), pos2(p[0], p[1]))));
+            if bounds.is_finite() {
+                let scale = (rect.width() / bounds.width().max(0.01)).min(rect.height() / bounds.height().max(0.01));
+                for stroke in strokes {
+                    let pts = stroke
+                        .iter()
+                        .filter(|p| p.iter().all(|v| v.is_finite()))
+                        .map(|p| rect.center() + vec2(p[0] - bounds.center().x, bounds.center().y - p[1]) * scale)
+                        .collect();
+                    painter.add(egui::Shape::line(pts, Stroke::new(1.5, Color32::BLACK)));
+                }
+            }
+        }
+    }
 }
 
 /// Preview and clicks with a Fill & Sign tool on one page.

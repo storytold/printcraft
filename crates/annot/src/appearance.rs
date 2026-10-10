@@ -104,7 +104,7 @@ fn line_end(c: &mut String, kind: &[u8], tip: (f64, f64), from: (f64, f64), w: f
 /// point parallel to the chord between its neighbours (an end uses itself as the missing
 /// neighbour). Ink is drawn so, as Acrobat draws it, rather than as straight segments. The curve
 /// stays within its points and these control points.
-pub(crate) fn smooth_segments(pts: &[(f64, f64)]) -> Vec<[(f64, f64); 3]> {
+pub fn smooth_segments(pts: &[(f64, f64)]) -> Vec<[(f64, f64); 3]> {
     let Some(&last) = pts.last() else { return Vec::new() };
     let at = |i: usize| pts.get(i).copied().unwrap_or(last);
     (0..pts.len().saturating_sub(1))

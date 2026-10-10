@@ -849,6 +849,10 @@
 	The signature will be invisible.	署名は非表示になります。
 	Distinguished name	識別名
 	Labels	ラベル
+	Graphic	グラフィック
+	Signer's name	署名者名
+	Fill & Sign signature	入力と署名の署名
+	Choose image…	画像を選択…
 	Permitted actions after certifying	証明後に許可する操作
 	No changes allowed	変更を許可しない
 	Annotations, form fill-in, and digital signatures	注釈、フォーム入力、デジタル署名

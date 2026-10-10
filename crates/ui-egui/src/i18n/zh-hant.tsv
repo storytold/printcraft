@@ -497,6 +497,10 @@
 	The signature will be invisible.	簽名將不可見。
 	Distinguished name	可分辨名稱
 	Labels	標籤
+	Graphic	圖形
+	Signer's name	簽署者姓名
+	Fill & Sign signature	填寫與簽署中的簽名
+	Choose image…	選擇圖片…
 	Permitted actions after certifying	認證後允許的操作
 	No changes allowed	不允許任何更改
 	Annotations, form fill-in, and digital signatures	註解、填寫表單和數位簽章

@@ -847,6 +847,10 @@
 	The signature will be invisible.	Підпис буде невидимим.
 	Distinguished name	Розпізнавальне ім’я
 	Labels	Позначки
+	Graphic	Графіка
+	Signer's name	Ім’я підписувача
+	Fill & Sign signature	Підпис із «Заповнення й підпис»
+	Choose image…	Вибрати зображення…
 	Permitted actions after certifying	Дозволені дії після засвідчення
 	No changes allowed	Зміни заборонено
 	Annotations, form fill-in, and digital signatures	Коментарі, заповнення форми й цифрові підписи

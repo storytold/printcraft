@@ -534,6 +534,10 @@
 	The signature will be invisible.	Подписът ще бъде невидим.
 	Distinguished name	Отличително име
 	Labels	Етикети
+	Graphic	Графика
+	Signer's name	Име на подписващия
+	Fill & Sign signature	Подпис от „Попълни и подпиши“
+	Choose image…	Избор на изображение…
 	Permitted actions after certifying	Разрешени действия след сертифициране
 	No changes allowed	Не се разрешават промени
 	Annotations, form fill-in, and digital signatures	Анотации, попълване на формуляри и цифрови подписи

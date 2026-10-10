@@ -2,7 +2,7 @@
 
 use egui::{Pos2, pos2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use pdfcraft_engine::SignatureStatus;
 use pdfcraft_ui_egui::{Dialog, PdfCraftApp, QuickTool, RightPanel, SignStep};
 
@@ -245,6 +245,71 @@ fn clicking_an_empty_signature_field_signs_it() {
     let s = h.state();
     let sig = s.session.get(s.views[1].id).unwrap().signatures.iter().find(|x| x.field == "Approver").cloned().unwrap();
     assert!(sig.signed && sig.visible);
+}
+
+#[test]
+fn the_fill_and_sign_signature_or_an_image_shows_in_a_digital_signature() {
+    use pdfcraft_ui_egui::SignGraphic;
+    use pdfcraft_ui_egui::fill_sign::SavedSig;
+    let dir = dir().join("graphic");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = harness(dir.clone());
+    let p12 = concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12");
+    let cert = pdfcraft_engine::sign::pkcs12::open(&std::fs::read(p12).unwrap(), "test").unwrap().certificate;
+    let sign_as = |h: &mut Harness<'static, PdfCraftApp>, rect: [f64; 4]| {
+        h.state_mut().start_signing(0, Some(rect), None, None);
+        let entry = h.state_mut().add_digital_id(p12, &cert);
+        let d = h.state_mut().sign_draft.as_mut().unwrap();
+        (d.selected, d.step, d.password) = (Some(entry), SignStep::SignAs, "test".into());
+        h.run_steps(2);
+    };
+
+    // Without a saved Fill & Sign signature there is nothing to choose.
+    sign_as(&mut h, [20.0, 110.0, 280.0, 140.0]);
+    h.get_by_label("Graphic");
+    assert!(h.get_by_label("Fill & Sign signature").accesskit_node().is_disabled(), "disabled without one");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+
+    // The saved signature (typed here) takes the name's place.
+    h.state_mut().signature = Some(SavedSig::Typed("Grace Hopper".into()));
+    sign_as(&mut h, [20.0, 110.0, 280.0, 140.0]);
+    h.get_by_label("Fill & Sign signature").click();
+    h.run_steps(2);
+    assert_eq!(h.state().sign_draft.as_ref().unwrap().graphic, SignGraphic::FillSign);
+    h.get_by_label("Sign").click();
+    h.run_steps(6);
+    let s = h.state();
+    assert_eq!(s.sign_draft.as_ref().and_then(|d| d.error.clone()), None);
+    let sig = s.session.get(s.views[0].id).unwrap().signatures.iter().find(|x| x.signed).cloned().unwrap();
+    assert!(sig.visible && sig.status == SignatureStatus::Unknown, "{:?}", sig.details);
+    // Remembered for the next signature, and across a restart.
+    assert_eq!(s.sign_graphic, SignGraphic::FillSign);
+    sign_as(&mut h, [20.0, 20.0, 280.0, 60.0]);
+    assert_eq!(h.state().sign_draft.as_ref().unwrap().graphic, SignGraphic::FillSign);
+
+    // An image (the picker's result is set directly: the file dialog is native).
+    let image = {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(60, 20, image::Rgba([200, 0, 0, 255])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        pdfcraft_engine::SignatureImage::from_bytes(png.get_ref()).unwrap()
+    };
+    h.state_mut().sign_draft.as_mut().unwrap().graphic = SignGraphic::Image(image.clone());
+    h.run_steps(2);
+    h.get_by_label("Choose image…");
+    h.get_by_label("Sign").click();
+    h.run_steps(6);
+    let s = h.state();
+    assert_eq!(s.sign_draft.as_ref().and_then(|d| d.error.clone()), None);
+    let signed = std::fs::read(dir.join("contract_signed.pdf")).unwrap();
+    assert!(signed.windows(6).any(|w| w == b"/Image"), "the image is embedded");
+    assert_eq!(s.session.get(s.views[0].id).unwrap().signatures.iter().filter(|x| x.signed).count(), 2);
+    let mut fresh = PdfCraftApp::new();
+    fresh.restore(&s.persist());
+    assert_eq!(fresh.sign_graphic, SignGraphic::Image(image));
+    // A saved choice that can't be read back falls back to the name.
+    fresh.restore(r#"{"sign_graphic": {"Image": "not base64"}}"#);
+    assert_eq!(fresh.sign_graphic, SignGraphic::Name);
 }
 
 #[test]

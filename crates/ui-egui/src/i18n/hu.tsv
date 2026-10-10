@@ -819,6 +819,10 @@
 	The signature will be invisible.	Az aláírás láthatatlan lesz.
 	Distinguished name	Megkülönböztető név
 	Labels	Címkék
+	Graphic	Grafika
+	Signer's name	Aláíró neve
+	Fill & Sign signature	A Kitöltés és aláírás aláírása
+	Choose image…	Kép kiválasztása…
 	Permitted actions after certifying	Engedélyezett műveletek hitelesítés után
 	No changes allowed	Semmilyen módosítás nem engedélyezett
 	Annotations, form fill-in, and digital signatures	Széljegyzetek, űrlapkitöltés és digitális aláírások

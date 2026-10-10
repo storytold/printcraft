@@ -3,6 +3,25 @@
 Working instructions for agents and contributors are in `AGENTS.md` and `CLAUDE.md`. This page
 collects what the desktop app reads from its environment and where it writes its diagnostics.
 
+## Low-disk Cargo profile
+
+When local build storage is constrained, select the opt-in `low-disk` profile explicitly:
+
+```sh
+cargo build --profile low-disk -p pdfcraft-cli
+cargo test --profile low-disk -p pdfcraft-cos --lib
+```
+
+The profile inherits the normal development settings, including debug assertions and overflow
+checks. It uses line-table-only debug information for workspace code, which keeps file and line
+numbers in backtraces but omits local-variable and parameter details, and it disables incremental
+compilation for this profile only. Ordinary `cargo build`, `cargo test`, and release builds keep
+their existing profiles.
+
+Cargo stores custom-profile artifacts separately under `target/low-disk`. Switching between the
+normal and low-disk profiles can therefore leave both sets of artifacts on disk. To remove only
+the low-disk artifacts, run `cargo clean --profile low-disk`.
+
 ## Logs
 
 The desktop app writes its `log` records to standard error and to `logs/pdfcraft.log` in its

@@ -87,6 +87,11 @@ debug = "line-tables-only"
 [profile.dev]
 opt-level = 1
 
+[profile.low-disk]
+inherits = "dev"
+debug = "line-tables-only"
+incremental = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

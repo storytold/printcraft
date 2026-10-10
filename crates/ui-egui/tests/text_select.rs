@@ -139,3 +139,100 @@ fn shift_click_extends_the_selection_from_its_anchor() {
     shift_click(&mut h, n);
     assert_eq!(h.state().views[0].selected_text(), None);
 }
+
+/// One tall 300×1200 page with 40 lines of text, so the view can scroll through text.
+fn long_page() -> Vec<u8> {
+    let lines: Vec<String> = (1..=40).map(|n| format!("(Line {n:02} of a long page) Tj 0 -28 Td")).collect();
+    let content = format!("BT /F1 14 Tf 20 1170 Td {} ET", lines.join(" "));
+    format!(
+        "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 1200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+        content.len()
+    )
+    .into_bytes()
+}
+
+/// The long page at 300 % with auto-scroll latched by a middle click at the viewport's centre,
+/// which is returned.
+fn latched_on_long_page(tool: &'static str) -> (Harness<'static, PdfCraftApp>, Pos2) {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("long.pdf", None, long_page()).expect("opens");
+        app.set_option("left", "closed").unwrap();
+        app.set_option("author", "Tester").unwrap();
+        app.set_option("zoom", "300").unwrap();
+        app.set_option("quick", tool).unwrap();
+        app
+    });
+    for _ in 0..200 {
+        h.run_steps(2);
+        if !h.state().render_pending() && h.state().views[0].glyph_screen_pos(0, 0).is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let anchor = h.state().views[0].viewport_rect().center();
+    h.hover_at(anchor);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: anchor, button: PointerButton::Middle, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(1);
+    assert!(h.state().views[0].auto_scrolling(), "a middle click latches auto-scroll");
+    (h, anchor)
+}
+
+/// Below the anchor, press the left button and move past egui's drag threshold, so a selection
+/// starts while the page scrolls down.
+fn start_selecting(h: &mut Harness<'static, PdfCraftApp>, anchor: Pos2) -> Pos2 {
+    let at = anchor + egui::vec2(-200.0, 70.0);
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    let held = at + egui::vec2(40.0, 0.0);
+    h.hover_at(held);
+    h.run_steps(1);
+    held
+}
+
+#[test]
+fn a_left_drag_selects_text_while_auto_scroll_runs() {
+    let (mut h, anchor) = latched_on_long_page("select");
+    let held = start_selecting(&mut h, anchor);
+    let early = h.state().views[0].selected_text().unwrap_or_default();
+    // Hold the button still: the page scrolls under the pointer and the selection follows it.
+    h.run_steps(40);
+    let later = h.state().views[0].selected_text().expect("a selection");
+    assert!(later.lines().count() > early.lines().count() + 1, "the selection grows as the page scrolls: {early:?} -> {later:?}");
+    assert!(h.state().views[0].auto_scrolling(), "selecting does not stop scrolling");
+    h.event(Event::PointerButton { pos: held, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert!(h.state().views[0].auto_scrolling(), "the end of a selection drag leaves scrolling on");
+    assert!(h.state().views[0].selected_text().is_some_and(|t| t.contains("Line")), "the selection stays");
+    // A plain left click stops scrolling, and is an ordinary click on the page.
+    click(&mut h, held);
+    assert!(!h.state().views[0].auto_scrolling(), "a left click stops scrolling");
+}
+
+#[test]
+fn the_highlighter_marks_text_while_auto_scroll_runs() {
+    let (mut h, anchor) = latched_on_long_page("highlight");
+    let held = start_selecting(&mut h, anchor);
+    h.run_steps(20);
+    h.event(Event::PointerButton { pos: held, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    let s = h.state();
+    let kinds: Vec<String> = s.session.get(s.views[0].id).unwrap().info.annotations.iter().map(|a| a.subtype.clone()).collect();
+    assert_eq!(kinds, ["Highlight"], "one highlight over the text dragged across");
+    assert!(s.views[0].auto_scrolling(), "highlighting does not stop scrolling");
+}

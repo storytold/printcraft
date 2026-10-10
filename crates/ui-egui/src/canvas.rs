@@ -1788,9 +1788,30 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             None => view.set_zoom(z),
         }
     }
+    // Text selection runs for the Select tool and for the markup tools (highlight…).
+    let selects_text = match app.quick_tool {
+        QuickTool::Comment(t) => t.markup().is_some() || t == comments::CommentTool::ReplaceText,
+        QuickTool::Select => !preparing,
+        QuickTool::Redact | QuickTool::ColumnSelect => true,
+        QuickTool::Hand
+        | QuickTool::Measure(_)
+        | QuickTool::Crop
+        | QuickTool::Fill(_)
+        | QuickTool::Field(_)
+        | QuickTool::AddText
+        | QuickTool::EditText
+        | QuickTool::Stamp(_)
+        | QuickTool::CustomStamp(_)
+        | QuickTool::Link
+        | QuickTool::SignArea { .. }
+        | QuickTool::MarqueeZoom
+        | QuickTool::Snapshot => false,
+    };
     view.viewport_screen = avail;
     let auto_delta = if unobstructed {
-        view.auto_scroll.update(ui, avail, false)
+        // Latched auto-scroll leaves the left button to the text tools, so text can be selected
+        // and highlighted while the page scrolls.
+        view.auto_scroll.update(ui, avail, false, selects_text)
     } else {
         view.auto_scroll.cancel();
         Vec2::ZERO
@@ -1910,25 +1931,6 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let tag = scale_tag(scale);
     let hand = app.quick_tool == QuickTool::Hand;
     let tool = app.quick_tool;
-    // Text selection runs for the Select tool and for the markup tools (highlight…).
-    let selects_text = match tool {
-        QuickTool::Comment(t) => t.markup().is_some() || t == comments::CommentTool::ReplaceText,
-        QuickTool::Select => !preparing,
-        QuickTool::Redact | QuickTool::ColumnSelect => true,
-        QuickTool::Hand
-        | QuickTool::Measure(_)
-        | QuickTool::Crop
-        | QuickTool::Fill(_)
-        | QuickTool::Field(_)
-        | QuickTool::AddText
-        | QuickTool::EditText
-        | QuickTool::Stamp(_)
-        | QuickTool::CustomStamp(_)
-        | QuickTool::Link
-        | QuickTool::SignArea { .. }
-        | QuickTool::MarqueeZoom
-        | QuickTool::Snapshot => false,
-    };
     let prefs = &app.comment_prefs;
     let allowed = doc.allows_annotation();
     let comments_hidden = doc.comments_hidden();
@@ -3438,7 +3440,7 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
     let viewport = ui.available_rect_before_wrap();
     view.viewport_screen = viewport;
     let auto_delta = if unobstructed {
-        view.auto_scroll.update(ui, viewport, true)
+        view.auto_scroll.update(ui, viewport, true, false)
     } else {
         view.auto_scroll.cancel();
         Vec2::ZERO

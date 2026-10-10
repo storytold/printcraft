@@ -1,7 +1,8 @@
 //! Middle-button auto-scroll for the document viewport, the same on every platform. A short
 //! press latches it on until the next middle press; holding the button scrolls until the release.
-//! Either way the page tools never see the button, because egui's drag responses accept every
-//! pointer button.
+//! Either way the page tools never see the middle button, because egui's drag responses accept
+//! every pointer button. While latched, a text tool keeps the left button: a drag selects or
+//! highlights as the page scrolls, and a click stops scrolling.
 
 use egui::{Context, CursorIcon, Event, Key, PointerButton, Pos2, Stroke, Vec2, vec2};
 
@@ -26,6 +27,9 @@ pub(crate) struct AutoScroll {
     /// When the press that started scrolling went down (egui input time), until its release
     /// decides between latching and stopping. `None` once latched.
     pressed_at: Option<f64>,
+    /// A left press that a text tool took while latched, until its release: a click stops
+    /// scrolling, a drag (a selection) leaves it on.
+    selecting: bool,
 }
 
 impl AutoScroll {
@@ -36,6 +40,7 @@ impl AutoScroll {
     pub(crate) fn cancel(&mut self) {
         self.anchor = None;
         self.pressed_at = None;
+        self.selecting = false;
         self.cancel_button = None;
         self.block_input = false;
     }
@@ -45,32 +50,44 @@ impl AutoScroll {
     }
 
     /// Run before the document's widgets. Starting is restricted to the unobstructed viewport;
-    /// once started, moving outside that viewport still controls the speed.
-    pub(crate) fn update(&mut self, ui: &egui::Ui, viewport: egui::Rect, organize: bool) -> Vec2 {
+    /// once started, moving outside that viewport still controls the speed. `select_text` says
+    /// the current tool selects text, so latched scrolling leaves it the left button.
+    pub(crate) fn update(&mut self, ui: &egui::Ui, viewport: egui::Rect, organize: bool, select_text: bool) -> Vec2 {
         let ctx = ui.ctx();
-        let (pointer, middle_press, middle_down, middle_released, cancel, cancel_button, dt, now) = ctx.input(|i| {
-            let cancel_button = [PointerButton::Primary, PointerButton::Secondary, PointerButton::Extra1, PointerButton::Extra2]
-                .into_iter()
-                .find(|button| i.pointer.button_pressed(*button));
-            (
-                i.pointer.hover_pos(),
-                // Read the press event itself: later movement in this frame must not move the anchor.
-                i.events.iter().find_map(|event| match event {
-                    Event::PointerButton { pos, button: PointerButton::Middle, pressed: true, .. } if pos.is_finite() => Some(*pos),
-                    _ => None,
-                }),
-                i.pointer.button_down(PointerButton::Middle),
-                i.pointer.button_released(PointerButton::Middle),
-                !i.focused
-                    || i.key_pressed(Key::Escape)
-                    || cancel_button.is_some()
-                    || i.events.iter().any(|e| matches!(e, Event::MouseWheel { .. } | Event::Zoom(_))),
-                cancel_button,
-                i.stable_dt,
-                i.time,
-            )
-        });
-        self.block_input = self.active() || self.cancel_button.is_some() || middle_press.is_some() || middle_down || middle_released;
+        let press = |i: &egui::InputState, button: PointerButton| {
+            // Read the press event itself: later movement in this frame must not move its position.
+            i.events.iter().find_map(|event| match event {
+                Event::PointerButton { pos, button: b, pressed: true, .. } if *b == button && pos.is_finite() => Some(*pos),
+                _ => None,
+            })
+        };
+        let (pointer, middle_press, middle_down, middle_released, left_press, left_down, left_clicked, interrupted, pressed, dt, now) =
+            ctx.input(|i| {
+                (
+                    i.pointer.hover_pos(),
+                    press(i, PointerButton::Middle),
+                    i.pointer.button_down(PointerButton::Middle),
+                    i.pointer.button_released(PointerButton::Middle),
+                    press(i, PointerButton::Primary),
+                    i.pointer.button_down(PointerButton::Primary),
+                    i.pointer.button_clicked(PointerButton::Primary),
+                    !i.focused || i.key_pressed(Key::Escape) || i.events.iter().any(|e| matches!(e, Event::MouseWheel { .. } | Event::Zoom(_))),
+                    [PointerButton::Primary, PointerButton::Secondary, PointerButton::Extra1, PointerButton::Extra2]
+                        .map(|button| i.pointer.button_pressed(button).then_some(button)),
+                    i.stable_dt,
+                    i.time,
+                )
+            });
+        let starts_here = |p: Pos2| viewport.intersect(ui.clip_rect()).contains(p) && ctx.layer_id_at(p) == Some(ui.layer_id());
+        let latched = self.active() && self.pressed_at.is_none();
+        // Latched, a text tool keeps the left button on the page: it selects while scrolling goes on.
+        let selects = select_text && latched;
+        if selects && left_press.is_some_and(starts_here) {
+            self.selecting = true;
+        }
+        let cancel_button = pressed.into_iter().flatten().find(|&button| !(button == PointerButton::Primary && self.selecting));
+        let cancel = interrupted || cancel_button.is_some();
+        self.block_input = (self.active() && !selects) || self.cancel_button.is_some() || middle_press.is_some() || middle_down || middle_released;
         if let Some(button) = self.cancel_button {
             if !ctx.input(|i| i.pointer.button_down(button)) {
                 self.cancel_button = None;
@@ -89,14 +106,18 @@ impl AutoScroll {
                 self.block_input = true;
                 self.cancel_button = Some(PointerButton::Middle);
                 return Vec2::ZERO;
-            } else if !cancel
-                && !ctx.egui_wants_keyboard_input()
-                && viewport.intersect(ui.clip_rect()).contains(pressed_at)
-                && ctx.layer_id_at(pressed_at) == Some(ui.layer_id())
-            {
+            } else if !cancel && !ctx.egui_wants_keyboard_input() && starts_here(pressed_at) {
                 self.anchor = Some(pressed_at);
                 self.pressed_at = Some(now);
                 self.organize = organize;
+            }
+        }
+        if self.selecting && !left_down {
+            self.selecting = false;
+            if left_clicked {
+                // A click stops scrolling and stays an ordinary click on the page.
+                self.cancel();
+                return Vec2::ZERO;
             }
         }
         if middle_released && let Some(start) = self.pressed_at.take() {
@@ -170,8 +191,25 @@ mod tests {
         Event::PointerButton { pos, button: PointerButton::Middle, pressed, modifiers: egui::Modifiers::NONE }
     }
 
+    fn left(pos: Pos2, pressed: bool) -> Event {
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
     /// Run one frame at `time` seconds; `check` sees the scroll delta inside the frame.
     fn frame(ctx: &Context, scroll: &mut AutoScroll, time: f64, events: Vec<Event>, focused: bool, check: impl Fn(&AutoScroll, Vec2)) {
+        frame_with(ctx, scroll, time, events, focused, false, check);
+    }
+
+    /// [`frame`] with `select_text`: whether the current tool selects text.
+    fn frame_with(
+        ctx: &Context,
+        scroll: &mut AutoScroll,
+        time: f64,
+        events: Vec<Event>,
+        focused: bool,
+        select_text: bool,
+        check: impl Fn(&AutoScroll, Vec2),
+    ) {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0))),
@@ -181,7 +219,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let delta = scroll.update(ui, ui.max_rect(), false);
+                let delta = scroll.update(ui, ui.max_rect(), false, select_text);
                 check(scroll, delta);
             },
         );
@@ -274,6 +312,88 @@ mod tests {
         frame(&ctx, &mut scroll, 1.1, vec![Event::PointerMoved(p + vec2(0.0, 50.0))], false, |s, d| {
             assert_eq!(d, Vec2::ZERO);
             assert!(!s.active(), "losing focus stops scrolling");
+        });
+    }
+
+    /// Latch auto-scroll with a short middle click at `p`, ending at 0.2 s.
+    fn latch(ctx: &Context, scroll: &mut AutoScroll, p: Pos2, select_text: bool) {
+        frame_with(ctx, scroll, 0.0, vec![], true, select_text, |_, _| {});
+        frame_with(ctx, scroll, 0.1, vec![Event::PointerMoved(p), middle(p, true)], true, select_text, |_, _| {});
+        frame_with(ctx, scroll, 0.2, vec![middle(p, false)], true, select_text, |s, _| assert!(s.active()));
+    }
+
+    #[test]
+    fn a_left_drag_with_a_text_tool_selects_while_scrolling_continues() {
+        let ctx = Context::default();
+        let mut scroll = AutoScroll::default();
+        let p = egui::pos2(100.0, 100.0);
+        let q = p + vec2(0.0, 80.0);
+        latch(&ctx, &mut scroll, p, true);
+        frame_with(&ctx, &mut scroll, 0.5, vec![Event::PointerMoved(q)], true, true, |s, d| {
+            assert!(s.active() && !s.blocks_input(), "latched with a text tool, the page takes input");
+            assert!(d.y < 0.0);
+        });
+        frame_with(&ctx, &mut scroll, 1.0, vec![left(q, true)], true, true, |s, _| {
+            assert!(s.active(), "a left press on the page selects instead of stopping");
+            assert!(!s.blocks_input(), "the text tool sees the press");
+        });
+        frame_with(&ctx, &mut scroll, 1.1, vec![Event::PointerMoved(q + vec2(0.0, 30.0))], true, true, |s, d| {
+            assert!(s.active() && !s.blocks_input());
+            assert!(d.y < 0.0, "scrolling continues while the left button drags: {d:?}");
+        });
+        frame_with(&ctx, &mut scroll, 1.2, vec![left(q + vec2(0.0, 30.0), false)], true, true, |s, _| {
+            assert!(s.active(), "the end of a drag leaves scrolling on");
+            assert!(!s.blocks_input());
+        });
+        frame_with(&ctx, &mut scroll, 1.3, vec![], true, true, |s, _| assert!(s.active()));
+    }
+
+    #[test]
+    fn a_left_click_with_a_text_tool_stops_scrolling_and_reaches_the_page() {
+        let ctx = Context::default();
+        let mut scroll = AutoScroll::default();
+        let p = egui::pos2(100.0, 100.0);
+        let q = p + vec2(0.0, 80.0);
+        latch(&ctx, &mut scroll, p, true);
+        frame_with(&ctx, &mut scroll, 1.0, vec![Event::PointerMoved(q), left(q, true)], true, true, |s, _| {
+            assert!(s.active() && !s.blocks_input());
+        });
+        frame_with(&ctx, &mut scroll, 1.1, vec![left(q, false)], true, true, |s, d| {
+            assert!(!s.active(), "a left click stops scrolling");
+            assert_eq!(d, Vec2::ZERO);
+            assert!(!s.blocks_input(), "the click is an ordinary click on the page");
+        });
+    }
+
+    #[test]
+    fn a_left_press_with_another_tool_or_off_the_page_stops_scrolling_and_is_owned() {
+        let p = egui::pos2(100.0, 100.0);
+        let outside = egui::pos2(500.0, 100.0);
+        // Another tool (drawing, cropping…), and a text tool pressed outside the viewport.
+        for (select_text, at) in [(false, p + vec2(0.0, 80.0)), (true, outside)] {
+            let ctx = Context::default();
+            let mut scroll = AutoScroll::default();
+            latch(&ctx, &mut scroll, p, select_text);
+            frame_with(&ctx, &mut scroll, 1.0, vec![Event::PointerMoved(at), left(at, true)], true, select_text, |s, _| {
+                assert!(!s.active(), "select_text={select_text}: the press stops scrolling");
+                assert!(s.blocks_input(), "select_text={select_text}: the stopping press must not reach a tool");
+            });
+            frame_with(&ctx, &mut scroll, 1.1, vec![left(at, false)], true, select_text, |s, _| assert!(s.blocks_input()));
+            frame_with(&ctx, &mut scroll, 1.2, vec![], true, select_text, |s, _| assert!(!s.blocks_input()));
+        }
+    }
+
+    #[test]
+    fn a_left_press_while_the_middle_button_is_held_stays_blocked() {
+        let ctx = Context::default();
+        let mut scroll = AutoScroll::default();
+        let p = egui::pos2(100.0, 100.0);
+        let q = p + vec2(0.0, 80.0);
+        frame_with(&ctx, &mut scroll, 0.0, vec![], true, true, |_, _| {});
+        frame_with(&ctx, &mut scroll, 0.1, vec![Event::PointerMoved(p), middle(p, true)], true, true, |s, _| assert!(s.active()));
+        frame_with(&ctx, &mut scroll, 0.3, vec![Event::PointerMoved(q), left(q, true)], true, true, |s, _| {
+            assert!(!s.active(), "a left press during a hold stops scrolling");
+            assert!(s.blocks_input(), "nothing reaches the page while the middle button is down");
         });
     }
 

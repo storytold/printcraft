@@ -397,6 +397,9 @@ pub struct PdfCraftApp {
     pub left: LeftPanel,
     pub left_open: bool,
     pub right: Option<RightPanel>,
+    /// The right panel that was open when the user switched to Read mode, which starts with the
+    /// panes closed; leaving Read mode brings it back unless another one was opened meanwhile.
+    right_before_read: Option<RightPanel>,
     /// The user closed the Comments panel, so picking a comment tool leaves it closed until they
     /// open it again (#225). Remembered across restarts.
     pub comments_panel_closed: bool,
@@ -709,6 +712,7 @@ impl PdfCraftApp {
             left: LeftPanel::AllTools,
             left_open: true,
             right: None,
+            right_before_read: None,
             comments_panel_closed: false,
             quick_tool: QuickTool::Select,
             space_hand: None,
@@ -933,7 +937,9 @@ impl PdfCraftApp {
         let doc = self.session.get(id).ok_or("the document could not be opened")?;
         let pages = doc.info.pages.len();
         // Acrobat opens straight to the Comments panel when a document has comments.
-        if activate && self.right.is_none() {
+        // Read mode opens with the panes closed; the rail still opens them (#932).
+        let opening_mode = self.mode_override.unwrap_or(self.default_mode);
+        if activate && self.right.is_none() && opening_mode != Mode::Read {
             self.right = if !doc.info.annotations.is_empty() {
                 Some(RightPanel::Comments)
             } else if !doc.info.outline.is_empty() {
@@ -1345,6 +1351,26 @@ impl PdfCraftApp {
             Mode::Sign => LeftPanel::Tool("fill_sign"),
             _ => LeftPanel::AllTools,
         };
+    }
+
+    /// Switches workspace because the user chose to (mode bar, Read mode command). Entering Read
+    /// mode closes the right panel, as Acrobat's Read mode hides its panes, and leaving it reopens
+    /// that panel. The rail stays in Read mode, and its buttons open panels there too (#932).
+    pub(crate) fn switch_mode(&mut self, mode: Mode, select_tools: bool) {
+        let was_read = self.mode == Mode::Read;
+        if select_tools {
+            self.select_mode(mode);
+        } else {
+            self.mode = mode;
+        }
+        if mode == Mode::Read && !was_read {
+            self.right_before_read = self.right.take();
+        } else if mode != Mode::Read && was_read {
+            let before = self.right_before_read.take();
+            if self.right.is_none() {
+                self.right = before;
+            }
+        }
     }
 
     /// Opens a right panel, or closes it with `None`, because the user chose to. Closing Comments
@@ -2057,7 +2083,9 @@ impl eframe::App for PdfCraftApp {
         chrome::mode_bar(self, ui);
         if self.active.is_some() {
             chrome::right_rail(self, ui);
-            if self.right.is_some() && self.mode != Mode::Read {
+            // Read mode hides the tools, not the navigation panes: the rail stays visible
+            // there, so its buttons (Bookmarks, Page thumbnails, ...) must open their panels.
+            if self.right.is_some() {
                 panels::right_panel(self, ui);
             }
         }

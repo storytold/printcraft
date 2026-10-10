@@ -6086,8 +6086,8 @@ milestone = "M9"
 status = "partial"
 commands = []
 tools = []
-evidence = ["crates/sign/tests/crypto.rs::crls_verify_and_report_revocation", "crates/sign/tests/crypto.rs::ocsp_responses_verify_and_match_the_certificate", "crates/sign/tests/pdf.rs::an_embedded_verified_revocation_invalidates_the_signature"]
-notes = "RFC 5280 CRLs and RFC 6960 OCSP responses are parsed and verified (issuer/responder signature, delegated responder's OCSP-signing EKU, CertID hash match, validity window) and checked against the DSS during validation. Missing: network fetching of fresh evidence and the OS trust store."
+evidence = ["crates/sign/tests/crypto.rs::crls_verify_and_report_revocation", "crates/sign/tests/crypto.rs::ocsp_responses_verify_and_match_the_certificate", "crates/sign/tests/pdf.rs::an_embedded_verified_revocation_invalidates_the_signature", "crates/sign/src/eaadhaar_tests.rs::an_eaadhaar_shaped_signature_is_valid_only_under_the_cca_india_set"]
+notes = "RFC 5280 CRLs and RFC 6960 OCSP responses are parsed and verified (issuer/responder signature, delegated responder's OCSP-signing EKU, CertID hash match, validity window) and checked against the DSS during validation. Without evidence in the document, a signature that is intact, chains to a trusted root and was made while the signer's certificate was valid is Valid, as in Acrobat offline, and its details say that revocation was not checked. Missing: network fetching of fresh evidence and the OS trust store."
 
 [[feature]]
 id = "sign.validate-all"
@@ -6208,6 +6208,18 @@ commands = []
 tools = ["sign_trust"]
 evidence = ["crates/sign/src/trust.rs::the_builtin_roots_match_their_manifest", "crates/sign/tests/chain.rs::the_builtin_roots_only_anchor_when_switched_on", "crates/automation/tests/automation.rs::trust_sets_are_off_until_switched_on_through_sign_trust", "crates/sign/tests/pdf.rs::a_trust_set_does_not_vouch_for_a_timestamp_authority_that_is_not_meant_for_time_stamps", "crates/sign/tests/chain.rs::a_time_stamp_authority_has_to_say_so"]
 notes = "22 roots (DigiCert, GlobalSign, Sectigo, Entrust, QuoVadis, Certum, WISeKey), each pinned by SHA-256 in builtin-roots.toml, compared with Mozilla's root sets or a signed PDF, and re-downloaded from the CA and verified on 2026-10-10; embedded (23 KB) but trusted only when the user switches them on (sign_trust builtin_roots), pending the project owner's decision on built-in trust. A set vouches for a time-stamp authority only if its certificate has the time-stamping purpose; the user's own certificates are never second-guessed. Missing: a UI switch, IdenTrust, SwissSign, Buypass, Actalis"
+
+[[feature]]
+id = "sign.cca-india-roots"
+title = "Optional CCA India roots (e-Aadhaar)"
+area = "H"
+tier = "P2"
+milestone = "M9"
+status = "partial"
+commands = []
+tools = ["sign_trust"]
+evidence = ["crates/sign/src/trust.rs::the_cca_india_roots_match_their_manifest", "crates/sign/tests/chain.rs::the_cca_india_roots_only_anchor_when_switched_on", "crates/sign/src/eaadhaar_tests.rs::an_eaadhaar_shaped_signature_is_valid_only_under_the_cca_india_set", "crates/sign/src/eaadhaar_tests.rs::a_changed_byte_of_signed_content_makes_it_invalid", "crates/sign/src/eaadhaar_tests.rs::a_chain_under_another_root_stays_unknown_with_the_set_on", "crates/sign/src/eaadhaar_tests.rs::the_signer_certificate_has_to_be_valid_when_it_signed", "crates/automation/tests/automation.rs::trust_sets_are_off_until_switched_on_through_sign_trust"]
+notes = "The roots of India's PKI (Controller of Certifying Authorities), which UIDAI's e-Aadhaar signatures and India's other licensed CAs chain to: CCA India 2022, CCA India 2022 SPL and the expired CCA India 2014 (for documents signed before 05.03.2024), each pinned by SHA-256 in cca-india-roots.toml, downloaded from cca.gov.in and compared with Microsoft's root store on 2026-10-11; embedded (3.5 KB) but trusted only when the user switches them on (sign_trust cca_india). Tested with a synthetic chain shaped like e-Aadhaar's (adbe.pkcs7.detached, no signing-time attribute, no timestamp, no DSS, password-protected file); not yet with a real e-Aadhaar. CCA India 2015 SPL is left out (its self-signature does not verify). Missing: a UI switch, online revocation"
 
 [[feature]]
 id = "sign.chain-constraints"

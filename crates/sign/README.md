@@ -99,12 +99,20 @@ needs a prompt to open is listed and asks at signing (issue #179).
   documents signed years ago, so they validate (new signatures never use SHA-1), but the signature's
   details say that the algorithm is weak and shouldn't be relied on.
 - **Trust is the user's decision.** Only the user's own list (`TrustStore::certs`) is trusted by
-  default. Two sets are off until switched on and kept apart from it (`sign_trust`):
+  default. Three sets are off until switched on and kept apart from it (`sign_trust`):
   `builtin_roots`, the roots of commercial CAs embedded in the crate (`trust`, pinned one by one in
   `data/builtin-roots.toml`; `cargo xtask trust-roots` rebuilds them and fails on any difference),
-  and trust lists loaded from a file at run time (`TrustStore::lists`; `cargo xtask trust-lists`
+  `cca_india`, the roots of India's PKI that e-Aadhaar and India's other licensed CAs chain to
+  (CCA India 2022, 2022 SPL and the expired 2014 for older documents; pinned in
+  `data/cca-india-roots.toml` against cca.gov.in, rebuilt by `cargo xtask trust-roots
+  cca-india-roots`), and trust lists loaded from a file at run time (`TrustStore::lists`; `cargo xtask trust-lists`
   writes the EU Trusted Lists' qualified CAs to `dist/trust/`, fetched over HTTPS only; nothing of
   the kind is embedded). The details name the set that vouched.
+- **Revocation offline.** PdfCraft does not go online. A signature that is intact, chains to a
+  trusted root and was made while the signer's certificate was valid is valid even when the document
+  carries no revocation evidence (as in Acrobat offline, and as e-Aadhaar files are); its details
+  say that revocation was not checked. Evidence in the `/DSS` is checked, and a verified revocation
+  makes the signature invalid.
 - **A set vouches for what it is meant for.** The sets trust a CA for everything it issues, and most
   of those CAs issue TLS certificates. The signer is held to the same rules whatever vouches for it
   (its certificate must allow signing documents, above); a set also vouches only for a time-stamp

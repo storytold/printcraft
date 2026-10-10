@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use pdfcraft_content::{Matrix, contains, overlaps, parse};
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, Stream};
 
-use super::extract::{bbox_of, matrix_of, page_content, res_dict};
+use super::extract::{appearance_matrix, bbox_of, matrix_of, page_content, res_dict};
 use super::util::{Ctx, image_codec};
 use crate::limits::{MAX_DEPTH, MAX_PIXELS};
 
@@ -46,11 +46,67 @@ pub(super) fn check_geometry(doc: &Document, page: &Dict, regions: &[[f64; 4]], 
     let mut geo = Geo { doc, ctx, regions, found: Vec::new(), searched: HashSet::new() };
     let res = page.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
     geo.run(&data, &res, Matrix::IDENTITY, Vec::new(), 0);
+    geo.appearances(page, &res);
     geo.found.dedup();
     geo.found
 }
 
 impl Geo<'_> {
+    /// The appearances of the annotations still on the page, checked like the page itself: their
+    /// content is placed with the appearance matrix (ISO 32000-2 §12.5.5) and swept for images,
+    /// paths and shadings under the regions. An appearance that has content but can't be placed
+    /// makes every region unverifiable: the redaction refuses such documents, so one in the
+    /// output means what it paints can't be vouched for.
+    fn appearances(&mut self, page: &Dict, res: &Dict) {
+        let doc = self.doc;
+        let mut seen: HashSet<ObjRef> = HashSet::new();
+        for a in crate::annots_of(doc, page) {
+            let Some(r) = a.as_ref() else { continue };
+            let Some(d) = doc.get(r).as_dict().cloned() else { continue };
+            // A redaction mark's appearance outlines the marked area on purpose (and applying
+            // removes the mark whole): it is exempt like the boxes drawn over the regions.
+            if d.name(b"Subtype") == Some(b"Redact") {
+                continue;
+            }
+            let Some(ap) = d.get(b"AP").and_then(|x| doc.resolve(x).as_dict().cloned()) else { continue };
+            let rect = crate::rect_of(doc, d.get(b"Rect"));
+            for (_, state) in ap.iter() {
+                let s = doc.resolve(state);
+                let streams: Vec<(Option<ObjRef>, Stream)> = match &*s {
+                    Object::Stream(st) => vec![(state.as_ref(), st.clone())],
+                    Object::Dict(sub) => sub
+                        .iter()
+                        .filter_map(|(_, v)| match &*doc.resolve(v) {
+                            Object::Stream(st) => Some((v.as_ref(), st.clone())),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                for (id, st) in streams {
+                    if let Some(r) = id
+                        && !seen.insert(r)
+                    {
+                        continue;
+                    }
+                    let Ok(data) = self.ctx.decode(&st) else {
+                        self.unverifiable("an annotation appearance can't be read in full");
+                        continue;
+                    };
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let Some(ctm) = rect.as_ref().and_then(|r| appearance_matrix(doc, &st, r)) else {
+                        self.unverifiable("an annotation appearance can't be placed, so what it paints can't be checked");
+                        continue;
+                    };
+                    let own = st.dict.get(b"Resources").and_then(|x| doc.resolve(x).as_dict().cloned());
+                    self.run(&data, own.as_ref().unwrap_or(res), ctm, Vec::new(), 1);
+                }
+            }
+        }
+    }
+
     fn touching(&self, b: [f64; 4]) -> Vec<usize> {
         (0..self.regions.len()).filter(|&i| self.regions.get(i).is_some_and(|r| overlaps(*r, b, 0.0))).collect()
     }

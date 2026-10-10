@@ -13,7 +13,7 @@ use super::util::{Ctx, count, latin1, sha256, squash, words};
 use super::{Excision, Proof, ProofOptions, SURFACES, Status, Surface};
 use crate::interp::{Mode, Removed, Scope, process};
 use crate::limits::MIN_NEEDLE;
-use crate::{Mark, RedactError, Report, page_streams};
+use crate::{Mark, RedactError, Report, annots_of, doomed_annots, page_streams, redact_appearances};
 
 pub(super) struct RegionSnap {
     pub(super) page: usize,
@@ -80,12 +80,38 @@ impl Snapshot {
             // has to be gone.
             let mut scratch = doc.clone();
             let mut sink = Report::default();
-            let removed: Vec<Removed> = {
+            let mut removed: Vec<Removed> = {
                 let mut scope = Scope::new(&rects, Mode::Apply, &mut sink);
                 scope.removed = Some(Vec::new());
                 process(&mut scratch, &mut scope, &data, &resources, Matrix::IDENTITY);
                 scope.removed.take().unwrap_or_default()
             };
+            // The appearances of the annotations that survive the marks take part too (what
+            // applying will cut from them, the proof looks for in the output like page text).
+            let annots = annots_of(doc, &page.dict);
+            let marks: Vec<&Mark> = page_marks.iter().map(|m| **m).collect();
+            let (doomed, _, _) = doomed_annots(doc, &annots, &marks, &rects);
+            let survivors: Vec<Object> = annots
+                .iter()
+                .filter(|a| {
+                    // A direct dictionary has no object to interpret or repoint (applying
+                    // promotes those first; the public capture skips them).
+                    let Some(r) = a.as_ref() else { return false };
+                    if doomed.contains(&r) {
+                        return false;
+                    }
+                    // Pop-ups of doomed annotations go with them.
+                    let parent = doc.get(r).as_dict().and_then(|d| d.get(b"Parent")).and_then(Object::as_ref);
+                    !parent.is_some_and(|p| doomed.contains(&p))
+                })
+                .cloned()
+                .collect();
+            let mut sink2 = Report::default();
+            let appearances = redact_appearances(&mut scratch, &resources, &survivors, &rects, Mode::Apply, &mut sink2);
+            match appearances {
+                Ok(changes) => removed.extend(changes.removed),
+                Err(reason) => return Err(RedactError::Unsupported { page: pi + 1, reason }),
+            }
             let before = extract_page(doc, &page.dict, &ctx, &[]);
             pages.insert(
                 pi,

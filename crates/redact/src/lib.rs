@@ -5,14 +5,17 @@
 //! - text glyphs (the rest of each line keeps its position), inline images, and paths that the
 //!   marks cover; images and vectors partly under a mark lose the covered part;
 //! - content inside form XObjects (rewritten as new objects, so pages sharing them keep theirs);
-//! - comments, links and form fields whose rectangle overlaps a mark;
+//! - content that the appearance streams (`/AP`) of the annotations that stay paint under the
+//!   marks, placed the way ISO 32000-2 §12.5.5 places an appearance on its `/Rect`;
+//! - comments, links and form fields whose rectangle or appearance overlaps a mark;
 //! - the marks themselves, replaced by boxes in their fill colour (with their overlay text)
 //!   drawn into the page.
 //!
-//! A verification pass then re-reads every redacted page; if any glyph or inline image is still
-//! under a region the whole operation fails (callers keep the previous document: fail-closed).
-//! A second, independent check ([`verify`]) then sweeps the serialized output for the removed
-//! text on every surface and produces a [`Proof`].
+//! A verification pass then re-reads every redacted page — its content and the appearance
+//! streams of the annotations left on it; if any glyph or inline image is still under a region
+//! the whole operation fails (callers keep the previous document: fail-closed). A second,
+//! independent check ([`verify`]) then sweeps the serialized output for the removed text on every
+//! surface and produces a [`Proof`].
 //!
 //! Page resources are read through inheritance: `/Resources` is an inheritable page-tree entry
 //! (ISO 32000-2, 7.8.3, Table 30), and `pdfcraft_model::pages` fills each page's dictionary with
@@ -29,6 +32,8 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+use std::collections::HashMap;
+
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, Stream};
 
 pub mod codes;
@@ -40,6 +45,8 @@ pub mod sanitize;
 mod tags;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_appearances;
 #[cfg(test)]
 mod tests_failclosed;
 #[cfg(test)]
@@ -55,8 +62,8 @@ mod tests_verify;
 pub mod verify;
 
 pub use interp::Unsupported;
-use interp::{Mode, Scope, process};
-use limits::{Budget, MAX_PAGE_TOTAL};
+use interp::{Mode, Removed, Scope, process};
+use limits::{Budget, MAX_PAGE_TOTAL, Refused};
 pub use sanitize::{LayerPolicy, Sanitize};
 pub use verify::{Proof, ProofOptions, Snapshot};
 
@@ -628,6 +635,14 @@ fn run_on(
         redact_content(doc, &page, pi, &rects, &mut report)?;
         // 2. Annotations: the marks, and whatever lies under them (with their pop-ups).
         remove_annotations(doc, &page, &page_marks, &rects, &widget_owner, &mut gone, &mut report)?;
+        // 2.5 What the annotations that stay draw: their appearance streams take part like page
+        // content (an appearance leak would otherwise ride through the proof below).
+        let after = doc.get(page.obj).as_dict().cloned().unwrap_or_default();
+        let survivors = annots_of(doc, &after);
+        let resources = after.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
+        let changes = redact_appearances(doc, &resources, &survivors, &rects, Mode::Apply, &mut report)
+            .map_err(|reason| RedactError::Unsupported { page: pi + 1, reason })?;
+        apply_appearances(doc, &survivors, &page, pi, changes.rewrites)?;
     }
 
     // 3. Form fields with a widget under a mark (all their widgets go).
@@ -749,20 +764,16 @@ fn redact_content(doc: &mut Document, page: &pdfcraft_model::Page, pi: usize, re
     Ok(())
 }
 
-/// Remove the page's marks and the annotations whose rectangle or appearance overlaps one (with
-/// their replies and pop-ups), noting what they said and which fields they belonged to.
-fn remove_annotations(
-    doc: &mut Document,
-    page: &pdfcraft_model::Page,
-    page_marks: &[&Mark],
-    rects: &[[f64; 4]],
-    widget_owner: &[(ObjRef, String)],
-    gone: &mut Gone,
-    report: &mut Report,
-) -> Result<(), RedactError> {
-    let annots = annots_of(doc, &doc.get(page.obj).as_dict().cloned().unwrap_or_default());
+/// The annotations of `annots` that applying the `page_marks` under `rects` removes: the chosen
+/// marks themselves, whatever their `/Rect` or appearance covers, and — of what that dooms —
+/// their replies (`/IRT`, and the pop-ups among them). The second list is the part the coverage
+/// scan doomed, whose widgets also leave their fields. [`remove_annotations`] drops the first
+/// list from the page and the document; the snapshot's appearance pass skips it, so that it
+/// interprets exactly what applying leaves on the page.
+fn doomed_annots(doc: &Document, annots: &[Object], page_marks: &[&Mark], rects: &[[f64; 4]]) -> (Vec<ObjRef>, Vec<ObjRef>, usize) {
     let mut removed: Vec<ObjRef> = Vec::new();
-    for a in &annots {
+    let mut covered: Vec<ObjRef> = Vec::new();
+    for a in annots {
         let Some(r) = a.as_ref() else { continue };
         let obj = doc.get(r);
         let Some(d) = obj.as_dict() else { continue };
@@ -779,20 +790,43 @@ fn remove_annotations(
         // What the annotation may draw: its rectangle and what its appearance covers.
         if sanitize::coverage(doc, d).iter().any(|b| rects.iter().any(|x| pdfcraft_content::overlaps(*x, *b, 0.0))) {
             removed.push(r);
-            if subtype == b"Widget" {
-                gone.widgets.push(r);
-                if let Some((_, name)) = widget_owner.iter().find(|(w, _)| *w == r)
-                    && !gone.fields.contains(name)
-                {
-                    gone.fields.push(name.clone());
-                }
-            } else {
-                report.annotations += 1;
-            }
+            covered.push(r);
         }
     }
     // Replies to removed annotations (and their pop-ups) go too.
-    report.annotations += sanitize::remove_replies(doc, &annots, &mut removed);
+    let replies = sanitize::remove_replies(doc, annots, &mut removed);
+    (removed, covered, replies)
+}
+
+/// Remove the page's marks and the annotations whose rectangle or appearance overlaps one (with
+/// their replies and pop-ups), noting what they said and which fields they belonged to.
+fn remove_annotations(
+    doc: &mut Document,
+    page: &pdfcraft_model::Page,
+    page_marks: &[&Mark],
+    rects: &[[f64; 4]],
+    widget_owner: &[(ObjRef, String)],
+    gone: &mut Gone,
+    report: &mut Report,
+) -> Result<(), RedactError> {
+    let annots = annots_of(doc, &doc.get(page.obj).as_dict().cloned().unwrap_or_default());
+    let (removed, covered, replies) = doomed_annots(doc, &annots, page_marks, rects);
+    // Fields of the widgets the coverage scan put under a mark (all their widgets go).
+    for r in &covered {
+        let obj = doc.get(*r);
+        let Some(d) = obj.as_dict() else { continue };
+        if d.name(b"Subtype") == Some(b"Widget") {
+            gone.widgets.push(*r);
+            if let Some((_, name)) = widget_owner.iter().find(|(w, _)| *w == *r)
+                && !gone.fields.contains(name)
+            {
+                gone.fields.push(name.clone());
+            }
+        } else {
+            report.annotations += 1;
+        }
+    }
+    report.annotations += replies;
     // What the removed annotations said (a mark's own text is not removed content).
     for r in &removed {
         let obj = doc.get(*r);
@@ -820,6 +854,298 @@ fn remove_annotations(
             d.set(b"Annots".to_vec(), Object::Array(kept));
         }
     })?;
+    Ok(())
+}
+
+/// A dictionary under `key` of `res`, or an empty one.
+fn res_dict(doc: &Document, res: &Dict, key: &[u8]) -> Dict {
+    res.get(key).map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default()
+}
+
+/// What the appearance pass produced.
+pub(crate) struct AppearanceChanges {
+    /// Rewritten appearance streams, for the caller to put into the document (apply mode).
+    pub(crate) rewrites: Vec<AppearanceRewrite>,
+    /// The glyph runs the appearances lost under the marks (what the proof looks for).
+    pub(crate) removed: Vec<Removed>,
+    /// Glyphs or inline images still under a region (verify mode).
+    pub(crate) residue: usize,
+}
+
+/// An appearance stream the pass rewrote: the annotation it belongs to, where its pointer sits
+/// (`key`: the `/AP` entry; `state`: the state name when that entry holds states), the reference
+/// it replaced (`None` for a stream written inline, which no other annotation can share), and
+/// the new stream itself with the names its content retired and the property lists to refresh on
+/// the page when the appearance drew with the page's resources.
+pub(crate) struct AppearanceRewrite {
+    annot: ObjRef,
+    key: &'static [u8],
+    state: Option<Vec<u8>>,
+    old: Option<ObjRef>,
+    stream: Stream,
+    gone: Vec<Vec<u8>>,
+    page_properties: Vec<(Vec<u8>, Dict)>,
+}
+
+/// Interpret the appearance streams (`/N`, and `/D` and `/R` when present) of `annots` — the
+/// annotations of one page that stay on it — against the mark regions `rects`. The content of an
+/// appearance is placed on the page the way ISO 32000-2 §12.5.5 places an appearance on its
+/// `/Rect` (the stream's `/Matrix`, then the scale that fits its `/BBox` into the rectangle) and
+/// run through the interpreter: what an appearance paints under a mark is redacted like page
+/// content — text cut out, images cleared or removed, paths clipped — while content away from
+/// the marks is left exactly as it is. Nothing is guessed: an appearance that has content but
+/// can't be placed (no usable `/Rect` or `/BBox`), or that can't be read in full, fails the
+/// whole operation, fail-closed. In apply mode the changed streams come back as new objects; in
+/// verify mode the residue is counted.
+pub(crate) fn redact_appearances(
+    doc: &mut Document,
+    page_res: &Dict,
+    annots: &[Object],
+    rects: &[[f64; 4]],
+    mode: Mode,
+    report: &mut Report,
+) -> Result<AppearanceChanges, Unsupported> {
+    let mut scope = Scope::new(rects, mode, report);
+    scope.removed = Some(Vec::new());
+    let mut rewrites: Vec<AppearanceRewrite> = Vec::new();
+    let mut residue = 0;
+    let mut failure: Option<Unsupported> = None;
+    // Appearance streams already interpreted: states may share one, and a stream is not walked
+    // twice.
+    let mut seen: Vec<ObjRef> = Vec::new();
+    for a in annots {
+        let Some(r) = a.as_ref() else { continue };
+        let Some(d) = doc.get(r).as_dict().cloned() else { continue };
+        let Some(ap) = d.get(b"AP").and_then(|x| doc.resolve(x).as_dict().cloned()) else { continue };
+        // The state a form field shows (`/AS`); without one, every state is taken.
+        let as_state = d.get(b"AS").map(|s| doc.resolve(s));
+        let as_name = as_state.as_deref().and_then(Object::as_name).unwrap_or(b"");
+        let rect = rect_of(doc, d.get(b"Rect"));
+        for key in [&b"N"[..], b"D", b"R"] {
+            let Some(entry) = ap.get(key).cloned() else { continue };
+            let resolved = doc.resolve(&entry);
+            // One stream, or a dictionary of states: the one `/AS` names, or all of them when no
+            // state is set (the rule the coverage scan applies).
+            let streams: Vec<(Option<Vec<u8>>, Object)> = match &*resolved {
+                Object::Stream(_) => vec![(None, entry)],
+                Object::Dict(states) => states
+                    .iter()
+                    .filter(|(name, _)| as_name.is_empty() || as_name == name.as_slice())
+                    .map(|(name, sv)| (Some(name.clone()), sv.clone()))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for (state, entry) in streams {
+                let resolved = doc.resolve(&entry);
+                let Object::Stream(s) = &*resolved else { continue };
+                if let Some(sr) = entry.as_ref() {
+                    if seen.contains(&sr) {
+                        continue;
+                    }
+                    seen.push(sr);
+                }
+                // Can the stream paint at all? An empty one can't, whatever its placement is.
+                let data = match scope.decode(s) {
+                    Ok(d) => d,
+                    Err(Refused::OverBudget) => {
+                        failure = failure.or(Some(Unsupported::TooLarge));
+                        continue;
+                    }
+                    Err(Refused::Unreadable) => {
+                        failure = failure.or(Some(Unsupported::UnparsedContent));
+                        continue;
+                    }
+                };
+                if data.is_empty() {
+                    continue;
+                }
+                // Where the appearance paints (ISO 32000-2 §12.5.5), if it can be told.
+                let Some(m) = rect.as_ref().and_then(|r| verify::appearance_matrix(doc, s, r)) else {
+                    failure = failure.or(Some(Unsupported::AppearanceUnplaced));
+                    continue;
+                };
+                // A font of the appearance is looked up in the appearance's own resources first,
+                // then in the page's (the fallback a viewer without its own falls back to).
+                let own = s.dict.get(b"Resources").and_then(|x| doc.resolve(x).as_dict().cloned());
+                let (res, fell_back) = match own {
+                    Some(r) => (r, false),
+                    None => (page_res.clone(), true),
+                };
+                // Fonts are cached by resource name: an appearance's names mean its own
+                // resources, so the page's cache does not answer for them.
+                let mut saved_fonts = HashMap::new();
+                scope.swap_fonts(&mut saved_fonts);
+                let out = process(doc, &mut scope, std::slice::from_ref(&data), &res, m);
+                scope.swap_fonts(&mut saved_fonts);
+                residue += out.residue;
+                failure = failure.or(out.failure);
+                if mode == Mode::Verify {
+                    continue;
+                }
+                let Some(new_data) = out.streams.into_iter().next().flatten() else { continue };
+                // A new object: the original may be shared with other annotations or states.
+                let mut dict = s.dict.clone();
+                dict.remove(b"Length");
+                let mut gone = tags::retired_names(&data, &new_data);
+                gone.extend(out.inherited_gone.iter().cloned());
+                if !gone.is_empty() {
+                    gone.sort_unstable();
+                    gone.dedup();
+                }
+                let mut page_properties = Vec::new();
+                if !out.xobjects.is_empty() || !gone.is_empty() || !out.properties.is_empty() {
+                    let mut res = res;
+                    let mut xo = res_dict(doc, &res, b"XObject");
+                    for n in &gone {
+                        xo.remove(n);
+                    }
+                    for (n, nr) in &out.xobjects {
+                        xo.set(n.clone(), Object::Ref(*nr));
+                    }
+                    res.set(b"XObject".to_vec(), Object::Dict(xo));
+                    if !out.properties.is_empty() {
+                        let mut props = res_dict(doc, &res, b"Properties");
+                        for (n, list) in &out.properties {
+                            props.set(n.clone(), Object::Dict(list.clone()));
+                        }
+                        res.set(b"Properties".to_vec(), Object::Dict(props));
+                        // Lists the appearance reached through the page's resources are refreshed
+                        // there too; ones of its own live in the new stream only.
+                        if fell_back {
+                            page_properties = out.properties.clone();
+                        }
+                    }
+                    dict.set(b"Resources".to_vec(), Object::Dict(res));
+                }
+                rewrites.push(AppearanceRewrite {
+                    annot: r,
+                    key,
+                    state,
+                    old: entry.as_ref(),
+                    stream: Stream::flate(dict, &new_data),
+                    gone,
+                    page_properties,
+                });
+            }
+        }
+    }
+    let removed = scope.removed.take().unwrap_or_default();
+    match failure {
+        Some(reason) => Err(reason),
+        None => Ok(AppearanceChanges { rewrites, removed, residue }),
+    }
+}
+
+/// Put the rewritten appearance streams into the document: new objects, every appearance entry
+/// that still names an original repointed, the names the new content retired taken out of the
+/// page's resources (and the page-tree nodes above), and property lists the appearances drew
+/// with through the page's resources refreshed there.
+fn apply_appearances(
+    doc: &mut Document,
+    annots: &[Object],
+    page: &pdfcraft_model::Page,
+    pi: usize,
+    rewrites: Vec<AppearanceRewrite>,
+) -> Result<(), RedactError> {
+    let mut map: Vec<(ObjRef, ObjRef)> = Vec::new();
+    let mut gone: Vec<Vec<u8>> = Vec::new();
+    let mut props: Vec<(Vec<u8>, Dict)> = Vec::new();
+    for rw in &rewrites {
+        let nr = doc.add(Object::Stream(rw.stream.clone()));
+        match rw.old {
+            Some(or) => map.push((or, nr)),
+            None => {
+                // A stream written inline in the `/AP` dictionary belongs to this annotation
+                // alone.
+                doc.update_dict(rw.annot, |d| {
+                    let Some(Object::Dict(ap)) = d.get_mut(b"AP") else { return };
+                    let slot = match &rw.state {
+                        None => ap.get_mut(rw.key),
+                        Some(name) => ap.get_mut(rw.key).and_then(|v| v.as_dict_mut()).and_then(|s| s.get_mut(name)),
+                    };
+                    if let Some(slot) = slot {
+                        *slot = Object::Ref(nr);
+                    }
+                })?;
+            }
+        }
+        gone.extend(rw.gone.iter().cloned());
+        props.extend(rw.page_properties.iter().cloned());
+    }
+    retarget_appearances(doc, annots, &map)?;
+    gone.sort_unstable();
+    gone.dedup();
+    tags::retire_forms(doc, page.obj, pi, &gone)?;
+    if !props.is_empty() {
+        let page_dict = doc.get(page.obj).as_dict().cloned().unwrap_or_default();
+        let mut res = page_dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
+        let mut list = res_dict(doc, &res, b"Properties");
+        let mut touched = false;
+        for (n, clean) in props {
+            // Only a list the page's own resources hold: the appearance drew with them, and the
+            // copy inside the new stream was already refreshed.
+            if list.contains(&n) {
+                list.set(n.clone(), Object::Dict(clean));
+                touched = true;
+            }
+        }
+        if touched {
+            res.set(b"Properties".to_vec(), Object::Dict(list));
+            doc.update_dict(page.obj, |d| d.set(b"Resources".to_vec(), Object::Dict(res)))?;
+        }
+    }
+    Ok(())
+}
+
+/// Repoint every appearance entry on `annots` that still names a stream this pass replaced
+/// (`map`: original → replacement). Two annotations may share an appearance stream, and both
+/// must move: what the stream painted under the marks is gone from the replacement, and a
+/// pointer left behind would keep painting it. An `/AP` dictionary (or a states dictionary under
+/// it) that is an object of its own is rewritten as the object it is; entries that name nothing
+/// replaced stay as they are.
+fn retarget_appearances(doc: &mut Document, annots: &[Object], map: &[(ObjRef, ObjRef)]) -> Result<(), RedactError> {
+    if map.is_empty() {
+        return Ok(());
+    }
+    let moved = |o: &Object| o.as_ref().and_then(|r| map.iter().find(|(or, _)| *or == r).map(|(_, nr)| *nr));
+    for a in annots {
+        let Some(r) = a.as_ref() else { continue };
+        let Some(raw) = doc.get(r).as_dict().and_then(|d| d.get(b"AP")).cloned() else { continue };
+        // Where the `/AP` dictionary lives: an object of its own, or inside the annotation.
+        let ap_at = match &raw {
+            Object::Ref(apr) => *apr,
+            Object::Dict(_) => r,
+            _ => continue,
+        };
+        let Some(mut ap) = doc.resolve(&raw).as_dict().cloned() else { continue };
+        let mut changed = false;
+        for key in [&b"N"[..], b"D", b"R"] {
+            let Some(slot) = ap.get_mut(key) else { continue };
+            match slot {
+                Object::Dict(states) => {
+                    let hits: Vec<_> = states.iter().filter_map(|(name, sv)| moved(sv).map(|nr| (name.clone(), nr))).collect();
+                    for (name, nr) in hits {
+                        states.set(name, Object::Ref(nr));
+                        changed = true;
+                    }
+                }
+                one => {
+                    if let Some(nr) = moved(one) {
+                        *one = Object::Ref(nr);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            continue;
+        }
+        if ap_at == r {
+            doc.update_dict(r, |d| d.set(b"AP".to_vec(), Object::Dict(ap)))?;
+        } else {
+            doc.update_dict(ap_at, |d| *d = ap)?;
+        }
+    }
     Ok(())
 }
 
@@ -867,6 +1193,15 @@ fn verify_pages(doc: &mut Document, by_page: &[usize], chosen: &[&Mark], overlay
             return Err(RedactError::Unsupported { page: pi + 1, reason });
         }
         residue += out.residue;
+        // The appearances of the annotations still on the page: the same check as the page's own
+        // content, with the same regions. What one still paints under a region is residue.
+        let after = doc.get(page.obj).as_dict().cloned().unwrap_or_default();
+        let annots = annots_of(doc, &after);
+        let checked = redact_appearances(doc, &resources, &annots, &rects, Mode::Verify, &mut scratch);
+        residue += checked.as_ref().map_or(0, |c| c.residue);
+        if let Err(reason) = checked {
+            return Err(RedactError::Unsupported { page: pi + 1, reason });
+        }
     }
     Ok(residue)
 }

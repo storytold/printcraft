@@ -444,7 +444,11 @@ pub(super) fn extract_page(doc: &Document, page: &Dict, ctx: &Ctx, regions: &[[f
                 if let Object::Stream(st) = o {
                     // Where the appearance lands on the page (ISO 32000-2 §12.5.5), if it can be told.
                     let ctm = rect.as_deref().and_then(|r| appearance_matrix(doc, &st, r));
-                    ex.stream(&st, r, &res, ctm.unwrap_or_default(), 1, ctm.is_some())?;
+                    // A font of the appearance is looked up in the appearance's own resources
+                    // first (what the redaction itself does), then in the page's.
+                    let own = st.dict.get(b"Resources").and_then(|x| doc.resolve(x).as_dict().cloned());
+                    let parent = own.as_ref().unwrap_or(&res);
+                    ex.stream(&st, r, parent, ctm.unwrap_or_default(), 1, ctm.is_some())?;
                 }
             }
         }
@@ -452,8 +456,11 @@ pub(super) fn extract_page(doc: &Document, page: &Dict, ctx: &Ctx, regions: &[[f
     Ok(ex.out)
 }
 
-/// The matrix that maps an appearance stream's form space onto an annotation's `/Rect`.
-pub(super) fn appearance_matrix(doc: &Document, ap: &Stream, rect: &[f64]) -> Option<Matrix> {
+/// The matrix that maps an appearance stream's form space onto an annotation's `/Rect`
+/// (ISO 32000-2 §12.5.5): the appearance's `/Matrix`, then the scale that fits the mapped
+/// `/BBox` into the rectangle. `None` when that can't be told (no usable `/Rect`, `/BBox` or
+/// `/Matrix`, or a mapped box that degenerates).
+pub(crate) fn appearance_matrix(doc: &Document, ap: &Stream, rect: &[f64]) -> Option<Matrix> {
     let [rx0, ry0, rx1, ry1] = rect[..] else { return None };
     let bbox = bbox_of(doc, &ap.dict).ok()??;
     let m = matrix_of(doc, &ap.dict).ok()?;

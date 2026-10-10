@@ -601,6 +601,12 @@ pub(crate) fn promote_direct_annots(doc: &mut Document) -> Result<(), RedactErro
 
 /// The areas an annotation may draw on, in user space: its `/Rect`, and the extent of each
 /// appearance stream (`/BBox` mapped by `/Matrix`) as written, whatever the rectangle says.
+///
+/// An appearance without a usable `/BBox` adds nothing here: its content cannot be placed, so it
+/// is covered by the `/Rect` alone (the bounded choice — an unbounded one would name the whole
+/// page). Where such an appearance stays on the page under a mark, the appearance pass
+/// ([`crate::redact_appearances`]) refuses the operation rather than guess where its content
+/// paints, so nothing unpainted can hide behind a skipped `/BBox`.
 pub(crate) fn coverage(doc: &Document, annot: &Dict) -> Vec<[f64; 4]> {
     let mut out: Vec<[f64; 4]> = Vec::new();
     out.extend(crate::rect_of(doc, annot.get(b"Rect")));

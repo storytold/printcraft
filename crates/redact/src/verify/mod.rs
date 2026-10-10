@@ -18,12 +18,14 @@
 //! 3. It places every glyph still shown on the redacted pages with its own text-state tracking
 //!    and width model (the font's `/Widths`, else a flat guess) and fails a region when the
 //!    centre of a surviving glyph lies inside it, whatever the interpreter decided.
-//! 4. It also re-checks the non-text content under each region: no image still carries pixels
-//!    there, and no path or shading paints there unclipped.
+//! 4. It also re-checks the non-text content under each region — on the page and in the
+//!    appearance streams of the annotations left on it: no image still carries pixels there, and
+//!    no path or shading paints there unclipped.
 //!
 //! The proof fails closed: a survivor, but also anything it could not sweep (page content, a form
-//! or an appearance stream, XMP, or an attachment that won't decode in full or can't be opened;
-//! a nesting or work limit hit), makes it fail. The one exception is binary data that redaction
+//! or an appearance stream, XMP, or an attachment that won't decode in full or can't be opened; a
+//! nesting or work limit hit; an appearance with content that can't be placed on its page), makes
+//! it fail. The one exception is binary data that redaction
 //! never edits: a font program, colour profile, `/Indexed` lookup table, function sample table or
 //! Flate/LZW image that is damaged or too long to decode is searched as stored bytes and reported
 //! as `raw_only`, not as unswept. A proof that cannot fail is worthless.
@@ -60,6 +62,7 @@ mod snapshot;
 mod sweep;
 mod util;
 
+pub(crate) use extract::appearance_matrix;
 pub use snapshot::Snapshot;
 /// What the proof established for one region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,14 +248,25 @@ pub struct ProofOptions {
 /// Handles for the tests to reach the byte sweep without a whole document.
 #[cfg(test)]
 pub(crate) mod tests_support {
+    use std::collections::HashSet;
+
     use pdfcraft_content::parse;
-    use pdfcraft_cos::{Dict, Object, Stream};
+    use pdfcraft_cos::{Dict, Document, Object, Stream};
 
     use super::extract::{carries_glyphs, parse_cmap};
+    use super::geometry::check_geometry;
     use super::sweep::{Needle, add_needle, bytes_hits, walk_strings};
     use super::util::Ctx;
     pub(crate) use super::util::survivor_encodings;
     use crate::limits::{MAX_TOTAL_DECODED, MAX_WORK};
+
+    /// What the proof's geometry finds under `region` on `page` — the page's content and the
+    /// appearance streams of its annotations included (as `Finding` debug names).
+    pub fn geometry_findings(doc: &Document, page: usize, region: [f64; 4]) -> Vec<String> {
+        let p = &pdfcraft_model::pages(doc)[page];
+        let ctx = Ctx::new(HashSet::new());
+        check_geometry(doc, &p.dict, &[region], &ctx).into_iter().map(|(_, f)| format!("{f:?}")).collect()
+    }
 
     /// The glyph-carrying text-showing operators of a decoded content stream.
     pub fn count_text_operators(decoded: &[u8]) -> usize {

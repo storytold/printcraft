@@ -55,6 +55,8 @@ pub enum Unsupported {
     InlineImage,
     #[error("a form XObject's matrix can't be read, so its content can't be placed")]
     FormMatrix,
+    #[error("an annotation appearance can't be placed on its page (no usable /Rect or /BBox), so its content can't be redacted")]
+    AppearanceUnplaced,
     #[error("the content has bytes that can't be read as operators")]
     UnparsedContent,
     #[error("the content is too large to be scanned in full")]
@@ -111,8 +113,10 @@ pub(crate) struct Output {
     pub inherited_gone: Vec<Vec<u8>>,
 }
 
-/// A font's metrics plus whether glyph positions computed from them can be trusted.
-struct FontInfo {
+/// A font's metrics plus whether glyph positions computed from them can be trusted. The type is
+/// crate-visible so the appearance pass can swap the font cache around each appearance; building
+/// one stays in this module.
+pub(crate) struct FontInfo {
     metrics: Metrics,
     /// `Some` when positions can't be trusted (no widths, unresolved encoding, vertical mode).
     doubt: Option<Unsupported>,
@@ -410,6 +414,8 @@ pub(crate) struct Scope<'a> {
     pub layer_blocks: usize,
     /// Collects the glyph runs removed in apply mode (`None` = not collected).
     pub removed: Option<Vec<Removed>>,
+    /// Resolved fonts by resource name; swapped out around each appearance (whose resource
+    /// names mean its own resources, not the page's) through [`Scope::swap_fonts`].
     fonts: HashMap<Vec<u8>, Rc<FontInfo>>,
     used_names: Vec<Vec<u8>>,
     depth: usize,
@@ -469,6 +475,18 @@ impl<'a> Scope<'a> {
             None => Vec::new(),
         };
         !groups.is_empty() && groups.iter().all(|g| self.hidden_layers.contains(g))
+    }
+
+    /// Decode a stream within this scope's budget: for an appearance stream the caller is about
+    /// to walk with the same regions (so that one budget covers the page and its appearances).
+    pub(crate) fn decode(&mut self, s: &Stream) -> Result<Vec<u8>, Refused> {
+        self.budget.decode(s)
+    }
+
+    /// Replace the resolved-font cache (the appearance pass empties it around each appearance:
+    /// its resource names mean the appearance's own resources, not the page's).
+    pub(crate) fn swap_fonts(&mut self, fonts: &mut HashMap<Vec<u8>, Rc<FontInfo>>) {
+        std::mem::swap(&mut self.fonts, fonts);
     }
 
     fn hits(&self, b: [f64; 4]) -> bool {

@@ -40,7 +40,7 @@ use crate::object::name::{Name, skip_name_like};
 use crate::object::{Array, Null, Number, Object, Stream};
 use crate::reader::Reader;
 use crate::reader::{Readable, ReaderContext, ReaderExt, Skippable};
-use crate::trivia::is_white_space_character;
+use crate::trivia::{Comment, is_white_space_character};
 use crate::util::find_needle;
 use core::array;
 use core::fmt::{Debug, Formatter};
@@ -120,27 +120,40 @@ pub struct UntypedIter<'a> {
     /// PdfCraft patch: this iterator only checks whether data reads as content (the
     /// end-of-data heuristic below); inline images it meets end at their first `EI`.
     lookahead: bool,
+    /// PdfCraft patch: whether `reader` holds the whole content stream. The end of a window of a
+    /// longer stream can fall inside an instruction, so nothing that reads up to it is decided
+    /// (see `needs_more`).
+    complete: bool,
+    /// PdfCraft patch: set when `next` stopped because the window ran out before the next
+    /// instruction was decided. The caller reads more data and resumes at `committed`.
+    needs_more: bool,
+    /// PdfCraft patch: the offset just after the instruction `next` returned last.
+    committed: usize,
 }
 
 impl<'a> UntypedIter<'a> {
     /// Create a new untyped iterator.
     pub fn new(data: &'a [u8]) -> Self {
+        Self::new_window(data, true)
+    }
+
+    /// PdfCraft patch: an iterator over `data`, which is the whole stream when `complete`, and
+    /// otherwise the start of a longer one.
+    pub(crate) fn new_window(data: &'a [u8], complete: bool) -> Self {
         Self {
             reader: Reader::new(data),
             stack: Stack::new(),
             operator: None,
             lookahead: false,
+            complete,
+            needs_more: false,
+            committed: 0,
         }
     }
 
     /// Create a new empty untyped iterator.
     pub fn empty() -> Self {
-        Self {
-            reader: Reader::new(&[]),
-            stack: Stack::new(),
-            operator: None,
-            lookahead: false,
-        }
+        Self::new_window(&[], true)
     }
 
     /// Return the next instruction.
@@ -148,8 +161,16 @@ impl<'a> UntypedIter<'a> {
     pub fn next(&mut self) -> Option<Instruction<'_, 'a>> {
         self.stack.clear();
         self.operator = None;
+        self.needs_more = false;
+        self.reader.clear_looked_past_end();
 
-        self.reader.skip_white_spaces_and_comments();
+        if self.complete {
+            self.reader.skip_white_spaces_and_comments();
+        } else {
+            // A window may drop what comes before the next instruction, blanks included, but not a
+            // comment that the window ends in: that comment may go on in the next window.
+            self.committed = self.skip_blanks_and_comments();
+        }
 
         while !self.reader.at_end() {
             // I believe booleans/null never appear as an operator?
@@ -165,35 +186,61 @@ impl<'a> UntypedIter<'a> {
                 // similar behavior to Acrobat and Chromium, we try to consume
                 // such an operator and then simply skip it.
                 if let Some(object) = self.reader.read_without_context::<Object<'_>>() {
+                    if self.undecided() {
+                        return None;
+                    }
                     self.stack.push(object)?;
                 } else if self.reader.read_without_context::<Operator<'_>>().is_some() {
+                    if self.undecided() {
+                        return None;
+                    }
                     self.stack.clear();
                 } else {
+                    self.undecided();
                     return None;
                 }
             } else {
                 let operator = match self.reader.read_without_context::<Operator<'_>>() {
                     Some(o) => o,
                     None => {
+                        if self.undecided() {
+                            return None;
+                        }
+
                         warn!("failed to read operator in content stream");
 
                         self.reader.jump_to_end();
                         return None;
                     }
                 };
+                if self.undecided() {
+                    return None;
+                }
 
                 // Inline images need special casing...
                 if operator.as_ref() == b"BI" {
                     // The ID operator will already be consumed by this.
-                    let inline_dict = self.reader.read_without_context::<InlineImageDict<'_>>()?;
+                    let Some(inline_dict) = self
+                        .reader
+                        .read_without_context::<InlineImageDict<'_>>()
+                    else {
+                        self.undecided();
+                        return None;
+                    };
                     let dict = inline_dict.get_dict().clone();
 
                     // One whitespace after "ID".
-                    self.reader.read_white_space()?;
+                    if self.reader.read_white_space().is_none() {
+                        self.undecided();
+                        return None;
+                    }
 
                     let stream_data = self.reader.tail()?;
                     let start_offset = self.reader.offset();
                     let mut candidates = 0;
+                    // PdfCraft patch: set when a look-ahead below ran into the end of the window.
+                    let mut lookahead_touched = false;
+                    let mut accepted = false;
 
                     'outer: while let Some(pos) = find_needle(self.reader.tail()?, b"EI") {
                         self.reader.read_bytes(pos)?;
@@ -228,7 +275,11 @@ impl<'a> UntypedIter<'a> {
                             let mut steps = 0;
                             let heuristic = !self.lookahead && candidates <= MAX_EI_CANDIDATES;
 
-                            while heuristic && !find_reader.at_end() && steps < MAX_EI_LOOKAHEAD_STEPS {
+                            while heuristic && steps < MAX_EI_LOOKAHEAD_STEPS {
+                                if find_reader.at_end() {
+                                    lookahead_touched = true;
+                                    break;
+                                }
                                 steps += 1;
                                 let remaining = find_reader.tail()?;
                                 let next_ei = find_needle(remaining, b"EI");
@@ -239,7 +290,10 @@ impl<'a> UntypedIter<'a> {
                                     (Some(_), Some(bi)) => (bi, false),
                                     (Some(ei), None) => (ei, true),
                                     (None, Some(bi)) => (bi, false),
-                                    (None, None) => break,
+                                    (None, None) => {
+                                        lookahead_touched = true;
+                                        break;
+                                    }
                                 };
 
                                 find_reader.read_bytes(next_pos)?;
@@ -262,7 +316,10 @@ impl<'a> UntypedIter<'a> {
                                     // stream and there should be at least one text-related
                                     // operator that can be parsed correctly.
 
-                                    let mut iter = TypedIter::from_untyped(UntypedIter { lookahead: true, ..UntypedIter::new(tail) });
+                                    let mut iter = TypedIter::from_untyped(UntypedIter {
+                                        lookahead: true,
+                                        ..UntypedIter::new_window(tail, self.complete)
+                                    });
                                     let mut found = false;
                                     let mut counter = 0;
 
@@ -292,6 +349,8 @@ impl<'a> UntypedIter<'a> {
 
                                         counter += 1;
                                     }
+                                    lookahead_touched |=
+                                        iter.needs_more() || iter.untyped.reader.looked_past_end();
 
                                     if !found {
                                         // Seems like the data in-between is not a valid content
@@ -304,10 +363,11 @@ impl<'a> UntypedIter<'a> {
                                     // is indeed the end of data.
                                     let mut cloned = find_reader.clone();
                                     cloned.read_bytes(2)?;
-                                    if cloned
+                                    let is_inline_image_dict = cloned
                                         .read_without_context::<InlineImageDict<'_>>()
-                                        .is_some()
-                                    {
+                                        .is_some();
+                                    lookahead_touched |= cloned.looked_past_end();
+                                    if is_inline_image_dict {
                                         break;
                                     }
                                 }
@@ -315,17 +375,35 @@ impl<'a> UntypedIter<'a> {
                                 find_reader.read_byte()?;
                             }
 
+                            // PdfCraft patch: the end is only certain if no look-ahead needed bytes
+                            // past the window. Otherwise read more and decide again.
+                            if !self.complete
+                                && (lookahead_touched || self.reader.looked_past_end())
+                            {
+                                self.needs_more = true;
+                                return None;
+                            }
+
                             self.stack.push(Object::Stream(stream))?;
 
                             self.reader.read_bytes(2)?;
                             self.reader.skip_white_spaces();
 
+                            accepted = true;
+
                             break;
                         }
+                    }
+
+                    // PdfCraft patch: without an accepted "EI" the image may still end in later data.
+                    if !accepted && !self.complete {
+                        self.needs_more = true;
+                        return None;
                     }
                 }
 
                 self.operator = Some(operator);
+                self.committed = self.reader.offset();
                 return Some(Instruction {
                     operands: &self.stack,
                     operator: self.operator.as_ref().unwrap(),
@@ -335,7 +413,42 @@ impl<'a> UntypedIter<'a> {
             self.reader.skip_white_spaces_and_comments();
         }
 
+        // PdfCraft patch: the window ended between instructions, and another may follow.
+        if !self.complete {
+            self.needs_more = true;
+        }
+
         None
+    }
+
+    /// PdfCraft patch: skips the blanks and comments before an instruction, as
+    /// `skip_white_spaces_and_comments` does, and returns where a window may be cut: the start of a
+    /// comment that runs into the end of the window, or else where the skipping stopped.
+    fn skip_blanks_and_comments(&mut self) -> usize {
+        let mut open_comment = None;
+        while let Some(b) = self.reader.peek_byte() {
+            if is_white_space_character(b) {
+                self.reader.skip_white_spaces();
+            } else if b == b'%' {
+                let start = self.reader.offset();
+                Comment::skip(&mut self.reader, true);
+                open_comment = self.reader.at_end().then_some(start);
+            } else {
+                break;
+            }
+        }
+
+        open_comment.unwrap_or(self.reader.offset())
+    }
+
+    /// PdfCraft patch: whether the instruction being read ran into the end of a window, so it
+    /// cannot be decided yet. Records that more data is needed.
+    fn undecided(&mut self) -> bool {
+        if !self.complete && self.reader.looked_past_end() {
+            self.needs_more = true;
+        }
+
+        self.needs_more
     }
 }
 
@@ -344,6 +457,7 @@ impl<'a> ContentTokenizer<'a> for UntypedIter<'a> {
         self.next()
     }
 }
+
 
 /// An iterator over PDF content streams that provide access to the instructions
 /// in a typed fashion.
@@ -360,6 +474,27 @@ impl<'a> TypedIter<'a, UntypedIter<'a>> {
             untyped: UntypedIter::new(data),
             marker: PhantomData,
         }
+    }
+
+    /// PdfCraft patch: an iterator over a window of a content stream: the whole stream when
+    /// `complete`, and otherwise the start of a longer one (see [`TypedIter::needs_more`]).
+    pub fn new_window(data: &'a [u8], complete: bool) -> Self {
+        Self {
+            untyped: UntypedIter::new_window(data, complete),
+            marker: PhantomData,
+        }
+    }
+
+    /// PdfCraft patch: whether the last `next` returned `None` only because the window ran out
+    /// before the next instruction was decided. Read more of the stream, then resume at
+    /// [`TypedIter::committed`] in a window that starts there.
+    pub fn needs_more(&self) -> bool {
+        self.untyped.needs_more
+    }
+
+    /// PdfCraft patch: the offset in the window just after the last instruction `next` returned.
+    pub fn committed(&self) -> usize {
+        self.untyped.committed
     }
 
     pub(crate) fn from_untyped(untyped: UntypedIter<'a>) -> Self {
@@ -747,6 +882,136 @@ mod tests {
             joined.extend_from_slice(&data[..split]);
             joined.extend_from_slice(&data[split..]);
             assert_eq!(operators(&joined), expected, "split at byte {split}");
+        }
+    }
+
+    /// The instructions of `data`, read from the whole of it.
+    fn slice_instructions(data: &[u8]) -> Vec<String> {
+        let mut tokenizer = UntypedIter::new(data);
+        let mut result = Vec::new();
+        while let Some(instruction) = tokenizer.next_instruction() {
+            result.push(format!("{:?} {:?}", instruction.operator, instruction.operands));
+        }
+        result
+    }
+
+    /// The instructions of `data` as a window driver reads them: the stream arrives in pieces of
+    /// the lengths `next_piece` gives. Each window holds the bytes from the first instruction
+    /// that is not yet decided, and another piece is appended when a window runs out.
+    fn windowed_instructions(data: &[u8], mut next_piece: impl FnMut() -> usize) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut window: Vec<u8> = Vec::new();
+        let mut fed = 0;
+        let mut exhausted = false;
+        loop {
+            let (committed, needs_more) = {
+                let mut tokenizer = UntypedIter::new_window(&window, exhausted);
+                while let Some(instruction) = tokenizer.next_instruction() {
+                    result.push(format!("{:?} {:?}", instruction.operator, instruction.operands));
+                }
+                (tokenizer.committed, tokenizer.needs_more)
+            };
+            window.drain(..committed);
+            if !needs_more || exhausted {
+                break;
+            }
+            if fed == data.len() {
+                exhausted = true;
+                continue;
+            }
+            let end = fed.saturating_add(next_piece().max(1)).min(data.len());
+            window.extend_from_slice(&data[fed..end]);
+            fed = end;
+        }
+
+        result
+    }
+
+    /// Content whose instructions are hard to read in pieces: inline images with `EI` in their
+    /// data or right after it, unterminated tokens, and operands that are too many or invalid.
+    const WINDOWED_CORPUS: [&[u8]; 14] = [
+        b"% comment\n1 -2.5 /Name /A#20B (a\\(b\\) \\101) <4869> [1 2] << /Key (value) >> [(a) 1] TJ BI /W 1 /H 1 /BPC 8 /CS /DeviceGray ID \x00 EI q Q",
+        b"BT /F1 12 Tf 10 20 Td [(Hel) -250 (lo)] TJ (x) Tj ET",
+        b"q 1 0 0 1 0 0 cm BI /W 2 /H 2 /BPC 8 /CS /G ID \x00\x01EI\x00 EI Q 0 0 m 1 1 l S",
+        b"BI /W 1 /H 1 /BPC 8 /CS /G ID EI x EI EI BT (a) Tj ET",
+        b"0.5 .5 -.5 +5 12.3.4 f",
+        b"/A B C /D 1 2 3 4 5 6 7 8 9 10 11 12 re",
+        b"BI /W 1 /H 1 /BPC 8 /CS /G ID\n\x00\nEI BI /W 1 /H 1 /BPC 8 /CS /G ID \x01 EI Q",
+        b"(unterminated string 1 0 0 1 0 0 cm",
+        b"1 0 0 1 0 0 cm\n%comment at the end",
+        b"BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EIxy q",
+        b"BI /W 2 /H 1 /BPC 8 /CS /G ID \x00\x01 EI \x00 EI \x01 q",
+        b"[1 [2 [3]]] 0 d q Q",
+        b"/Lbl BDC EMC 1 w",
+        b"<</A 1>> BDC BI /W 1 /H 1 /BPC 8 /CS /G ID \x07 EI (end) Tj",
+    ];
+
+    #[test]
+    fn windows_keep_every_instruction_at_every_split() {
+        for data in WINDOWED_CORPUS {
+            let expected = slice_instructions(data);
+            for split in 1..=data.len() {
+                let mut lengths = [split, data.len()].into_iter();
+                let windowed = windowed_instructions(data, || lengths.next().unwrap_or(data.len()));
+                assert_eq!(windowed, expected, "{:?} split at byte {split}", String::from_utf8_lossy(data));
+            }
+        }
+    }
+
+    #[test]
+    fn windows_keep_every_instruction_in_pieces_of_any_size() {
+        for data in WINDOWED_CORPUS {
+            let expected = slice_instructions(data);
+            for piece in 1..=data.len() {
+                let windowed = windowed_instructions(data, || piece);
+                assert_eq!(windowed, expected, "{:?} in pieces of {piece}", String::from_utf8_lossy(data));
+            }
+        }
+    }
+
+    #[test]
+    fn windows_drop_blanks_and_keep_a_comment_that_may_go_on() {
+        // Blanks alone decide nothing, so a window of them can be dropped whole.
+        let blanks = vec![b' '; 4096];
+        let mut tokenizer = UntypedIter::new_window(&blanks, false);
+        assert!(tokenizer.next().is_none());
+        assert!(tokenizer.needs_more);
+        assert_eq!(tokenizer.committed, blanks.len());
+
+        // The window ends in a comment: it is kept, from its `%`, for the next window.
+        let data = b"1 0 0 1 0 0 cm  % a comment that goes on";
+        let mut tokenizer = UntypedIter::new_window(data, false);
+        assert!(tokenizer.next().is_some());
+        assert!(tokenizer.next().is_none());
+        assert!(tokenizer.needs_more);
+        assert_eq!(tokenizer.committed, data.iter().position(|&b| b == b'%').expect("a comment"));
+    }
+
+    #[test]
+    fn windows_match_the_slice_on_random_content() {
+        const PARTS: [&[u8]; 24] = [
+            b"BI", b" ID ", b"EI", b" EI ", b"/W", b" 1 ", b"-2.5", b".5", b"(", b")", b"\\", b"<",
+            b">", b"[", b"]", b"TJ", b"Tj", b"q", b"Q", b"re", b"f", b"% c\n", b"\n", b"\x00\xff",
+        ];
+        // A fixed xorshift sequence, so that a failure can be reproduced.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for _ in 0..2000 {
+            let mut data = Vec::new();
+            for _ in 0..next() % 40 {
+                let part = PARTS[(next() % PARTS.len() as u64) as usize];
+                data.extend_from_slice(part);
+            }
+
+            let expected = slice_instructions(&data);
+            let windowed = windowed_instructions(&data, || 1 + (next() % 12) as usize);
+            assert_eq!(windowed, expected, "{:?}", String::from_utf8_lossy(&data));
         }
     }
 }

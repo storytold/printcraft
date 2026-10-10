@@ -189,10 +189,14 @@ impl<'a> Readable<'a> for Object<'a> {
             b'<' => match r.peek_bytes(2)? {
                 b"<<" => {
                     let mut cloned = r.clone();
-                    let dict = Dict::read(&mut cloned, ctx)?;
+                    let dict = Dict::read(&mut cloned, ctx);
                     cloned.skip_white_spaces_and_comments();
+                    let is_stream = cloned.forward_tag(b"stream").is_some();
+                    // PdfCraft patch: what the clone looked at past the end counts for `r` too.
+                    r.absorb_past_end(&cloned);
+                    let dict = dict?;
 
-                    if cloned.forward_tag(b"stream").is_some() {
+                    if is_stream {
                         Object::Stream(Stream::read(r, ctx)?)
                     } else {
                         r.jump(cloned.offset());

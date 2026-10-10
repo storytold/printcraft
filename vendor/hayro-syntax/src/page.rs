@@ -13,8 +13,11 @@ use crate::sync::OnceLock;
 use crate::transform::Transform;
 use crate::util::FloatExt;
 use crate::xref::XRef;
+use crate::filter::{FlateState, MAX_DECODED_STREAM};
+use crate::object::stream::Incremental;
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeSet, VecDeque};
 use crate::object::ObjectIdentifier;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -183,6 +186,185 @@ pub enum Rotation {
     FlippedHorizontal,
 }
 
+/// PdfCraft patch: the cut-off for content that expands from its compressed streams. The decoded
+/// content of a page may be `MAX_CONTENT_EXPANSION` times the size of those streams, and never less
+/// than `MAX_DECODED_STREAM`. Real content expands a few times, and a stream that inflates a
+/// thousandfold from a few kilobytes is a decompression bomb.
+const MAX_CONTENT_EXPANSION: usize = 64;
+
+/// PdfCraft patch: the decoded content of a page, produced a piece at a time, so that the whole of
+/// it need not be in memory at once (see `interpret_page`). Plain streams and Flate streams without
+/// a predictor are decoded as they are read. Any other stream is decoded whole when the reader is
+/// made, as `page_stream` does, and the decoded streams share one `MAX_DECODED_STREAM`.
+///
+/// The decoded bytes of the page's streams are also cut off at a budget: `MAX_CONTENT_EXPANSION`
+/// times their compressed size, counting each distinct stream once however many times `/Contents`
+/// names it. Content that reaches the budget is cut short, and [`ContentReader::truncated`] says so.
+pub struct ContentReader<'a> {
+    pieces: VecDeque<Piece<'a>>,
+    budget: usize,
+    produced: usize,
+    materialized: usize,
+    truncated: bool,
+}
+
+/// One part of the content of a page, in order.
+enum Piece<'a> {
+    /// A stream's own bytes, which are not decoded.
+    Plain { data: Cow<'a, [u8]>, pos: usize },
+    /// A Flate stream, decoded as it is read.
+    Flate { data: Cow<'a, [u8]>, state: FlateState },
+    /// A stream that was decoded whole.
+    Whole { data: Vec<u8>, pos: usize },
+    /// The space that separates the streams of a `/Contents` array.
+    Separator { written: bool },
+}
+
+impl Piece<'_> {
+    fn exhausted(&self) -> bool {
+        match self {
+            Piece::Plain { data, pos } => *pos >= data.len(),
+            Piece::Flate { data, state } => state.finished(data),
+            Piece::Whole { data, pos } => *pos >= data.len(),
+            Piece::Separator { written } => *written,
+        }
+    }
+
+    /// Appends the next bytes of the piece to `out`, which may end at `limit` bytes.
+    fn append_to(&mut self, out: &mut Vec<u8>, limit: usize) {
+        match self {
+            Piece::Plain { data, pos } => copy_from(data, pos, out, limit),
+            Piece::Flate { data, state } => state.decode_into(data, out, limit),
+            Piece::Whole { data, pos } => copy_from(data, pos, out, limit),
+            Piece::Separator { written } => {
+                out.push(b' ');
+                *written = true;
+            }
+        }
+    }
+}
+
+/// Copies the bytes of `data` from `pos` to `out`, up to `limit` bytes in all.
+fn copy_from(data: &[u8], pos: &mut usize, out: &mut Vec<u8>, limit: usize) {
+    let rest = data.get(*pos..).unwrap_or(&[]);
+    let take = rest.len().min(limit.saturating_sub(out.len()));
+    out.extend_from_slice(rest.get(..take).unwrap_or(&[]));
+    *pos += take;
+}
+
+impl<'a> ContentReader<'a> {
+    /// A reader of no content.
+    fn empty() -> Self {
+        Self {
+            pieces: VecDeque::new(),
+            budget: 0,
+            produced: 0,
+            materialized: 0,
+            truncated: false,
+        }
+    }
+
+    /// A reader of `streams`, the content of a page in order. `separated` says whether they come
+    /// from an array, whose streams are separated by spaces. `cap` is the most bytes that streams
+    /// decoded whole may make in all, and at least the budget's floor.
+    fn new(streams: Vec<Stream<'a>>, separated: bool, cap: usize) -> Self {
+        let mut counted = BTreeSet::new();
+        let mut compressed = 0_usize;
+        for stream in &streams {
+            if counted.insert(stream.obj_id()) {
+                compressed = compressed.saturating_add(stream.raw_data().len());
+            }
+        }
+        let budget = cap.max(MAX_CONTENT_EXPANSION.saturating_mul(compressed));
+
+        let mut pieces = VecDeque::new();
+        let mut materialized = 0_usize;
+        // The bytes that the streams decoded whole take up, separators included, as `page_stream`
+        // counted them against `MAX_DECODED_STREAM`.
+        let mut whole_used = 0_usize;
+        for stream in streams {
+            match stream.incremental() {
+                Incremental::Plain => pieces.push_back(Piece::Plain {
+                    data: stream.raw_data(),
+                    pos: 0,
+                }),
+                Incremental::Flate => {
+                    let data = stream.raw_data();
+                    let state = FlateState::new(&data);
+                    pieces.push_back(Piece::Flate { data, state });
+                }
+                Incremental::Whole => {
+                    let left = cap.saturating_sub(whole_used);
+                    if left == 0 {
+                        break;
+                    }
+                    let Ok(data) = stream.decoded_within(left) else {
+                        continue;
+                    };
+                    let data = data.into_owned();
+                    whole_used = whole_used.saturating_add(data.len());
+                    materialized = materialized.saturating_add(data.len());
+                    pieces.push_back(Piece::Whole { data, pos: 0 });
+                }
+            }
+
+            if separated {
+                whole_used = whole_used.saturating_add(1);
+                pieces.push_back(Piece::Separator { written: false });
+            }
+        }
+
+        Self {
+            pieces,
+            budget,
+            produced: 0,
+            materialized,
+            truncated: false,
+        }
+    }
+
+    /// Appends up to `max` bytes of the decoded content to `out`, and returns how many it appended.
+    /// That is fewer than `max` only at the end of the content, or where it is cut short.
+    pub fn read_into(&mut self, out: &mut Vec<u8>, max: usize) -> usize {
+        let start = out.len();
+        let end = start.saturating_add(max);
+
+        while out.len() < end {
+            let Some(piece) = self.pieces.front_mut() else {
+                break;
+            };
+            if piece.exhausted() {
+                self.pieces.pop_front();
+                continue;
+            }
+
+            let allowed = self.budget.saturating_sub(self.produced);
+            if allowed == 0 {
+                self.truncated = true;
+                self.pieces.clear();
+                break;
+            }
+
+            let before = out.len();
+            piece.append_to(out, end.min(before.saturating_add(allowed)));
+            self.produced += out.len() - before;
+        }
+
+        out.len() - start
+    }
+
+    /// The bytes of the content that were decoded whole when the reader was made. The caller
+    /// charges these against its own budget, as it did for the whole content.
+    pub fn materialized_len(&self) -> usize {
+        self.materialized
+    }
+
+    /// Whether the content was cut short at its budget (see [`ContentReader`]).
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
 /// A PDF page.
 pub struct Page<'a> {
     inner: Dict<'a>,
@@ -260,6 +442,25 @@ impl<'a> Page<'a> {
         Some(iter)
     }
 
+    /// PdfCraft patch: the content of the page, to be read a piece at a time (see
+    /// [`ContentReader`]).
+    pub fn content_reader(&self) -> ContentReader<'a> {
+        self.content_reader_within(MAX_DECODED_STREAM)
+    }
+
+    /// PdfCraft patch: [`Page::content_reader`], with `cap` in place of `MAX_DECODED_STREAM`.
+    fn content_reader_within(&self, cap: usize) -> ContentReader<'a> {
+        if let Some(stream) = self.inner.get::<Stream<'a>>(CONTENTS) {
+            ContentReader::new(vec![stream], false, cap)
+        } else if let Some(array) = self.inner.get::<Array<'a>>(CONTENTS) {
+            ContentReader::new(array.iter::<Stream<'a>>().collect(), true, cap)
+        } else {
+            warn!("contents entry of page was neither stream nor array of streams");
+
+            ContentReader::empty()
+        }
+    }
+
     /// Return the decoded content stream of the page.
     pub fn page_stream(&self) -> Option<&[u8]> {
         let convert_single = |s: Stream<'_>| {
@@ -279,8 +480,7 @@ impl<'a> Page<'a> {
                     for stream in array.iter::<Stream<'_>>() {
                         // PdfCraft patch: the streams share one `MAX_DECODED_STREAM` (an array
                         // naming one inflating stream twenty times decoded 5 GB).
-                        let left =
-                            crate::filter::MAX_DECODED_STREAM.saturating_sub(collected.len());
+                        let left = MAX_DECODED_STREAM.saturating_sub(collected.len());
                         if left == 0 {
                             break;
                         }
@@ -604,5 +804,135 @@ pub(crate) mod cached {
         pub(crate) fn get(&self) -> &Pages<'_> {
             &self.pages
         }
+    }
+}
+
+#[cfg(test)]
+mod content_reader_tests {
+    use crate::Pdf;
+
+    /// A zlib stream of `data` in stored blocks, which expands by nothing.
+    fn stored_zlib(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x78, 0x01];
+        let mut chunks = data.chunks(0xffff).peekable();
+        if chunks.peek().is_none() {
+            out.extend_from_slice(&[1, 0, 0, 0xff, 0xff]);
+        }
+        while let Some(chunk) = chunks.next() {
+            out.push(u8::from(chunks.peek().is_none()));
+            let len = u16::try_from(chunk.len()).expect("a stored block holds at most 65535 bytes");
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&(!len).to_le_bytes());
+            out.extend_from_slice(chunk);
+        }
+        out.extend_from_slice(&[0; 4]);
+        out
+    }
+
+    /// A zlib stream of one literal byte and then `count` copies of a 258-byte match from it, in
+    /// fixed Huffman codes: about 160 bytes of output for each byte of input.
+    fn fixed_run_bomb(count: usize) -> Vec<u8> {
+        struct Bits {
+            out: Vec<u8>,
+            buf: u8,
+            len: u32,
+        }
+        impl Bits {
+            /// Bits are sent least significant first.
+            fn put(&mut self, value: u32, bits: u32) {
+                for i in 0..bits {
+                    self.buf |= (((value >> i) & 1) as u8) << self.len;
+                    self.len += 1;
+                    if self.len == 8 {
+                        self.out.push(self.buf);
+                        self.buf = 0;
+                        self.len = 0;
+                    }
+                }
+            }
+
+            /// Huffman codes are sent most significant bit first.
+            fn code(&mut self, code: u32, bits: u32) {
+                for i in (0..bits).rev() {
+                    self.put((code >> i) & 1, 1);
+                }
+            }
+        }
+
+        let mut bits = Bits {
+            out: vec![0x78, 0x01],
+            buf: 0,
+            len: 0,
+        };
+        bits.put(1, 1); // The final block.
+        bits.put(1, 2); // Fixed Huffman codes.
+        bits.code(0x30 + u32::from(b'a'), 8); // The literal 'a'.
+        for _ in 0..count {
+            bits.code(0xc5, 8); // Length 258 (code 285), no extra bits.
+            bits.code(0, 5); // Distance 1 (code 0), no extra bits.
+        }
+        bits.code(0, 7); // End of block (code 256).
+        if bits.len > 0 {
+            bits.out.push(bits.buf);
+        }
+        bits.out.extend_from_slice(&[0; 4]);
+        bits.out
+    }
+
+    /// A one-page PDF whose content is `stream`, with the stream dictionary entries `dict`.
+    fn page_pdf(stream: &[u8], dict: &str) -> Vec<u8> {
+        let mut pdf = format!(
+            "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 40 40] /Contents 4 0 R >> endobj\n4 0 obj << {dict} /Length {} >> stream\n",
+            stream.len()
+        )
+        .into_bytes();
+        pdf.extend_from_slice(stream);
+        pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
+        pdf
+    }
+
+    /// The content of the first page, read `piece` bytes at a time, with a budget of `cap`.
+    fn read_content(pdf: Vec<u8>, cap: usize, piece: usize) -> (Vec<u8>, bool) {
+        let doc = Pdf::new(pdf).expect("parses");
+        let page = doc.pages().first().expect("one page");
+        let mut content = page.content_reader_within(cap);
+        let mut out = Vec::new();
+        while content.read_into(&mut out, piece) > 0 {}
+
+        (out, content.truncated())
+    }
+
+    #[test]
+    fn content_past_the_cap_is_read_to_the_end() {
+        let content: Vec<u8> = b"q 1 0 0 1 0 0 cm Q\n".iter().copied().cycle().take(3 << 20).collect();
+        let pdf = page_pdf(&stored_zlib(&content), "/Filter /FlateDecode");
+        // The cap is far below the content, but stored data expands by nothing, so nothing is cut.
+        for piece in [7, 4096, 1 << 16] {
+            let (out, truncated) = read_content(pdf.clone(), 1 << 20, piece);
+            assert_eq!(out.len(), content.len(), "piece {piece}");
+            assert!(out == content, "piece {piece}: the bytes are the content's");
+            assert!(!truncated, "piece {piece}");
+        }
+    }
+
+    #[test]
+    fn a_stream_that_expands_past_the_budget_is_cut_there() {
+        let cap = 1 << 20;
+        let bomb = fixed_run_bomb(400_000);
+        let (out, truncated) = read_content(page_pdf(&bomb, "/Filter /FlateDecode"), cap, 1 << 16);
+
+        assert!(truncated, "the expansion is past the budget");
+        // The budget is 64 times the compressed stream, which is more than the cap here.
+        assert_eq!(out.len(), 64 * bomb.len());
+        assert!(out.iter().all(|&b| b == b'a'));
+    }
+
+    #[test]
+    fn a_small_expansion_under_the_cap_is_not_cut() {
+        let bomb = fixed_run_bomb(1000);
+        let (out, truncated) = read_content(page_pdf(&bomb, "/Filter /FlateDecode"), 1 << 20, 4096);
+
+        assert!(!truncated);
+        assert_eq!(out.len(), 1 + 258 * 1000);
     }
 }

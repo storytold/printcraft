@@ -22,6 +22,16 @@ struct FiltersAndParams<'a> {
     params: SmallVec<[Dict<'a>; 2]>,
 }
 
+/// PdfCraft patch: how the decoded data of a stream can be produced (see `Stream::incremental`).
+pub(crate) enum Incremental {
+    /// The stream has no filter, so its data is its own bytes.
+    Plain,
+    /// The stream is Flate-compressed without a predictor, so it decodes a piece at a time.
+    Flate,
+    /// Anything else decodes whole.
+    Whole,
+}
+
 /// A stream of arbitrary data.
 #[derive(Clone)]
 pub struct Stream<'a> {
@@ -150,6 +160,22 @@ impl<'a> Stream<'a> {
     /// Return the filters that are applied to the stream.
     pub fn filters(&self) -> SmallVec<[Filter; 2]> {
         self.filters_and_params().filters
+    }
+
+    /// PdfCraft patch: how the decoded data of the stream can be produced a piece at a time.
+    pub(crate) fn incremental(&self) -> Incremental {
+        let filters_and_params = self.filters_and_params();
+
+        match (
+            filters_and_params.filters.as_slice(),
+            filters_and_params.params.first(),
+        ) {
+            ([], _) => Incremental::Plain,
+            ([Filter::FlateDecode], Some(params)) if crate::filter::flate_is_plain(params) => {
+                Incremental::Flate
+            }
+            _ => Incremental::Whole,
+        }
     }
 
     /// Return the decoded data of the stream.

@@ -7,6 +7,14 @@ use alloc::vec::Vec;
 pub(crate) mod flate {
     use super::*;
     use crate::filter::lzw_flate::{PredictorParams, apply_predictor};
+
+    pub(crate) use fallback::FlateState;
+
+    /// PdfCraft patch: whether a Flate stream with `params` has no predictor, so that
+    /// [`FlateState`] can produce it a piece at a time.
+    pub(crate) fn is_plain(params: &Dict<'_>) -> bool {
+        PredictorParams::from_params(params).predictor == 1
+    }
     use crate::object::Dict;
 
     /// PdfCraft patch: `limit` is the most bytes inflated (see `filter::decode_limit`).
@@ -69,53 +77,148 @@ pub(crate) mod flate {
         }
 
         fn flate_decode(data: &[u8], limit: usize) -> Option<Vec<u8>> {
-            if data.len() >= 2 {
-                let cmf = data[0];
-                let flg = data[1];
+            let mut state = FlateState::new(data);
+            let mut output = Vec::new();
+            state.decode_into(data, &mut output, limit);
 
-                if (cmf & 0x0f) == 0x08
-                    && ((cmf as u16) << 8 | flg as u16).is_multiple_of(31)
-                    && (flg & 0x20) == 0
-                {
-                    let mut stream = FlateStream::new(&data[2..], limit);
-                    return stream.decode();
+            Some(output)
+        }
+
+        /// PdfCraft patch: where a Flate stream is between two calls of [`FlateState::decode_into`].
+        /// Decoding pauses at any output size and resumes where it stopped, so a stream can be
+        /// produced a piece at a time without holding all of it.
+        #[derive(Default)]
+        pub(crate) struct FlateState {
+            pos: usize,
+            code_buf: u32,
+            code_size: u8,
+            eof: bool,
+            block: Block,
+            /// The last `WINDOW` bytes decoded: back-references copy from them, whatever the caller
+            /// has done with the bytes it was given.
+            history: Vec<u8>,
+            /// How many bytes have been decoded in all.
+            total: usize,
+        }
+
+        /// The furthest a Flate back-reference reaches: the largest distance in `DIST_DECODE`.
+        const WINDOW: usize = 32 << 10;
+
+        impl FlateState {
+            /// The state at the start of `data`, past a zlib header if it has one.
+            pub(crate) fn new(data: &[u8]) -> Self {
+                let pos = match data {
+                    [cmf, flg, ..]
+                        if (cmf & 0x0f) == 0x08
+                            && (u16::from(*cmf) << 8 | u16::from(*flg)).is_multiple_of(31)
+                            && (flg & 0x20) == 0 =>
+                    {
+                        2
+                    }
+                    _ => 0,
+                };
+
+                Self {
+                    pos,
+                    ..Self::default()
                 }
             }
 
-            let mut stream = FlateStream::new(data, limit);
-            stream.decode()
+            /// Whether nothing more can be decoded from `data`.
+            pub(crate) fn finished(&self, data: &[u8]) -> bool {
+                self.eof || (matches!(self.block, Block::Header) && self.pos >= data.len())
+            }
+
+            /// Appends decoded bytes to `out` until it holds `until` bytes or the stream ends.
+            /// `data` is the whole encoded stream, the same on every call.
+            pub(crate) fn decode_into(&mut self, data: &[u8], out: &mut Vec<u8>, until: usize) {
+                // The working buffer is the history followed by the bytes decoded now. Only the
+                // latter go to `out`, which the caller may have drained since.
+                let base = self.history.len();
+                let mut stream = FlateStream {
+                    data,
+                    pos: self.pos,
+                    code_buf: self.code_buf,
+                    code_size: self.code_size,
+                    output: core::mem::take(&mut self.history),
+                    base,
+                    total: self.total,
+                    eof: self.eof,
+                    limit: base.saturating_add(until.saturating_sub(out.len())),
+                    block: core::mem::take(&mut self.block),
+                };
+                stream.run();
+
+                out.extend_from_slice(stream.output.get(base..).unwrap_or(&[]));
+                self.total = self.total.saturating_add(stream.output.len() - base);
+                let keep = stream.output.len().min(WINDOW);
+                stream.output.drain(..stream.output.len() - keep);
+                self.history = stream.output;
+
+                self.pos = stream.pos;
+                self.code_buf = stream.code_buf;
+                self.code_size = stream.code_size;
+                self.eof = stream.eof;
+                self.block = stream.block;
+            }
         }
 
+        /// PdfCraft patch: the working state of one [`FlateState::decode_into`] call.
         struct FlateStream<'a> {
             data: &'a [u8],
             pos: usize,
             code_buf: u32,
             code_size: u8,
+            /// The history, then the bytes decoded in this call.
             output: Vec<u8>,
+            /// How many bytes of `output` are history.
+            base: usize,
+            /// How many bytes were decoded before this call.
+            total: usize,
             eof: bool,
-            /// PdfCraft patch: the most bytes inflated (see `filter::decode_limit`).
+            /// PdfCraft patch: the most bytes in `output` (see `filter::decode_limit`).
             limit: usize,
+            block: Block,
         }
 
-        impl<'a> FlateStream<'a> {
-            fn new(data: &'a [u8], limit: usize) -> Self {
-                FlateStream {
-                    data,
-                    pos: 0,
-                    code_buf: 0,
-                    code_size: 0,
-                    output: Vec::new(),
-                    eof: false,
-                    limit,
-                }
-            }
+        /// PdfCraft patch: the block a Flate stream is in.
+        #[derive(Default)]
+        enum Block {
+            /// Between blocks, at a block header (or at the end of the data).
+            #[default]
+            Header,
+            /// Inside a stored block, with `left` bytes still to copy.
+            Stored { left: usize, last: bool },
+            /// Inside a block coded with Huffman tables. `copy` is a back-reference that the limit
+            /// cut off, as (whether its source exists, distance, bytes left to copy).
+            Coded {
+                lit: HuffmanTable,
+                dist: HuffmanTable,
+                last: bool,
+                copy: Option<(bool, usize, usize)>,
+            },
+        }
 
-            fn decode(&mut self) -> Option<Vec<u8>> {
-                while !self.eof && self.pos < self.data.len() && self.output.len() < self.limit {
-                    self.read_block();
-                }
+        impl FlateStream<'_> {
+            /// Decodes until `output` holds `limit` bytes or the stream ends.
+            fn run(&mut self) {
+                loop {
+                    if self.eof || self.output.len() >= self.limit {
+                        return;
+                    }
 
-                Some(core::mem::take(&mut self.output))
+                    match self.block {
+                        Block::Header => {
+                            if self.pos >= self.data.len() {
+                                return;
+                            }
+
+                            self.read_block();
+                        }
+                        Block::Stored { .. } => self.copy_stored(),
+                        Block::Coded { .. } => self.read_codes(),
+                    }
+                }
             }
 
             fn get_byte(&mut self) -> Option<u8> {
@@ -134,13 +237,6 @@ pub(crate) mod flate {
                 } else {
                     Some(self.data[self.pos])
                 }
-            }
-
-            fn get_bytes(&mut self, n: usize) -> Vec<u8> {
-                let end = (self.pos + n).min(self.data.len());
-                let bytes = self.data[self.pos..end].to_vec();
-                self.pos = end;
-                bytes
             }
 
             fn get_bits(&mut self, bits: u8) -> Option<u32> {
@@ -196,16 +292,16 @@ pub(crate) mod flate {
                     }
                 };
 
-                if (hdr & 1) != 0 {
-                    self.eof = true;
-                }
+                // PdfCraft patch: the final block ends the stream once it is decoded, not when its
+                // header is read: a stored block still has its bytes to copy.
+                let last = (hdr & 1) != 0;
 
                 let hdr = hdr >> 1;
 
                 match hdr {
-                    0 => self.read_uncompressed_block(),
-                    1 => self.read_compressed_block(true),
-                    2 => self.read_compressed_block(false),
+                    0 => self.start_uncompressed_block(last),
+                    1 => self.start_compressed_block(true, last),
+                    2 => self.start_compressed_block(false, last),
                     _ => {
                         warn!("unknown block type in flate stream");
                         self.eof = true;
@@ -213,7 +309,7 @@ pub(crate) mod flate {
                 }
             }
 
-            fn read_uncompressed_block(&mut self) {
+            fn start_uncompressed_block(&mut self, last: bool) {
                 // Skip any remaining bits in current byte
                 self.code_buf = 0;
                 self.code_size = 0;
@@ -264,22 +360,49 @@ pub(crate) mod flate {
                 }
 
                 if block_len == 0 {
-                    if self.peek_byte().is_none() {
+                    if last || self.peek_byte().is_none() {
                         self.eof = true;
                     }
                 } else {
-                    let block = self.get_bytes(block_len as usize);
-                    // PdfCraft patch: never past `limit`.
-                    let left = self.limit.saturating_sub(self.output.len());
+                    self.block = Block::Stored {
+                        left: usize::from(block_len),
+                        last,
+                    };
+                }
+            }
+
+            /// Copies the stored block's bytes, up to the limit or the end of the data.
+            fn copy_stored(&mut self) {
+                let Block::Stored { mut left, last } = self.block else {
+                    return;
+                };
+
+                while left > 0 && self.output.len() < self.limit {
+                    let rest = self.data.get(self.pos..).unwrap_or(&[]);
+                    if rest.is_empty() {
+                        // Premature end of stream: the rest of the block is missing.
+                        self.eof = true;
+                        return;
+                    }
+
+                    let take = left.min(rest.len()).min(self.limit - self.output.len());
                     self.output
-                        .extend_from_slice(block.get(..block.len().min(left)).unwrap_or(&[]));
-                    if block.len() < block_len as usize {
+                        .extend_from_slice(rest.get(..take).unwrap_or(&[]));
+                    self.pos += take;
+                    left -= take;
+                }
+
+                if left > 0 {
+                    self.block = Block::Stored { left, last };
+                } else {
+                    self.block = Block::Header;
+                    if last {
                         self.eof = true;
                     }
                 }
             }
 
-            fn read_compressed_block(&mut self, fixed: bool) {
+            fn start_compressed_block(&mut self, fixed: bool, last: bool) {
                 let (lit_code_table, dist_code_table) = if fixed {
                     (get_fixed_lit_table(), get_fixed_dist_table())
                 } else {
@@ -292,11 +415,54 @@ pub(crate) mod flate {
                     }
                 };
 
+                self.block = Block::Coded {
+                    lit: lit_code_table,
+                    dist: dist_code_table,
+                    last,
+                    copy: None,
+                };
+            }
+
+            /// Decodes the codes of a Huffman-coded block until its end, the limit or the end of
+            /// the data.
+            fn read_codes(&mut self) {
+                let Block::Coded {
+                    lit: lit_code_table,
+                    dist: dist_code_table,
+                    last,
+                    mut copy,
+                } = core::mem::take(&mut self.block)
+                else {
+                    return;
+                };
+
                 loop {
+                    if let Some((valid, distance, left)) = copy {
+                        let left = self.copy_back(valid, distance, left);
+                        if left > 0 {
+                            // The limit cut the copy short: it resumes on the next call.
+                            self.block = Block::Coded {
+                                lit: lit_code_table,
+                                dist: dist_code_table,
+                                last,
+                                copy: Some((valid, distance, left)),
+                            };
+                            return;
+                        }
+                        copy = None;
+                    }
+
                     // PdfCraft patch: one code adds at most 258 bytes; stop at the limit.
                     if self.output.len() >= self.limit {
+                        self.block = Block::Coded {
+                            lit: lit_code_table,
+                            dist: dist_code_table,
+                            last,
+                            copy,
+                        };
                         return;
                     }
+
                     let code1 = match self.get_code(&lit_code_table) {
                         Some(c) => c,
                         None => {
@@ -308,6 +474,9 @@ pub(crate) mod flate {
                     if code1 < 256 {
                         self.output.push(code1 as u8);
                     } else if code1 == 256 {
+                        if last {
+                            self.eof = true;
+                        }
                         return;
                     } else {
                         let code1 = code1 - 257;
@@ -354,20 +523,34 @@ pub(crate) mod flate {
                             }
                         }
 
-                        // Copy from previous output
-                        let start = self.output.len().wrapping_sub(distance);
-                        for _ in 0..length {
-                            // PdfCraft patch: never past `limit`.
-                            if self.output.len() >= self.limit {
-                                return;
-                            }
-                            if start < self.output.len() {
-                                let byte = self.output[self.output.len() - distance];
-                                self.output.push(byte);
-                            }
-                        }
+                        // Copy from previous output. As before, a distance reaching before the first
+                        // byte decoded copies nothing.
+                        let decoded = self.total.saturating_add(self.output.len().saturating_sub(self.base));
+                        let valid = distance > 0 && distance <= decoded;
+                        copy = Some((valid, distance, length));
                     }
                 }
+            }
+
+            /// Copies `left` bytes from `distance` back in the output, up to the limit. Returns how
+            /// many are still to copy. A copy whose source does not exist writes nothing.
+            fn copy_back(&mut self, valid: bool, distance: usize, mut left: usize) -> usize {
+                while left > 0 && self.output.len() < self.limit {
+                    if valid {
+                        let byte = self
+                            .output
+                            .len()
+                            .checked_sub(distance)
+                            .and_then(|index| self.output.get(index))
+                            .copied();
+                        if let Some(byte) = byte {
+                            self.output.push(byte);
+                        }
+                    }
+                    left -= 1;
+                }
+
+                left
             }
 
             fn read_dynamic_tables(&mut self) -> Option<(HuffmanTable, HuffmanTable)> {

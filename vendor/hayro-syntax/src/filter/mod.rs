@@ -13,6 +13,9 @@ mod jpx;
 mod lzw_flate;
 mod run_length;
 
+// PdfCraft patch: the incremental Flate decoder that `page::ContentReader` drives.
+pub(crate) use lzw_flate::flate::{FlateState, is_plain as flate_is_plain};
+
 use crate::object::Dict;
 use crate::object::Name;
 use crate::object::dict::keys::*;

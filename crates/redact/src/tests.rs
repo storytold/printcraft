@@ -923,3 +923,18 @@ fn many_content_stream_pieces_are_joined_in_linear_time() {
     assert_eq!(under(&mut doc, 0, &[[0.0, 0.0, 300.0, 300.0]]), 4);
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "took {:?}", started.elapsed());
 }
+
+/// OCR text is invisible but must be removed under a mark even when sanitization is off.
+#[test]
+fn redaction_removes_hidden_ocr_text_and_preserves_unmarked_words() {
+    let mut doc = one_page(b"/OCR BMC BT /F1 10 Tf 3 Tr 10 100 Td (AB1234CD) Tj ET EMC", "", vec![]);
+    mark(&mut doc, 0, &[[20.0, 95.0, 40.0, 110.0]], "");
+    apply(&mut doc, None).unwrap();
+    let bytes = write_full(&doc, &SaveOptions::default()).unwrap();
+    let mut saved = Document::open(Arc::new(bytes)).unwrap();
+    let text = content(&saved, 0);
+    assert!(!text.contains("1234"), "redacted OCR text survived: {text}");
+    assert!(text.contains("(AB)") && text.contains("(CD)"), "unmarked OCR text was lost: {text}");
+    assert_eq!(under(&mut saved, 0, &[[20.0, 95.0, 40.0, 110.0]]), 0);
+    assert_eq!(under(&mut saved, 0, &[[40.0, 95.0, 50.0, 110.0]]), 2);
+}

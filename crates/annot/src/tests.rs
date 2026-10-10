@@ -575,6 +575,30 @@ fn links_are_added_edited_listed_and_removed() {
 }
 
 #[test]
+fn link_edit_rejects_non_finite_and_overflowed_rectangles_without_mutating_the_pdf() {
+    use crate::links::{self, LinkAction, LinkStyle};
+    let mut doc = fixture();
+    let original_rect = [10.0, 20.0, 110.0, 70.0];
+    let index = links::add(&mut doc, 0, original_rect, &LinkAction::Uri("https://example.org".into()), &LinkStyle::default()).unwrap();
+    let before = links::list(&doc);
+    let changed_action = LinkAction::Uri("https://other.example".into());
+    for rect in [
+        [f64::NAN, 0.0, 100.0, 30.0],
+        [0.0, 0.0, f64::INFINITY, 30.0],
+        [f64::NEG_INFINITY, 0.0, 100.0, 30.0],
+        [-1e308, 0.0, 1e308, 30.0],
+        [0.0, 0.0, 1.5, 30.0],
+    ] {
+        assert!(links::set(&mut doc, 0, index, Some(rect), Some(&changed_action), None).is_err(), "edit accepted {rect:?}");
+        assert_eq!(links::list(&doc), before, "invalid edit changed an existing link");
+        assert!(links::add(&mut doc, 0, rect, &changed_action, &LinkStyle::default()).is_err(), "add accepted {rect:?}");
+    }
+    // A reversed but otherwise valid rectangle is normalized on edit.
+    links::set(&mut doc, 0, index, Some([110.0, 70.0, 10.0, 20.0]), None, None).unwrap();
+    assert_eq!(links::list(&doc)[index].rect, original_rect);
+}
+
+#[test]
 fn urls_are_found_in_text() {
     let t: Vec<char> = "See https://example.org/a?b=1, or www.rust-lang.org. Not a.b or http:/x.".chars().collect();
     let found: Vec<String> = crate::links::find_urls(&t).into_iter().map(|(_, u)| u).collect();

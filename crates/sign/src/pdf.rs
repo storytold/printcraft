@@ -721,7 +721,8 @@ fn finish_validation(
     // Revocation evidence embedded in the document security store, if any. A verified
     // revocation is final: later blocks must not soften the verdict.
     let signer = info.chain.first().cloned();
-    let revoked = check_dss_revocation(doc, signer.as_ref(), &at, info);
+    let revocation = check_dss_revocation(doc, signer.as_ref(), &at, info);
+    let revoked = revocation == Revocation::Revoked;
     // Changes after signing.
     info.modification = if covered == bytes.len() || bytes[covered..].iter().all(|b| b.is_ascii_whitespace() || *b == 0) {
         Modification::None
@@ -779,6 +780,12 @@ fn finish_validation(
             Some((root, TrustSource::List(list))) => info.details.push(format!("Its certificate chains to {root} in the trust list \"{list}\".")),
             _ => {}
         }
+        // Without revocation evidence in the document the verdict still rests on what was
+        // checked (intact, trusted chain, certificate valid at signing time), as in Acrobat
+        // offline; the details say that revocation is the part that wasn't.
+        if revocation == Revocation::NotChecked {
+            info.details.push(REVOCATION_NOT_CHECKED.into());
+        }
         if !problems && !revoked {
             info.status = Status::Valid;
         }
@@ -797,15 +804,28 @@ fn finish_validation(
     }
 }
 
+const REVOCATION_NOT_CHECKED: &str = "Revocation was not checked: the document carries no revocation information for the signer's certificate, and PdfCraft does not go online to fetch it.";
+
+/// What the document's own revocation evidence says about the signer's certificate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Revocation {
+    /// Verified evidence that it was revoked at the validation time.
+    Revoked,
+    /// Evidence that covers it and says it was not.
+    NotRevoked,
+    /// No evidence that covers it (no `/DSS`, or nothing in it for this certificate).
+    NotChecked,
+}
+
 /// Check the revocation evidence in the catalog's `/DSS` against the signer's chain at `at`.
 /// Only evidence whose signature verifies against the issuer counts; returns whether the
 /// certificate is revoked (which invalidates the signature).
-fn check_dss_revocation(doc: &Document, signer: Option<&Certificate>, at: &Option<Time>, info: &mut SignatureInfo) -> bool {
+fn check_dss_revocation(doc: &Document, signer: Option<&Certificate>, at: &Option<Time>, info: &mut SignatureInfo) -> Revocation {
     use crate::revocation::{CertificateList, OcspResponse, RevocationStatus};
-    let (Some(signer), Some(at)) = (signer, *at) else { return false };
-    let Some(root) = doc.root() else { return false };
+    let (Some(signer), Some(at)) = (signer, *at) else { return Revocation::NotChecked };
+    let Some(root) = doc.root() else { return Revocation::NotChecked };
     let Some(dss) = doc.get(root).as_dict().and_then(|c| c.get(b"DSS").cloned()).map(|d| doc.resolve(&d)).and_then(|d| d.as_dict().cloned()) else {
-        return false;
+        return Revocation::NotChecked;
     };
     let pull = |key: &[u8]| -> Vec<Vec<u8>> {
         let mut out = Vec::new();
@@ -855,13 +875,13 @@ fn check_dss_revocation(doc: &Document, signer: Option<&Certificate>, at: &Optio
         Some(at) => {
             info.status = Status::Invalid;
             info.details.push(format!("The signer's certificate has been revoked ({}, {}).", sources.join(", "), at));
-            true
+            Revocation::Revoked
         }
         None if covered => {
             info.details.push("The document's embedded revocation information shows that the signer's certificate has not been revoked.".into());
-            false
+            Revocation::NotRevoked
         }
-        None => false,
+        None => Revocation::NotChecked,
     }
 }
 

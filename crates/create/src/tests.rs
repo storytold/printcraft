@@ -636,6 +636,8 @@ fn damaged_masks_and_sizes_never_panic() {
         let _ = extract_images(&doc, &[0], 0);
         let _ = image_file(&doc, r);
     }
+}
+
 #[test]
 fn text_documents_carry_the_widths_of_their_font() {
     let doc = reopen(&from_text("notes", "Page 1", LETTER, 11.0).unwrap());

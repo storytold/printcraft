@@ -1119,6 +1119,12 @@
 	Center	وسط
 	Apply redactions	تطبيق الحجب
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	أنت على وشك تطبيق علامة حجب واحدة. النصوص والصور والرسومات تحت العلامات، والتعليقات وحقول النموذج المتداخلة معها، تُزال نهائيًا.
+	I understand that the redacted content is removed for good	أفهم أن المحتوى المحجوب يُزال نهائيًا
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	احفظ النتيجة باسم جديد: الحفظ يعيد كتابة الملف بالكامل فلا تبقى أي أثر للمحتوى المحذوف فيه، ويبقى الملف الأصلي كما هو.
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	تم التحقق عند التطبيق: عُثر على {n} مناطق خالية من النص المحذوف. النص الموجود فقط كبكسلات صورة لا يُبحث فيه.
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	تم التحقق عند التطبيق: عُثر على منطقة واحدة خالية من النص المحذوف. النص الموجود فقط كبكسلات صورة لا يُبحث فيه.
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	ينطوي التطبيق أيضًا على التنظيف: تُحذف العلامات المرجعية والوجهات المسماة والمرفقات ومعلومات المستند والبيانات الوصفية وبيانات نماذج XFA، وتُقفل الطبقات المخفية مخفيةً نهائيًا.
+	This cannot be undone: applying redactions clears the undo history.	لا يمكن التراجع عن ذلك: تطبيق علامات الحجب يمحو سجل التراجع.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	أنت على وشك تطبيق {n} علامات حجب. النصوص والصور والرسومات تحت العلامات، والتعليقات وحقول النموذج المتداخلة معها، تُزال نهائيًا.
 	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	احفظ المستند بعد ذلك: الحفظ يعيد كتابة الملف كله كي لا يبقى فيه أثر للمحتوى المُزال.
 	Select the items to remove from this document.	حدد العناصر المراد إزالتها من هذا المستند.

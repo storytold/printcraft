@@ -1089,6 +1089,12 @@
 	Center	Középre
 	Apply redactions	Kitakarások alkalmazása
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	1 kitakarásjelölést fogsz alkalmazni. A jelölés alatti szöveg, képek és rajzok, valamint az azt átfedő megjegyzések és űrlapmezők véglegesen törlődnek.
+	I understand that the redacted content is removed for good	Megértem, hogy a kitakart tartalom véglegesen eltávolításra kerül
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	Mentse az eredményt új néven: a mentés újraírja a teljes fájlt, így az eltávolított tartalom nyoma sem marad benne, és az eredeti fájl változatlan marad.
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	Alkalmazáskor ellenőrizve: {n} terület az eltávolított szövegtől mentesen található. A csak képpontként létező szöveget nem keressük.
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	Alkalmazáskor ellenőrizve: 1 terület az eltávolított szövegtől mentesen található. A csak képpontként létező szöveget nem keressük.
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	Az alkalmazás tisztítást is végez: a könyvjelzők, a nevesített célpontok, a mellékletek, a dokumentuminformációk, a metaadatok és az XFA űrlapadatok törlődnek, a rejtett rétegek pedig véglegesen zártan rejtve maradnak.
+	This cannot be undone: applying redactions clears the undo history.	Ez nem vonható vissza: a kitakarások alkalmazása törli a visszavonási előzményeket.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	{n} kitakarásjelölést fogsz alkalmazni. A jelölések alatti szöveg, képek és rajzok, valamint az azokat átfedő megjegyzések és űrlapmezők véglegesen törlődnek.
 	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	Utána mentsd a dokumentumot: a mentés újraírja az egész fájlt, így az eltávolított tartalomnak nem marad nyoma.
 	Select the items to remove from this document.	Válaszd ki, mit távolítsunk el ebből a dokumentumból.

@@ -89,9 +89,10 @@ fn strict_decoding_exposes_damage_the_tolerant_decoder_hides() {
     let bomb = Stream::flate(Dict::new(), &vec![0u8; 4 << 20]);
     assert!(matches!(bomb.decoded_strict_within(1 << 20), Err(CosError::Filter(_))));
     assert_eq!(bomb.decoded_strict_within(8 << 20).map(|v| v.len()), Ok(4 << 20));
-    // An unfiltered stream has nothing to be damaged.
+    // An unfiltered stream has nothing to be damaged, but the output limit still binds.
     let plain = Stream::from_raw(Dict::new(), b"abc".to_vec());
-    assert_eq!(plain.decoded_strict_within(2).unwrap(), b"abc");
+    assert!(matches!(plain.decoded_strict_within(2), Err(CosError::Filter(_))));
+    assert_eq!(plain.decoded_strict_within(3).unwrap(), b"abc");
 }
 
 #[test]

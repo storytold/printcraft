@@ -1117,6 +1117,12 @@
 	Center	По центру
 	Apply redactions	Застосувати вилучення вмісту
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Ви збираєтеся застосувати 1 позначку вилучення. Текст, зображення й малюнки під позначками, а також коментарі й поля форми, що їх перекривають, буде видалено назавжди.
+	I understand that the redacted content is removed for good	Розумію, що вилучений вміст видаляється назавжди
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	Збережіть результат під новим ім'ям: збереження перезаписує весь файл, тож жодного сліду вилученого вмісту в ньому не залишається, а початковий файл залишається недоторканним.
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	Перевірено під час застосування: {n} областей знайдено без вилученого тексту. Текст, що існує лише як пікселі зображення, не шукається.
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	Перевірено під час застосування: 1 область знайдено без вилученого тексту. Текст, що існує лише як пікселі зображення, не шукається.
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	Застосування також виконує очищення: закладки, іменовані цілі, вкладення, відомості про документ, метадані та дані XFA-форм видаляються, а приховані шари назавжди блокуються прихованими.
+	This cannot be undone: applying redactions clears the undo history.	Цього не можна скасувати: застосування позначок вилучення очищає історію скасувань.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Ви збираєтеся застосувати позначки вилучення: {n}. Текст, зображення й малюнки під позначками, а також коментарі й поля форми, що їх перекривають, буде видалено назавжди.
 	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	Після цього збережіть документ: збереження перезаписує весь файл, щоб у ньому не залишилося слідів вилученого вмісту.
 	Select the items to remove from this document.	Виберіть елементи для видалення з цього документа.

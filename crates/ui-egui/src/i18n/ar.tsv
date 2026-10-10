@@ -29,6 +29,9 @@
 	Preferences	التفضيلات
 	Preferences…	التفضيلات…
 	Interface language	لغة الواجهة
+	Interface size	حجم الواجهة
+	Auto ({percent}%)	تلقائي ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	يتبع الوضع التلقائي حجم النص في النظام. تُعرض الصفحات دائمًا بالدقة الكاملة للشاشة.
 	Identity	الهوية
 	Name on new comments	الاسم على التعليقات الجديدة
 	Open…	فتح…
@@ -74,6 +77,7 @@
 	Fit visible	ملاءمة المرئي
 	Marquee zoom	تكبير بالتحديد
 	Take a snapshot	التقاط لقطة
+	Column select	تحديد عمود
 	Full screen mode	وضع ملء الشاشة
 	Read mode	وضع القراءة
 	Switch light / dark theme	التبديل بين السمة الفاتحة والداكنة
@@ -1097,6 +1101,7 @@
 	Dates	التواريخ
 	Text in images isn't found; recognise text (OCR) first.	النص داخل الصور لا يُعثر عليه؛ استخدم التعرف على النص (OCR) أولًا.
 	No matches.	لا توجد تطابقات.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	بعض الإشارات المرجعية غير معروضة هنا: تعرض اللوحة عددًا محدودًا منها، وبعمق تداخل محدود.
 	{n} match(es) marked for redaction.	عُلِّم {n} تطابق للحجب.
 	Multiple words or phrases	كلمات أو عبارات متعددة
 	One word or phrase per line	كلمة أو عبارة واحدة في كل سطر
@@ -1499,6 +1504,8 @@
 	Right Edge	الحافة اليمنى
 	Language	اللغة
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	تم الحفظ {place}: {before} → {after} (أصغر بنسبة {pct}%){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	هذا الملف صغير بالفعل قدر الإمكان ({size}). لم تُحفظ أي نسخة.
+	Saved {place}: {before} → {after} (not smaller){detail}	تم الحفظ {place}: {before} → {after} (ليس أصغر){detail}
 	Couldn't save the image: {e}	تعذّر حفظ الصورة: {e}
 	Adding images arrives on the web with file pickers for images	إضافة الصور ستتوفر على الويب مع منتقيات ملفات الصور
 	Replacing images on page {p} arrives on the web with image pickers ({i})	استبدال الصور في الصفحة {p} سيتوفر على الويب مع منتقيات الصور ({i})
@@ -2166,3 +2173,39 @@ certificate	Subject	صاحب الشهادة
 	A selected field has no widget on any page, so the fields can't be edited together.	أحد الحقول المحددة ليس له عنصر واجهة في أي صفحة، لذا لا يمكن تحرير الحقول معًا.
 	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	التعرف على النص غير مثبت: نماذجه مفقودة (شغّل `cargo xtask models`، أو اضبط PDFCRAFT_MODELS).
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} بدقة {dpi} dpi، وهي أكبر دقة يمكن رسمها بها)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	تم تحديد {n} عنصر|تم تحديد {n} عنصر|تم تحديد {n} عنصرين|تم تحديد {n} عناصر|تم تحديد {n} عنصرًا|تم تحديد {n} عنصر
+	Drag the selection to move it. Esc clears the selection.	اسحب التحديد لنقله. يمسح Esc التحديد.
+	Shift-click to select several objects. Drag empty space to select an area.	انقر مع الضغط على Shift لتحديد عدة عناصر. اسحب في مساحة فارغة لتحديد منطقة.
+	Select at most 1000 objects at a time.	حدد 1000 عنصر كحد أقصى في المرة الواحدة.
+	Finish or discard the text being edited before selecting several objects.	أكمل تحرير النص أو تجاهله قبل تحديد عدة عناصر.
+	Move object	نقل عنصر
+	Move objects	نقل عناصر
+	Vertical text cannot be moved with this selection.	لا يمكن نقل النص العمودي مع هذا التحديد.
+	Text used as a clipping path cannot be moved with this selection.	لا يمكن نقل النص المستخدم كمسار قص مع هذا التحديد.
+	These objects could not be moved. Select them again and try a smaller move.	تعذر نقل هذه العناصر. حددها مجددًا وحاول نقلها بمسافة أقل.
+	This page contains objects that cannot be selected together.	تحتوي هذه الصفحة على عناصر لا يمكن تحديدها معًا.
+	Fill colour	لون التعبئة
+	No fill	بلا تعبئة
+	Fill colour: none	لون التعبئة: بلا
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	مسافة
+	Grid view	عرض الشبكة
+	List view	عرض القائمة
+	Files are combined in the order shown. Drag them to change it.	تُدمج الملفات بالترتيب المعروض. اسحبها لتغيير الترتيب.
+	Preview unavailable: {e}	المعاينة غير متاحة: {e}
+	Pages: {k} of {n}	الصفحات: {k} من {n}
+	Check the pages	تحقق من الصفحات
+	Switch to List view to change the pages it takes.	انتقل إلى عرض القائمة لتغيير الصفحات التي يأخذها.
+	Expand all	توسيع الكل
+	Collapse all	طي الكل
+	Remove page	إزالة الصفحة
+	Remove {n} pages	إزالة {n} صفحات

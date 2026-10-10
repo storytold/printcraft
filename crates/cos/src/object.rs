@@ -66,24 +66,10 @@ impl PdfString {
             b => match std::str::from_utf8(b) {
                 // Pure ASCII is identical either way; only non-ASCII UTF-8 needs the switch.
                 Ok(utf8) if !b.is_ascii() => utf8.to_owned(),
-                _ => b.iter().map(|&c| pdfdoc_char(c)).collect(),
+                _ => b.iter().map(|&c| pdfcraft_crypt::pdfdoc_char(c)).collect(),
             },
         };
         if s.starts_with('\u{FEFF}') { s.trim_start_matches('\u{FEFF}').to_owned() } else { s }
-    }
-}
-
-/// PDFDocEncoding → Unicode (ISO 32000-2 Annex D). Bytes 0x18–0x1F and 0x80–0xA0 differ from Latin-1.
-fn pdfdoc_char(c: u8) -> char {
-    const HIGH: [char; 33] = [
-        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł',
-        'œ', 'š', 'ž', '\u{FFFD}', '€',
-    ];
-    const LOW: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
-    match c {
-        0x18..=0x1F => LOW[(c - 0x18) as usize],
-        0x80..=0xA0 => HIGH[(c - 0x80) as usize],
-        _ => c as char,
     }
 }
 

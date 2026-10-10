@@ -37,9 +37,27 @@ pub(crate) fn mac_shortcuts(ctx: &egui::Context) -> bool {
     ctx.os() == egui::os::OperatingSystem::Mac
 }
 
-/// How `s` is written on this platform.
+/// How `s` is written on this platform, using the resolved current interface language.
 pub(crate) fn shortcut_label(ctx: &egui::Context, s: Shortcut) -> String {
-    s.label(mac_shortcuts(ctx))
+    let key = crate::i18n::key_name(s.key);
+    if mac_shortcuts(ctx) {
+        Shortcut { key, ..s }.label(true)
+    } else {
+        let mut parts = Vec::new();
+        if s.command || s.mac_ctrl {
+            parts.push(crate::i18n::key_name("Ctrl"));
+        }
+        if s.shift {
+            parts.push(crate::i18n::key_name("Shift"));
+        }
+        parts.push(key);
+        parts.join("+")
+    }
+}
+
+/// The command modifier for help text such as “Strg-scroll”; bindings stay in the engine.
+pub(crate) fn command_modifier_label(ctx: &egui::Context) -> &'static str {
+    if mac_shortcuts(ctx) { Shortcut::command_name(true) } else { crate::i18n::key_name("Ctrl") }
 }
 
 /// How a registered command's shortcut is written on this platform ("" without one).
@@ -452,6 +470,7 @@ impl PdfCraftApp {
                 }
             }
             "view.marquee_zoom" => self.quick_tool = crate::QuickTool::MarqueeZoom,
+            "edit.column_select" => self.quick_tool = crate::QuickTool::ColumnSelect,
             "edit.snapshot" => {
                 self.quick_tool = crate::QuickTool::Snapshot;
                 self.notify_tr("Drag a rectangle around the area to copy");
@@ -616,7 +635,6 @@ impl PdfCraftApp {
 
 /// Render a top-level menu's registered commands (with live labels, shortcuts and enablement).
 pub(crate) fn registry_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui, menu: &str) {
-    let mac = mac_shortcuts(ui.ctx());
     for spec in commands::menu(menu) {
         let label = commands::current_label(spec, &app.session, app.active_ids().map(|(_, id)| id));
         let label = crate::i18n::menu_label(spec.id, &label);
@@ -653,7 +671,7 @@ pub(crate) fn registry_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui, menu: &str
             }
             continue;
         }
-        let shortcut = spec.shortcut.map(|s| s.label(mac)).unwrap_or_default();
+        let shortcut = spec.shortcut.map(|s| shortcut_label(ui.ctx(), s)).unwrap_or_default();
         let enabled = app.command_enabled(spec);
         let resp = ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut));
         if resp.clicked() {
@@ -662,4 +680,33 @@ pub(crate) fn registry_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui, menu: &str
         }
     }
     let _ = widgets::menu_item;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::os::OperatingSystem;
+
+    #[test]
+    fn localized_shortcut_labels_follow_language_and_platform() {
+        let previous = crate::i18n::current();
+        let ctx = egui::Context::default();
+        for os in [OperatingSystem::Windows, OperatingSystem::Nix] {
+            ctx.set_os(os);
+            crate::i18n::set_current(crate::i18n::Lang::from_code("de").unwrap());
+            assert_eq!(shortcut_label(&ctx, Shortcut::cmd("K")), "Strg+K");
+            assert_eq!(shortcut_label(&ctx, Shortcut::cmd_shift("S")), "Strg+Umschalt+S");
+            assert_eq!(command_shortcut_label(&ctx, "view.read_mode"), "Strg+H");
+            assert_eq!(command_modifier_label(&ctx), "Strg");
+            assert_eq!(Shortcut::cmd_shift("S").label(false), "Ctrl+Shift+S", "engine/control labels keep their stable spelling");
+            crate::i18n::set_current(crate::i18n::Lang::EN);
+            assert_eq!(shortcut_label(&ctx, Shortcut::cmd_shift("S")), "Ctrl+Shift+S");
+        }
+        ctx.set_os(OperatingSystem::Mac);
+        crate::i18n::set_current(crate::i18n::Lang::from_code("de").unwrap());
+        assert_eq!(shortcut_label(&ctx, Shortcut::cmd_shift("S")), "⇧⌘S");
+        assert_eq!(command_shortcut_label(&ctx, "view.read_mode"), "⌃⌘H");
+        assert_eq!(command_modifier_label(&ctx), "⌘");
+        crate::i18n::set_current(previous);
+    }
 }

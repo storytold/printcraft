@@ -366,7 +366,7 @@ impl PdfCraftApp {
                     self.notify_fmt("{name} is too large for a word list (at most 1 MB).", &[("name", &name)]);
                     return;
                 }
-                self.redact_search.words = pdfcraft_engine::redact_word_list(&String::from_utf8_lossy(&bytes)).join("\n");
+                self.redact_search.words = pdfcraft_engine::redact_word_list(&pdfcraft_engine::decode_text(&bytes)).join("\n");
                 self.redact_search.mode = crate::redact_ui::SearchMode::Words;
             }
         }

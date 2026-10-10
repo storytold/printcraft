@@ -124,7 +124,7 @@ impl SignatureDrag {
 
     pub fn paint(&self, painter: &egui::Painter, cx: &PageCx<'_>, cv: &CommentView, pending: Option<&Edit>) {
         let (Some((_, page, index)), Some(layers)) = (self.key, &self.layers) else { return };
-        if page != cx.page || cx.tool != QuickTool::Select || cx.hidden {
+        if page != cx.page || !matches!(cx.tool, QuickTool::Select | QuickTool::Fill(_)) || cx.hidden {
             return;
         }
         let dragging = matches!(cv.gesture, Some(Gesture::Move { page: p, index: i, .. } | Gesture::Resize { page: p, index: i, .. }) if (p, i) == (page, index));

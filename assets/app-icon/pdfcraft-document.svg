@@ -1,0 +1,16 @@
+<!-- Document outline: Lucide file-text, lucide-static 1.49.0, ISC.
+     PDF badge and outlined lettering: PdfCraft contributors, MIT OR Apache-2.0.
+     No fonts or external images. See LICENSE-document.txt and ATTRIBUTION.toml. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <g transform="translate(-2 -2) scale(2.8)" stroke="#0b0b0c" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+    <path fill="#efe9dc" d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+    <path fill="#c8ece4" d="M14 2v5a1 1 0 0 0 1 1h5" />
+    <path fill="none" stroke="#12a58a" d="M8 12h8M8 15h5" />
+  </g>
+  <rect x="3" y="34" width="56" height="23" rx="4" fill="#087f6b" />
+  <g fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 50V41h5a3 3 0 0 1 0 6h-5" />
+    <path d="M27 41v9h3a4.5 4.5 0 0 0 0-9z" />
+    <path d="M42 50V41h8M42 45h6" />
+  </g>
+</svg>

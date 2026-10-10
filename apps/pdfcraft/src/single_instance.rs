@@ -135,17 +135,16 @@ pub fn claim(files: &[String], may_hand_off: bool) -> Claim {
     }
 }
 
-/// The socket in `%LOCALAPPDATA%\PdfCraft` (beside the crash-recovery folder); none for a portable
-/// copy.
+/// The socket in `%LOCALAPPDATA%\PdfCraft` (beside the crash-recovery folder); none when
+/// `%LOCALAPPDATA%` is unset.
 #[cfg(windows)]
 fn socket_path() -> Option<std::path::PathBuf> {
     let name = socket_name(std::env::var("SESSIONNAME").ok().as_deref());
-    // A portable copy may sit in a folder other accounts can write to (`C:\Tools`): a socket
-    // there would let them receive this user's file paths or send it files to open. Portable
-    // launches each open their own window instead, and write nothing outside their folder.
-    if pdfcraft_ui_egui::portable::data_dir().is_some() {
-        return None;
-    }
+    // %LOCALAPPDATA% is private to the user's sign-in, so other accounts can't receive this
+    // user's file paths or send it files to open. A portable copy uses it too (#889), under its
+    // own name so it never hands files to an installed copy (which keeps its settings elsewhere).
+    // Never the portable folder itself: it may sit where other accounts can write (`C:\Tools`).
+    let name = if pdfcraft_ui_egui::portable::data_dir().is_some() { format!("portable-{name}") } else { name };
     std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()).map(|d| std::path::PathBuf::from(d).join("PdfCraft").join(name))
 }
 

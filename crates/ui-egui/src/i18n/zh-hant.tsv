@@ -17,6 +17,9 @@
 	Preferences	偏好設定
 	Preferences…	偏好設定…
 	Interface language	介面語言
+	Interface size	介面大小
+	Auto ({percent}%)	自動 ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	「自動」會跟隨系統的文字大小。頁面一律以螢幕的完整解析度呈現。
 	Identity	個人資訊
 	Name on new comments	新註解的作者名稱
 	Open…	開啟…
@@ -74,6 +77,7 @@
 	Rotate view clockwise	順時針旋轉檢視
 	Rotate view counterclockwise	逆時針旋轉檢視
 	Take a snapshot	擷取快照
+	Column select	欄選取
 	Full screen mode	全螢幕模式
 	Read mode	閱讀模式
 	Switch light / dark theme	切換淺色／深色主題
@@ -745,6 +749,7 @@
 	Dates	日期
 	Text in images isn't found; recognise text (OCR) first.	圖片中的文字無法找到；請先識別文字（OCR）。
 	No matches.	無匹配。
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	此處未顯示部分書籤：面板列出的書籤數量和巢狀深度有限。
 	{n} match(es) marked for redaction.	已標記 {n} 個匹配以待遮蔽內容。
 	Multiple words or phrases	多個單字或片語
 	One word or phrase per line	每行一個單字或片語
@@ -1407,6 +1412,8 @@
 	Right Edge	右邊緣
 	Language	語言
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	已儲存{place}：{before} → {after}（縮小了{pct}%）{detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	此檔案已經是最小的了（{size}）。未儲存副本。
+	Saved {place}: {before} → {after} (not smaller){detail}	已儲存{place}：{before} → {after}（未縮小）{detail}
 	Couldn't save the image: {e}	無法儲存圖片：{e}
 	Adding images arrives on the web with file pickers for images	Web 端新增圖片將使用圖片檔案選擇器
 	Replacing images on page {p} arrives on the web with image pickers ({i})	在 Web 端替換第{p}頁的圖片將使用圖片選擇器（{i}）
@@ -2030,3 +2037,39 @@
 	The field {name} no longer exists.	欄位 {name} 已不存在。
 	A selected field has no widget on any page, so the fields can't be edited together.	某個所選欄位在任何頁面上都沒有控制項，因此無法一起編輯這些欄位。
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	（{n} 張以可繪製的最大尺寸 {dpi} dpi 匯出）
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	已選取 {n} 個物件
+	Drag the selection to move it. Esc clears the selection.	拖曳選取範圍即可移動。按 Esc 清除選取。
+	Shift-click to select several objects. Drag empty space to select an area.	按住 Shift 點選可選取多個物件。拖曳空白區域可框選。
+	Select at most 1000 objects at a time.	一次最多選取 1000 個物件。
+	Finish or discard the text being edited before selecting several objects.	請先完成或放棄正在編輯的文字，再選取多個物件。
+	Move object	移動物件
+	Move objects	移動多個物件
+	Vertical text cannot be moved with this selection.	無法隨此選取範圍移動直排文字。
+	Text used as a clipping path cannot be moved with this selection.	無法隨此選取範圍移動用作裁切路徑的文字。
+	These objects could not be moved. Select them again and try a smaller move.	無法移動這些物件。請重新選取並嘗試較小的移動距離。
+	This page contains objects that cannot be selected together.	此頁面包含無法一起選取的物件。
+	Fill colour	填充顏色
+	No fill	無填充
+	Fill colour: none	填充顏色：無
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	空格
+	Grid view	格狀檢視
+	List view	清單檢視
+	Files are combined in the order shown. Drag them to change it.	檔案將按顯示的順序合併。拖曳可變更順序。
+	Preview unavailable: {e}	無法預覽：{e}
+	Pages: {k} of {n}	頁面：{k}/{n}
+	Check the pages	請檢查頁碼
+	Switch to List view to change the pages it takes.	切換到清單檢視以變更要使用的頁面。
+	Expand all	全部展開
+	Collapse all	全部摺疊
+	Remove page	刪除頁面
+	Remove {n} pages	刪除 {n} 頁

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use base64::Engine;
 
 use crate::XfaError;
-use crate::data::{DataNode, is_on, iso_to_pattern, som_to_path};
+use crate::data::{DataNode, data_path, is_on, iso_to_pattern};
 use crate::model::*;
 use crate::text::{self, Block, Face, Span};
 
@@ -508,11 +508,7 @@ impl Layouter<'_> {
             self.new_page()?;
         }
         // Data adds instances of a repeating subform (rows added in another viewer).
-        let from_data = match (&sf.common.name, self.data) {
-            (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&som_to_path(&ctx.som), name),
-            _ => 0,
-        };
-        let instances = instance_count(&sf.occur, from_data);
+        let instances = self.instances(node, &ctx.som);
         let ctx_parent = ctx;
         for i in 0..instances {
             let ctx = ctx_parent.with_som(&sf.common, sib + i);
@@ -583,11 +579,7 @@ impl Layouter<'_> {
                 && row.layout == Layout::Row
             {
                 // Rows added as data (in another viewer) repeat the row.
-                let from_data = match (&row.common.name, self.data) {
-                    (Some(name), Some(d)) if row.occur.max != Some(1) => d.count(&som_to_path(&ctx.som), name),
-                    _ => 0,
-                };
-                let instances = instance_count(&row.occur, from_data);
+                let instances = self.instances(child, &ctx.som);
                 for inst in 0..instances {
                     let h = self.row_height(row, &cols, inner_w, ctx, depth + 1);
                     if self.make_room(h)?
@@ -626,6 +618,17 @@ impl Layouter<'_> {
     /// The size a node takes when given `avail_w` of width. Containers are measured once per
     /// (node, width, depth): measuring a width-less container measures its content twice (for
     /// its width, then its height), which would otherwise be exponential in the nesting.
+    /// How many instances of `node` to lay out under the container at `parent_som`: a
+    /// repeating subform's `occur` and data instances ([`instance_count`]); one for anything else.
+    fn instances(&self, node: &Node, parent_som: &str) -> usize {
+        let Node::Subform(sf) = node else { return 1 };
+        let from_data = match (&sf.common.name, self.data) {
+            (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(self.tpl, parent_som), name),
+            _ => 0,
+        };
+        instance_count(&sf.occur, from_data)
+    }
+
     fn size_of(&self, node: &Node, avail_w: f64, ctx: &Ctx, depth: usize) -> (f64, f64) {
         let c = node.common();
         let spent = self.measures.get().saturating_add(1);
@@ -659,6 +662,9 @@ impl Layouter<'_> {
 
     fn measure(&self, node: &Node, avail_w: f64, ctx: &Ctx, depth: usize) -> (f64, f64) {
         let c = node.common();
+        // The container's own SOM, under which its repeating children count their instances.
+        // Measurements are cached per template node, so instance 0 stands for all of them.
+        let som = ctx.with_som(c, 0).som;
         let ctx = ctx.child(c);
         // A container without a width is as wide as its content (a radio group beside its
         // question, say); a leaf without one takes what is available.
@@ -684,9 +690,13 @@ impl Layouter<'_> {
                     Node::Area(a) => self.positioned_height(&a.children, inner_w, &ctx, depth),
                     Node::Subform(s) => match s.layout {
                         Layout::Positioned => self.positioned_height(&s.children, inner_w, &ctx, depth),
-                        Layout::Tb => {
-                            s.children.iter().filter(|k| k.common().presence.occupies()).map(|k| self.size_of(k, inner_w, &ctx, depth + 1).1).sum()
-                        }
+                        // Each instance of a repeating child takes its height again.
+                        Layout::Tb => s
+                            .children
+                            .iter()
+                            .filter(|k| k.common().presence.occupies())
+                            .map(|k| self.size_of(k, inner_w, &ctx, depth + 1).1 * self.instances(k, &som) as f64)
+                            .sum(),
                         Layout::LrTb | Layout::RlTb => self.packed_height(&s.children, inner_w, &ctx, depth),
                         Layout::Table => {
                             let cols = self.columns(s, inner_w);
@@ -943,8 +953,12 @@ impl Layouter<'_> {
                                 continue;
                             }
                             let (w, h) = self.size_of(k, inner.w, &ctx, depth + 1);
-                            self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, sib_index(&s.children, i))?;
-                            y += h;
+                            // A repeating subform here (a table in an area of a positioned page,
+                            // say) gets its instances, as in a flowed one, one under another.
+                            for instance in 0..self.instances(k, &ctx.som) {
+                                self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, sib_index(&s.children, i) + instance)?;
+                                y += h;
+                            }
                         }
                     }
                     Layout::LrTb | Layout::RlTb => {
@@ -1061,7 +1075,7 @@ impl Layouter<'_> {
         let ctx = ctx.with_som(&g.common, sib);
         // The group's data node holds the selected button's on value.
         let selected: Option<String> =
-            self.data.and_then(|d| d.text_at(&som_to_path(&ctx.som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+            self.data.and_then(|d| d.text_at(&data_path(self.tpl, &ctx.som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
         let inner = rect.inset(&g.common.margin);
         let group = self.unique_name(g.common.name.as_deref().unwrap_or("group"));
         let nodes: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
@@ -1182,7 +1196,7 @@ impl Layouter<'_> {
                 let field_name = f.common.name.clone().unwrap_or_else(|| "an image field".into());
                 let text: Vec<u8> = self
                     .data
-                    .and_then(|d| d.text_at(&som_to_path(&som_path())))
+                    .and_then(|d| d.text_at(&data_path(self.tpl, &som_path())))
                     .map(|t| t.bytes().filter(|b| !b.is_ascii_whitespace()).collect())
                     .unwrap_or_default();
                 let from_data = if text.is_empty() {
@@ -1215,8 +1229,12 @@ impl Layouter<'_> {
             Ui::Barcode => {
                 // The value as text, where the bars would be.
                 self.warn_once("barcode fields show their value as text, not as bars");
-                let value =
-                    self.data.and_then(|d| d.text_at(&som_to_path(&som_path()))).map(str::to_string).or_else(|| f.value.plain()).unwrap_or_default();
+                let value = self
+                    .data
+                    .and_then(|d| d.text_at(&data_path(self.tpl, &som_path())))
+                    .map(str::to_string)
+                    .or_else(|| f.value.plain())
+                    .unwrap_or_default();
                 if !value.trim().is_empty() {
                     let mut para = fctx.para.clone();
                     para.h_align = HAlign::Center;
@@ -1244,7 +1262,7 @@ impl Layouter<'_> {
         let read_only = matches!(f.access, Access::ReadOnly | Access::Protected);
         // The data's value wins over the template's default.
         let data_value: Option<String> =
-            self.data.and_then(|d| d.value_at(&som_to_path(&som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+            self.data.and_then(|d| d.value_at(&data_path(self.tpl, &som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
         // A choice list's default is a saved value too.
         let template_default = f.value.plain().map(|v| f.saved_value(v.trim())).filter(|v| !v.is_empty());
         let plain_value = data_value.clone().or_else(|| template_default.clone());

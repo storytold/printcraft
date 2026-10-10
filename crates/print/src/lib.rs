@@ -478,7 +478,8 @@ fn appearance_matrix(doc: &Document, form: &Dict, rect: [f64; 4]) -> Option<Matr
         rect[0] - b[0] * (rect[2] - rect[0]) / bw,
         rect[1] - b[1] * (rect[3] - rect[1]) / bh,
     ]);
-    Some(m.then(&a))
+    // The Do that draws the form applies its /Matrix itself, so only the placement goes here.
+    Some(a)
 }
 
 /// A Form XObject holding page `index` as it prints (user space; BBox = crop box).

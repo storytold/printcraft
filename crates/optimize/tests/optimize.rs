@@ -132,6 +132,39 @@ fn images_are_measured_where_drawn_and_downsampled() {
 }
 
 #[test]
+fn an_identity_decode_array_does_not_stop_reduce() {
+    // Office scanners write /Decode [0 1 0 1 0 1] (no change) on their page images (#490).
+    let with_decode = |doc: &mut Document, r: ObjRef, decode: Vec<Object>| {
+        let mut s = stream(doc, r);
+        s.dict.set(b"Decode".to_vec(), Object::Array(decode));
+        doc.set(r, Object::Stream(s));
+    };
+    let mut doc = Document::new_empty();
+    // 900 px drawn 216 pt (3 in) wide → 300 ppi, like a scanned page.
+    let scan = image(&mut doc, 900, 900, 3, true, None);
+    with_decode(&mut doc, scan, [0, 1, 0, 1, 0, 1].map(Object::Int).to_vec());
+    let gray = image(&mut doc, 900, 900, 1, false, None);
+    with_decode(&mut doc, gray, vec![Object::Real(0.0), Object::Real(1.0)]);
+    // A decode array that inverts the colours, and one of the wrong length: left alone.
+    let inverted = image(&mut doc, 900, 900, 3, true, None);
+    with_decode(&mut doc, inverted, [1, 0, 1, 0, 1, 0].map(Object::Int).to_vec());
+    let odd = image(&mut doc, 900, 900, 3, true, None);
+    with_decode(&mut doc, odd, [0, 1].map(Object::Int).to_vec());
+    page(
+        &mut doc,
+        &[("S", scan), ("G", gray), ("I", inverted), ("O", odd)],
+        "q 216 0 0 216 0 0 cm /S Do Q q 216 0 0 216 216 0 cm /G Do Q q 216 0 0 216 0 300 cm /I Do Q q 216 0 0 216 216 300 cm /O Do Q",
+    );
+    let report = optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!(report.images_resampled, 2, "{report:?}");
+    assert_eq!(stream(&doc, scan).dict.int(b"Width"), Some(450));
+    assert_eq!(stream(&doc, gray).dict.int(b"Width"), Some(450));
+    assert!(!stream(&doc, scan).dict.contains(b"Decode"), "the default decode array isn't carried over");
+    assert_eq!(stream(&doc, inverted).dict.int(b"Width"), Some(900));
+    assert_eq!(stream(&doc, odd).dict.int(b"Width"), Some(900));
+}
+
+#[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();
     let big = image(&mut doc, 1200, 600, 1, false, None);
@@ -303,4 +336,250 @@ fn progress_is_reported_per_image_and_a_refusal_cancels() {
     });
     assert!(matches!(r, Err(OptimizeError::Cancelled)), "{r:?}");
     assert_eq!(calls, 2, "nothing runs after the refusal");
+}
+
+/// A page with `resources` and, if given, `contents`.
+fn raw_page(doc: &mut Document, resources: Object, contents: Option<ObjRef>) -> ObjRef {
+    let pages = doc.root().and_then(|r| doc.get(r).as_dict().and_then(|d| d.reference(b"Pages"))).unwrap();
+    let mut p = Dict::new();
+    p.set(b"Type".to_vec(), Object::name("Page"));
+    p.set(b"Parent".to_vec(), Object::Ref(pages));
+    p.set(b"MediaBox".to_vec(), Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]));
+    p.set(b"Resources".to_vec(), resources);
+    if let Some(c) = contents {
+        p.set(b"Contents".to_vec(), Object::Ref(c));
+    }
+    let r = doc.add(Object::Dict(p));
+    doc.update_dict(pages, |d| {
+        let mut kids = d.get(b"Kids").and_then(|k| k.as_array().cloned()).unwrap_or_default();
+        kids.push(Object::Ref(r));
+        d.set(b"Count".to_vec(), Object::Int(kids.len() as i64));
+        d.set(b"Kids".to_vec(), Object::Array(kids));
+    })
+    .unwrap();
+    r
+}
+
+/// Builders for the tests below.
+fn xobjects(pairs: &[(&str, ObjRef)]) -> Dict {
+    let mut x = Dict::new();
+    for (n, r) in pairs {
+        x.set(n.as_bytes().to_vec(), Object::Ref(*r));
+    }
+    x
+}
+
+fn resources(x: Dict) -> Dict {
+    let mut res = Dict::new();
+    res.set(b"XObject".to_vec(), Object::Dict(x));
+    res
+}
+
+fn content(doc: &mut Document, c: &str) -> ObjRef {
+    doc.add(Object::Stream(Stream::flate(Dict::new(), c.as_bytes())))
+}
+
+fn form(doc: &mut Document, resources: Option<Object>, c: &str) -> ObjRef {
+    let mut d = Dict::new();
+    d.set(b"Subtype".to_vec(), Object::name("Form"));
+    d.set(b"BBox".to_vec(), Object::Array(vec![0.into(), 0.into(), 1.into(), 1.into()]));
+    if let Some(r) = resources {
+        d.set(b"Resources".to_vec(), r);
+    }
+    doc.add(Object::Stream(Stream::flate(d, c.as_bytes())))
+}
+
+fn xobject_names(doc: &Document, resources: &Object) -> Vec<String> {
+    let res = doc.resolve(resources);
+    let mut n: Vec<String> =
+        res.as_dict().unwrap().get(b"XObject").unwrap().as_dict().unwrap().iter().map(|(k, _)| String::from_utf8_lossy(k).into_owned()).collect();
+    n.sort();
+    n
+}
+
+fn page_xobjects(doc: &Document, page: ObjRef) -> Vec<String> {
+    let res = doc.get(page).as_dict().unwrap().get(b"Resources").unwrap().clone();
+    xobject_names(doc, &res)
+}
+
+fn count_images(bytes: &[u8]) -> usize {
+    let doc = Document::open(Arc::new(bytes.to_vec())).unwrap();
+    doc.object_numbers()
+        .into_iter()
+        .filter(|n| matches!(&*doc.get(ObjRef::new(*n, doc.generation(*n))), Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image")))
+        .count()
+}
+
+#[test]
+fn images_and_forms_nothing_draws_are_dropped() {
+    let mut doc = Document::new_empty();
+    let img = |doc: &mut Document| image(doc, 64, 64, 3, false, None);
+
+    // Edit a PDF deleting an image: the page gets a new content stream without the `Do`; the
+    // old one, which still names the image, is no longer used.
+    let t1 = img(&mut doc);
+    let old = content(&mut doc, "q 72 0 0 72 0 0 cm /ImT Do Q");
+    let t = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("ImT", t1)]))), Some(old));
+    let new = content(&mut doc, "");
+    doc.update_dict(t, |p| p.set(b"Contents".to_vec(), Object::Ref(new))).unwrap();
+    // Dropped: a JPEG a page no longer draws, beside one it does.
+    let a1 = img(&mut doc);
+    let a2 = image(&mut doc, 64, 64, 3, true, None);
+    let c = content(&mut doc, "q 72 0 0 72 0 0 cm /Im1 Do Q");
+    let a = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("Im1", a1), ("Im2", a2)]))), Some(c));
+    // Dropped from resources the page alone refers to, written as an object of their own.
+    let s1 = img(&mut doc);
+    let own = doc.add(Object::Dict(resources(xobjects(&[("Unused", s1)]))));
+    let c = content(&mut doc, "");
+    let s = raw_page(&mut doc, Object::Ref(own), Some(c));
+    // An image drawn only inside a form stays; one beside it goes.
+    let (d3, d4) = (img(&mut doc), img(&mut doc));
+    let f = form(&mut doc, None, "/Im3 Do");
+    let c = content(&mut doc, "/F Do");
+    let d = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("F", f), ("Im3", d3), ("Im4", d4)]))), Some(c));
+
+    // Kept, though the page's own content doesn't name them:
+    // - drawn by a form with resources of its own that lack the name (renderers fall back to
+    //   the page's);
+    let k1 = img(&mut doc);
+    let mut procset = Dict::new();
+    procset.set(b"ProcSet".to_vec(), Object::Array(vec![Object::name("PDF")]));
+    let fk = form(&mut doc, Some(Object::Dict(procset)), "/ImK Do");
+    let c = content(&mut doc, "/Fk Do");
+    let k = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("Fk", fk), ("ImK", k1)]))), Some(c));
+    // - drawn by a Type 3 glyph named like an inert key;
+    let g6 = img(&mut doc);
+    let glyph = content(&mut doc, "/Im6 Do");
+    let mut procs = Dict::new();
+    procs.set(b"P".to_vec(), Object::Ref(glyph));
+    let mut t3 = Dict::new();
+    t3.set(b"Type".to_vec(), Object::name("Font"));
+    t3.set(b"Subtype".to_vec(), Object::name("Type3"));
+    t3.set(b"CharProcs".to_vec(), Object::Dict(procs));
+    let mut fonts = Dict::new();
+    fonts.set(b"T3".to_vec(), Object::Dict(t3));
+    let mut res = resources(xobjects(&[("Im6", g6)]));
+    res.set(b"Font".to_vec(), Object::Dict(fonts));
+    let c = content(&mut doc, "BT /T3 1 Tf (P) Tj ET");
+    let g = raw_page(&mut doc, Object::Dict(res), Some(c));
+    // - after an inline image whose data runs into the operators (no space before `EI`), or
+    //   given as the second of two operands;
+    let (l1, l2) = (img(&mut doc), img(&mut doc));
+    let c = content(&mut doc, "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 00>EI Q q /ImL Do Q /Other /ImL2 Do");
+    let l = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("ImL", l1), ("ImL2", l2)]))), Some(c));
+    // - drawn by a form field that is on no page;
+    let z1 = img(&mut doc);
+    let c = content(&mut doc, "");
+    let z = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("Z1", z1)]))), Some(c));
+    let wap = form(&mut doc, None, "/Z1 Do");
+    let mut appearance = Dict::new();
+    appearance.set(b"N".to_vec(), Object::Ref(wap));
+    let mut widget = Dict::new();
+    widget.set(b"Subtype".to_vec(), Object::name("Widget"));
+    widget.set(b"AP".to_vec(), Object::Dict(appearance));
+    let widget = doc.add(Object::Dict(widget));
+    let mut acroform = Dict::new();
+    acroform.set(b"Fields".to_vec(), Object::Array(vec![Object::Ref(widget)]));
+    let root = doc.root().unwrap();
+    doc.update_dict(root, |c| c.set(b"AcroForm".to_vec(), Object::Dict(acroform))).unwrap();
+    // - in resources shared by pages (or with an annotation's appearance), or inherited from the
+    //   page tree: left alone;
+    let (b1, b2) = (img(&mut doc), img(&mut doc));
+    let shared = doc.add(Object::Dict(resources(xobjects(&[("X1", b1), ("X2", b2)]))));
+    let c = content(&mut doc, "0 0 m");
+    raw_page(&mut doc, Object::Ref(shared), Some(c));
+    let c = content(&mut doc, "/X1 Do");
+    raw_page(&mut doc, Object::Ref(shared), Some(c));
+    let (inh, unused_inh) = (img(&mut doc), img(&mut doc));
+    let tree = doc.root().and_then(|r| doc.get(r).as_dict().and_then(|d| d.reference(b"Pages"))).unwrap();
+    doc.update_dict(tree, |d| d.set(b"Resources".to_vec(), Object::Dict(resources(xobjects(&[("Inh", inh), ("Old", unused_inh)]))))).unwrap();
+    // - named by another page for its own image.
+    let (r1, r2) = (img(&mut doc), img(&mut doc));
+    let c = content(&mut doc, "");
+    let r = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("Im9", r1)]))), Some(c));
+    let c = content(&mut doc, "/Im9 Do");
+    raw_page(&mut doc, Object::Dict(resources(xobjects(&[("Im9", r2)]))), Some(c));
+
+    let before = write_full(&doc, &SaveOptions::default()).unwrap();
+    let report = optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!(report.unused_xobjects, 4, "{report:?}");
+    assert!(page_xobjects(&doc, t).is_empty(), "the deleted image goes");
+    assert_eq!(page_xobjects(&doc, a), ["Im1"]);
+    assert!(xobject_names(&doc, &Object::Ref(own)).is_empty());
+    assert!(page_xobjects(&doc, s).is_empty());
+    assert_eq!(page_xobjects(&doc, d), ["F", "Im3"]);
+    assert_eq!(page_xobjects(&doc, k), ["Fk", "ImK"]);
+    assert_eq!(page_xobjects(&doc, g), ["Im6"]);
+    assert_eq!(page_xobjects(&doc, l), ["ImL", "ImL2"]);
+    assert_eq!(page_xobjects(&doc, z), ["Z1"]);
+    assert_eq!(xobject_names(&doc, &Object::Ref(shared)), ["X1", "X2"]);
+    assert_eq!(page_xobjects(&doc, tree), ["Inh", "Old"]);
+    assert_eq!(page_xobjects(&doc, r), ["Im9"]);
+    let after = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert_eq!((count_images(&before), count_images(&after)), (17, 13), "the dropped images are gone from the file");
+}
+
+#[test]
+fn nothing_is_dropped_when_a_stream_cannot_be_checked() {
+    // A page with an image nothing draws, and an appearance stream on it.
+    let build = |stream: Stream| {
+        let mut doc = Document::new_empty();
+        let unused = image(&mut doc, 64, 64, 3, false, None);
+        let c = content(&mut doc, "");
+        let page = raw_page(&mut doc, Object::Dict(resources(xobjects(&[("Im1", unused)]))), Some(c));
+        let other = doc.add(Object::Stream(stream));
+        let mut appearance = Dict::new();
+        appearance.set(b"N".to_vec(), Object::Ref(other));
+        let mut annot = Dict::new();
+        annot.set(b"AP".to_vec(), Object::Dict(appearance));
+        doc.update_dict(page, |p| p.set(b"Annots".to_vec(), Object::Array(vec![Object::Dict(annot)]))).unwrap();
+        let report = optimize(&mut doc, &Settings::default()).unwrap();
+        (report.unused_xobjects, page_xobjects(&doc, page))
+    };
+    let (gone, kept) = ((1, Vec::<String>::new()), (0, vec!["Im1".to_string()]));
+    // Valid compressed data with extra keys.
+    let flate = |extra: &[(&str, Object)]| {
+        let mut s = Stream::flate(Dict::new(), b"0 0 m");
+        s.dict.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+        for (k, v) in extra {
+            s.dict.set(k.as_bytes().to_vec(), v.clone());
+        }
+        s
+    };
+    let parms = |k: &str, v: Object| {
+        let mut p = Dict::new();
+        p.set(k.as_bytes().to_vec(), v);
+        Object::Dict(p)
+    };
+    // Readable: the image goes.
+    assert_eq!(build(flate(&[])), gone);
+    assert_eq!(build(flate(&[("DecodeParms", parms("Predictor", Object::Int(1)))])), gone);
+    // The name written with an escape still counts.
+    assert_eq!(build(Stream::flate(Dict::new(), b"/Im#31 Do")), kept);
+    // Read differently by viewers, or not at all: nothing goes.
+    let dangling = Object::Ref(ObjRef::new(999, 0));
+    let cases = [
+        Stream::from_raw(flate(&[]).dict, b"not zlib data".to_vec()),
+        flate(&[("Filter", dangling.clone())]),
+        flate(&[("Filter", Object::Array(vec![Object::name("FlateDecode"), dangling.clone()]))]),
+        flate(&[("Filter", Object::Array(vec![Object::name("Crypt"), Object::name("FlateDecode")]))]),
+        flate(&[("DP", parms("Predictor", Object::Int(1)))]),
+        flate(&[("DecodeParms", Object::Array(vec![Object::Dict(Dict::new()), Object::Dict(Dict::new())]))]),
+        flate(&[("DecodeParms", parms("Predictor", dangling))]),
+        flate(&[("DecodeParms", parms("Predictor", Object::Real(12.5)))]),
+        flate(&[("F", Object::name("external.dat"))]),
+        // An image codec on a stream drawn as an appearance: viewers decode it as content.
+        Stream::from_raw(
+            {
+                let mut d = Dict::new();
+                d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+                d
+            },
+            vec![0; 8],
+        ),
+    ];
+    for s in cases {
+        let dict = s.dict.clone();
+        assert_eq!(build(s), kept, "{dict:?}");
+    }
 }

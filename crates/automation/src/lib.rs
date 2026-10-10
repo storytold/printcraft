@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pdfcraft_engine::{DocId, Document, Edit, Session, commands};
+use pdfcraft_engine::{CombineSource, DocId, Document, Edit, Session, commands};
 use pdfcraft_platform::staging::{StagingName, create_staging, staging_suffixes};
 use pdfcraft_render::{PageRenderer, PageText, RenderConfig, RenderRequest, RequestKind};
 use serde_json::{Value, json};
@@ -76,6 +76,10 @@ fn failed(e: impl std::fmt::Display) -> ToolError {
 /// Default and maximum resolution for `page_render`.
 const DEFAULT_DPI: f64 = 96.0;
 const MAX_DPI: f64 = 600.0;
+
+/// Bookmarks in one page of the bookmark list, by default and at most.
+const BOOKMARK_PAGE: usize = 100;
+const MAX_BOOKMARK_PAGE: usize = 1000;
 
 /// Page texts of one document version: (the working bytes, one slot per page).
 type TextCache = (Arc<Vec<u8>>, Vec<Option<Arc<PageText>>>);
@@ -242,7 +246,7 @@ impl Automation {
                 out["labels"] = json!(self.doc(&a)?.info.pages.iter().map(|p| p.label.clone()).collect::<Vec<_>>());
                 out
             }
-            "bookmark_list" => json!({ "bookmarks": bookmark_tree(&self.doc(&a)?.info.outline, &[]) }),
+            "bookmark_list" => self.bookmark_listing(&a)?,
             "bookmark_add" => {
                 let page = self.page(&a)?;
                 let parent = a.opt_path("parent")?.unwrap_or_default();
@@ -270,7 +274,9 @@ impl Automation {
             }
             "bookmark_from_structure" => {
                 let mut out = self.apply(&a, Edit::BookmarksFromStructure)?;
-                out["bookmarks"] = json!(bookmark_tree(&self.doc(&a)?.info.outline, &[]));
+                let listing = self.bookmark_listing(&a)?;
+                out["bookmarks"] = listing["bookmarks"].clone();
+                out["next"] = listing["next"].clone();
                 out
             }
             "doc_protect" => self.doc_protect(&a)?,
@@ -303,8 +309,12 @@ impl Automation {
                 let before = self.doc(&a)?.bytes.len();
                 let path = self.resolve(a.str("path")?, true)?;
                 let (bytes, merged) = self.session.reduced_bytes(id).map_err(failed)?;
-                write_atomic(&path, &bytes)?;
-                json!({ "path": path.to_string_lossy(), "bytes_before": before, "bytes_after": bytes.len(), "merged_objects": merged })
+                // As in the app, a copy that isn't smaller is not written (#490).
+                let written = bytes.len() < before;
+                if written {
+                    write_atomic(&path, &bytes)?;
+                }
+                json!({ "path": path.to_string_lossy(), "written": written, "bytes_before": before, "bytes_after": bytes.len(), "merged_objects": merged })
             }
             "doc_optimize" => self.doc_optimize(&a)?,
             "doc_initial_view" => self.doc_initial_view(&a)?,
@@ -533,6 +543,8 @@ impl Automation {
             "link_delete" => self.link_delete(&a)?,
             "links_from_urls" => self.links_from_urls(&a)?,
             "links_remove" => self.links_remove(&a)?,
+            "object_list" => self.object_list(&a)?,
+            "object_move" => self.object_move(&a)?,
             "content_list" => self.content_list(&a)?,
             "page_add_text" => self.page_add_text(&a)?,
             "page_add_image" => self.page_add_image(&a)?,
@@ -596,14 +608,23 @@ impl Automation {
             }
             "sign_windows_ids" => {
                 #[cfg(target_os = "windows")]
-                let ids: Vec<Value> = pdfcraft_engine::sign::windows::identities()
-                    .map_err(failed)?
-                    .iter()
-                    .map(|id| json!({ "id": pdfcraft_engine::sign::windows::reference(&id.certificate), "certificate": signing::cert_json(&id.certificate) }))
-                    .collect();
+                let (ids, unusable): (Vec<Value>, Vec<Value>) = {
+                    let listing = pdfcraft_engine::sign::windows::list().map_err(failed)?;
+                    let ids = listing
+                        .ids
+                        .iter()
+                        .map(|id| json!({ "id": pdfcraft_engine::sign::windows::reference(&id.certificate), "certificate": signing::cert_json(&id.certificate) }))
+                        .collect();
+                    let unusable = listing
+                        .unusable
+                        .iter()
+                        .map(|u| json!({ "subject": u.subject, "sha256": u.fingerprint, "reason": u.reason, "no_private_key": u.no_private_key }))
+                        .collect();
+                    (ids, unusable)
+                };
                 #[cfg(not(target_os = "windows"))]
-                let ids: Vec<Value> = Vec::new();
-                json!({ "count": ids.len(), "ids": ids })
+                let (ids, unusable): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
+                json!({ "count": ids.len(), "ids": ids, "unusable": unusable })
             }
             "sign_trust" => self.sign_trust(&a)?,
             "comment_mark" => self.comment_mark(&a)?,
@@ -618,6 +639,24 @@ impl Automation {
     }
 
     // ---- documents ---------------------------------------------------------------------------
+
+    /// One page of a document's bookmarks: `offset` (from 0) and `limit` (1 to `MAX_BOOKMARK_PAGE`).
+    fn bookmark_listing(&self, a: &Args) -> Result<Value> {
+        let id = a.int("doc")?;
+        let id = DocId(u64::try_from(id).map_err(|_| ToolError::InvalidArgs("doc must be positive".into()))?);
+        let offset = a.opt_int("offset")?.unwrap_or(0);
+        let offset = usize::try_from(offset).map_err(|_| ToolError::InvalidArgs("offset must be 0 or more".into()))?;
+        let limit = a.opt_int("limit")?.unwrap_or(BOOKMARK_PAGE as i64);
+        let limit = usize::try_from(limit)
+            .ok()
+            .filter(|l| (1..=MAX_BOOKMARK_PAGE).contains(l))
+            .ok_or_else(|| ToolError::InvalidArgs(format!("limit must be from 1 to {MAX_BOOKMARK_PAGE}")))?;
+        let page = self
+            .session
+            .bookmark_page(id, offset, limit)
+            .ok_or_else(|| ToolError::Failed(format!("no open document with id {} (see doc_list)", id.0)))?;
+        Ok(json!({ "bookmarks": nest_rows(&page.rows), "next": page.next, "truncated": page.truncated }))
+    }
 
     fn doc(&self, a: &Args) -> Result<&Document> {
         let id = a.int("doc")?;
@@ -851,6 +890,7 @@ impl Automation {
             "invalid_links": o.invalid_links,
             "invalid_bookmarks": o.invalid_bookmarks,
             "unreferenced_dests": o.unreferenced_dests,
+            "unused_xobjects": o.unused_xobjects,
             "merged_objects": r.merged,
             "discarded": r.discarded.iter().map(|(h, n)| json!({ "category": h.id(), "count": n })).collect::<Vec<_>>(),
         }))
@@ -1032,7 +1072,7 @@ impl Automation {
                     (None, Some(p)) => {
                         let path = self.resolve(p, false)?;
                         let t = std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
-                        (path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), String::from_utf8_lossy(&t).into_owned())
+                        (path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), pdfcraft_engine::decode_text(&t))
                     }
                     (None, None) => return Err(ToolError::InvalidArgs("text needs `text` or `path`".into())),
                 };
@@ -1280,15 +1320,58 @@ impl Automation {
             }
             Some(_) => return Err(ToolError::InvalidArgs("passwords must list a password (or null) for each path".into())),
         };
-        let mut sources = Vec::new();
-        for (p, range) in paths.into_iter().zip(ranges) {
+        // Entries sharing a group number are one file split into parts placed apart.
+        let groups: Option<Vec<Option<u64>>> = match a.get("groups") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(v)) if v.len() == paths.len() && v.iter().all(|x| x.is_u64() || x.is_null()) => {
+                Some(v.iter().map(Value::as_u64).collect())
+            }
+            Some(_) => return Err(ToolError::InvalidArgs("groups must list a number (or null) for each path".into())),
+        };
+        let mut sources: Vec<CombineSource> = Vec::new();
+        let mut firsts: Vec<(u64, PathBuf, usize)> = Vec::new();
+        for (i, (p, range)) in paths.into_iter().zip(ranges).enumerate() {
             let path = self.resolve(p, false)?;
-            let bytes = std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
+            let group = groups.as_ref().and_then(|g| g.get(i).copied().flatten());
+            let first = group.and_then(|g| firsts.iter().find(|f| f.0 == g));
+            let bytes = match first {
+                Some((g, first_path, at)) => {
+                    if *first_path != path {
+                        return Err(ToolError::InvalidArgs(format!("groups[{i}]: group {g} is {}, not {}", first_path.display(), path.display())));
+                    }
+                    sources.get(*at).map(|s| s.1.clone()).ok_or_else(|| failed("group source missing"))?
+                }
+                None => {
+                    if let Some(g) = group {
+                        firsts.push((g, path.clone(), sources.len()));
+                    }
+                    Arc::new(std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?)
+                }
+            };
             let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            sources.push((name, Arc::new(bytes), range));
+            sources.push((name, bytes, range));
         }
         let passwords: Vec<Option<&str>> = passwords.iter().map(Option::as_deref).collect();
-        let bytes = self.session.combine_unlocked(&sources, &passwords).map_err(failed)?;
+        let bytes = match groups {
+            None => self.session.combine_unlocked(&sources, &passwords),
+            Some(groups) => {
+                // A path without a group is a file of its own: give it a key no group uses.
+                let mut next = groups.iter().flatten().max().map_or(Some(0), |m| m.checked_add(1));
+                let mut keys = Vec::with_capacity(groups.len());
+                for g in &groups {
+                    keys.push(match g {
+                        Some(g) => *g,
+                        None => {
+                            let own = next.ok_or_else(|| ToolError::InvalidArgs("group numbers are too large".into()))?;
+                            next = own.checked_add(1);
+                            own
+                        }
+                    });
+                }
+                self.session.combine_grouped(&sources, &keys, &passwords)
+            }
+        }
+        .map_err(failed)?;
         self.deliver(a, "Combined", bytes)
     }
 
@@ -1439,8 +1522,14 @@ impl Automation {
             Some(_) => self.pages(a, "pages")?,
             None => (0..doc.info.pages.len()).collect(),
         };
+        // Column select (#740): only the text inside the rectangle, row by row.
+        let rect = a.nums::<4>("rect")?.map(|r| r.map(|v| v as f32));
         let texts = self.page_texts(id, &pages)?;
-        let out: Vec<Value> = pages.iter().zip(texts).map(|(p, t)| json!({ "page": p + 1, "text": t.plain_text() })).collect();
+        let text = |t: &PageText| match rect {
+            Some(r) => t.column_text(&t.glyphs_in(r)),
+            None => t.plain_text(),
+        };
+        let out: Vec<Value> = pages.iter().zip(texts).map(|(p, t)| json!({ "page": p + 1, "text": text(&t) })).collect();
         Ok(json!({ "pages": out }))
     }
 
@@ -1641,17 +1730,36 @@ impl Args<'_> {
     }
 }
 
-/// The bookmark tree as JSON, with 1-based paths and pages.
-fn bookmark_tree(items: &[pdfcraft_render::OutlineItem], parent: &[usize]) -> Vec<Value> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, o)| {
-            let mut path = parent.to_vec();
-            path.push(i + 1);
-            json!({ "path": path, "title": o.title, "page": o.page.map(|p| p + 1), "open": o.open, "children": bookmark_tree(&o.children, &path) })
-        })
-        .collect()
+/// Bookmark rows in listing order as JSON: a row holds the rows that follow it on the page at the
+/// next level down in `children`, and paths and pages are 1-based.
+fn nest_rows(rows: &[pdfcraft_engine::BookmarkRow]) -> Vec<Value> {
+    // The open rows, outermost first, with their depth and the children gathered so far.
+    let mut open: Vec<(usize, Value, Vec<Value>)> = Vec::new();
+    let mut roots = Vec::new();
+    for row in rows {
+        let depth = row.path.len().saturating_sub(1);
+        while open.last().is_some_and(|(d, _, _)| *d >= depth) {
+            close_row(&mut open, &mut roots);
+        }
+        let path: Vec<usize> = row.path.iter().map(|p| p.saturating_add(1)).collect();
+        let fields = json!({ "path": path, "title": row.title, "page": row.page.map(|p| p.saturating_add(1)), "open": row.open });
+        open.push((depth, fields, Vec::new()));
+    }
+    while !open.is_empty() {
+        close_row(&mut open, &mut roots);
+    }
+    roots
+}
+
+/// Closes the innermost open row: it joins the row above it as a child, or the top level.
+fn close_row(open: &mut Vec<(usize, Value, Vec<Value>)>, roots: &mut Vec<Value>) {
+    if let Some((_, mut fields, children)) = open.pop() {
+        fields["children"] = Value::Array(children);
+        match open.last_mut() {
+            Some((_, _, siblings)) => siblings.push(fields),
+            None => roots.push(fields),
+        }
+    }
 }
 
 fn one_based(pages: &[i64]) -> Result<Vec<usize>> {
@@ -1721,6 +1829,7 @@ fn info(d: &Document) -> Value {
             "page": n + 1, "label": p.label, "width": p.width, "height": p.height, "rotation": p.rotation,
         })).collect::<Vec<_>>(),
         "outline": outline(&i.outline),
+        "outline_more": i.outline_more,
         // Rectangles use the tools' convention (top-left of the displayed page, like
         // comment_list and link_list), not raw PDF user space, so they can be fed back to
         // geometry-taking tools (#129).

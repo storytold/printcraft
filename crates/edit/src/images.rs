@@ -304,3 +304,73 @@ pub fn change_image(doc: &mut Document, page: usize, index: usize, change: &Imag
     })?;
     Ok(())
 }
+
+/// Inventory indexes exclude the streams that belong to added content.
+pub(crate) fn selectable_images(
+    doc: &Document,
+    page: usize,
+    excluded: &std::collections::BTreeSet<ObjRef>,
+) -> Result<Vec<(usize, PageImage)>, EditError> {
+    let p = page_of(doc, page)?;
+    let all = streams(doc, &p.dict);
+    Ok(page_images(doc, page)?
+        .into_iter()
+        .enumerate()
+        .filter(|(_, image)| !all.get(image.stream).and_then(|(o, _)| o.as_ref()).is_some_and(|r| excluded.contains(&r)))
+        .collect())
+}
+
+/// Plan all transforms before changing a stream; indexes refer to the original inventory.
+/// Splice only the chosen Do operators and preserve all other bytes and stream dictionaries.
+pub(crate) fn translate_images(doc: &mut Document, page: usize, indexes: &[usize], offset: [f64; 2]) -> Result<(), EditError> {
+    if indexes.is_empty() {
+        return Ok(());
+    }
+    let images = page_images(doc, page)?;
+    let p = page_of(doc, page)?;
+    let all = streams(doc, &p.dict);
+    let mut plans = std::collections::BTreeMap::new();
+    for index in indexes {
+        let image = images.get(*index).ok_or_else(|| EditError::Invalid("a selected image no longer exists".into()))?;
+        let placement = Matrix(image.draw_matrix);
+        let inverse = placement.invert().ok_or_else(|| EditError::Invalid("a selected image has no area".into()))?;
+        let [a, b, c, d, _, _] = inverse.0;
+        let movement = Matrix([1.0, 0.0, 0.0, 1.0, a * offset[0] + c * offset[1], b * offset[0] + d * offset[1]]);
+        if !movement.0.iter().all(|v| v.is_finite() && v.abs() <= 1e12) {
+            return Err(EditError::Invalid("the image move is too large".into()));
+        }
+        plans.insert((image.stream, image.op), movement);
+    }
+    let mut data = Vec::with_capacity(all.len());
+    let mut inside_text = false;
+    for (stream, (_, bytes)) in all.iter().enumerate() {
+        let pieces = pdfcraft_content::Pieces::join(&[bytes.as_slice()]);
+        let ops = pieces.parse().ops;
+        for (index, op) in ops.iter().enumerate() {
+            if op.is("BT") {
+                inside_text = true;
+            } else if op.is("ET") {
+                inside_text = false;
+            } else if inside_text && plans.contains_key(&(stream, index)) {
+                return Err(EditError::Invalid("an image inside a text object cannot be moved in a group".into()));
+            }
+        }
+        let changed = crate::text::splice(&pieces, &ops, |index| {
+            let Some(matrix) = plans.remove(&(stream, index)) else { return (Vec::new(), true) };
+            let original = ops.get(index).cloned().into_iter();
+            // Local translations can be tiny under a large CTM. Preserve their precision
+            // rather than rounding them to zero or amplifying an error on the page.
+            let mut out = vec![Op::new("q", vec![]), Op::new("cm", matrix.0.map(Object::Real).to_vec())];
+            out.extend(original);
+            out.push(Op::new("Q", vec![]));
+            (out, false)
+        });
+        data.push(changed.into_iter().next().unwrap_or_default());
+    }
+    if !plans.is_empty() {
+        return Err(EditError::Invalid("a selected image operation is missing".into()));
+    }
+    let contents = crate::text::rewritten_contents(doc, &all, data);
+    doc.update_dict(p.obj, |d| d.set(b"Contents".to_vec(), contents))?;
+    Ok(())
+}

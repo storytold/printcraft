@@ -578,6 +578,10 @@ impl Automation {
         if color.is_some() || opacity.is_some() || width.is_some() {
             edits.push(Edit::StyleAnnotation { page, index, color, opacity, width, endings: None });
         }
+        if let Some(f) = a.opt_str("fill")? {
+            let fill = if f.eq_ignore_ascii_case("none") { None } else { Some(parse_color(f)?) };
+            edits.push(Edit::FillAnnotation { page, index, fill });
+        }
         if let Some(r) = a.nums::<4>("rect")? {
             edits.push(Edit::ResizeAnnotation { page, index, rect: rect_to_user(&info, r) });
         }

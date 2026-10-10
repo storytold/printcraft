@@ -360,6 +360,64 @@ fn comment_properties_change_appearance_and_author() {
     assert_eq!(doc.can_undo(), Some("Change comment properties"), "one undo step");
 }
 
+/// #686: rectangles, ovals, polygons and clouds can be filled, from the quick bar for new ones
+/// and from Properties for existing ones; "No fill" takes it away again.
+#[test]
+fn shapes_take_a_fill_colour_from_the_quick_bar_and_properties() {
+    use pdfcraft_ui_egui::comments::CommentTool;
+    let mut h = harness(|app| app.set_option("quick", "square").unwrap());
+    h.run_steps(2);
+    // No fill by default; the quick bar says so.
+    h.get_by_label("Fill colour: none");
+    h.state_mut().comment_prefs.set_fill(CommentTool::Rectangle, Some([1.0, 0.5, 0.0]));
+    // Tools without an interior keep no fill.
+    h.state_mut().comment_prefs.set_fill(CommentTool::Line, Some([1.0, 0.5, 0.0]));
+    assert_eq!(h.state().comment_prefs.style(CommentTool::Line).fill, None);
+    h.run_steps(2);
+    drag_pt(&mut h, (40.0, 100.0), (140.0, 40.0));
+    let fill_of = |h: &Harness<'static, PdfCraftApp>, index: usize| {
+        let s = h.state();
+        let doc = s.session.get(s.views[0].id).unwrap();
+        let p = doc.comment_props(0, index).unwrap();
+        assert!(p.fillable);
+        p.fill
+    };
+    assert_eq!(fill_of(&h, 0), Some([1.0, 0.5, 0.0]), "the new rectangle is filled");
+    // Quick bar ▸ Fill colour ▸ No fill: the next rectangle has none.
+    h.state_mut().set_option("quick", "square").unwrap();
+    h.run_steps(2);
+    h.get_by_label("Fill colour").click();
+    h.run_steps(2);
+    h.get_by_label("No fill").click();
+    h.run_steps(2);
+    assert_eq!(h.state().comment_prefs.style(CommentTool::Rectangle).fill, None);
+    drag_pt(&mut h, (160.0, 100.0), (260.0, 40.0));
+    assert_eq!(fill_of(&h, 1), None);
+
+    // Properties ▸ Fill colour changes an existing one, as one undo step.
+    h.state_mut().open_comment_props(0, 0);
+    h.run_steps(2);
+    h.get_by_label("Rectangle Properties");
+    h.get_by_label("Fill colour");
+    assert_eq!(h.state().comment_props.as_ref().unwrap().original.fill, Some([1.0, 0.5, 0.0]));
+    h.get_by_label("No fill").click();
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert_eq!(fill_of(&h, 0), None);
+    let undo = h.state().session.get(h.state().views[0].id).unwrap().can_undo().map(str::to_owned);
+    assert_eq!(undo.as_deref(), Some("Change comment properties"));
+    h.state_mut().open_comment_props(0, 1);
+    h.run_steps(2);
+    h.state_mut().comment_props.as_mut().expect("open").edited.fill = Some([0.0, 0.0, 1.0]);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert_eq!(fill_of(&h, 1), Some([0.0, 0.0, 1.0]));
+    // Make Current Properties Default carries the fill into the tool.
+    h.state_mut().make_comment_default(0, 1);
+    assert_eq!(h.state().comment_prefs.style(CommentTool::Rectangle).fill, Some([0.0, 0.0, 1.0]));
+}
+
 #[test]
 fn the_panel_filters_and_sorts() {
     let mut h = harness(|app| {

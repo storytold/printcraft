@@ -18,6 +18,9 @@
 	Preferences	Einstellungen
 	Preferences…	Einstellungen…
 	Interface language	Sprache der Oberfläche
+	Interface size	Größe der Oberfläche
+	Auto ({percent}%)	Automatisch ({percent} %)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	Automatisch folgt der Textgröße des Systems. Seiten werden immer in der vollen Auflösung des Bildschirms dargestellt.
 	Identity	Identität
 	Name on new comments	Name für neue Kommentare
 	Open…	Öffnen…
@@ -44,6 +47,7 @@
 	Fit visible	Sichtbaren Inhalt einpassen
 	Marquee zoom	Auswahlrahmen-Zoom
 	Take a snapshot	Schnappschuss erstellen
+	Column select	Spaltenauswahl
 	Full screen mode	Vollbildmodus
 	Read mode	Lesemodus
 	Switch light / dark theme	Helles / dunkles Design umschalten
@@ -1078,6 +1082,7 @@
 	Dates	Datumsangaben
 	Text in images isn't found; recognise text (OCR) first.	Text in Bildern wird nicht gefunden; führe zuerst Text erkennen (OCR) aus.
 	No matches.	Keine Treffer.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Einige Lesezeichen werden hier nicht angezeigt: Das Fenster listet nur eine begrenzte Anzahl bis zu einer begrenzten Tiefe auf.
 	{n} match(es) marked for redaction.	{n} Treffer zum Schwärzen markiert.
 	Multiple words or phrases	Mehrere Wörter oder Ausdrücke
 	One word or phrase per line	Ein Wort oder Ausdruck pro Zeile
@@ -1479,6 +1484,8 @@
 	Right Edge	Rechter Rand
 	Language	Sprache
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	{place} gespeichert: {before} → {after} ({pct} % kleiner){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	Diese Datei ist bereits so klein wie möglich ({size}). Es wurde keine Kopie gespeichert.
+	Saved {place}: {before} → {after} (not smaller){detail}	{place} gespeichert: {before} → {after} (nicht kleiner){detail}
 	Couldn't save the image: {e}	Das Bild konnte nicht gespeichert werden: {e}
 	Adding images arrives on the web with file pickers for images	Bilder hinzufügen kommt im Web zusammen mit der Bildauswahl
 	Replacing images on page {p} arrives on the web with image pickers ({i})	Bilder auf Seite {p} ersetzen kommt im Web zusammen mit der Bildauswahl ({i})
@@ -2144,3 +2151,39 @@ action wizard	Start	Starten
 	The field {name} no longer exists.	Das Feld {name} existiert nicht mehr.
 	A selected field has no widget on any page, so the fields can't be edited together.	Ein ausgewähltes Feld hat auf keiner Seite ein Widget, daher können die Felder nicht gemeinsam bearbeitet werden.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} mit {dpi} dpi, der größten Auflösung, in der sie gezeichnet werden können)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	{n} Objekt ausgewählt|{n} Objekte ausgewählt
+	Drag the selection to move it. Esc clears the selection.	Ziehen Sie die Auswahl, um sie zu verschieben. Esc hebt die Auswahl auf.
+	Shift-click to select several objects. Drag empty space to select an area.	Mit Umschalt-Klick mehrere Objekte auswählen. Ziehen Sie in einem leeren Bereich, um einen Auswahlrahmen aufzuziehen.
+	Select at most 1000 objects at a time.	Wählen Sie höchstens 1000 Objekte gleichzeitig aus.
+	Finish or discard the text being edited before selecting several objects.	Schließen Sie die Textbearbeitung ab oder verwerfen Sie sie, bevor Sie mehrere Objekte auswählen.
+	Move object	Objekt verschieben
+	Move objects	Objekte verschieben
+	Vertical text cannot be moved with this selection.	Vertikaler Text kann mit dieser Auswahl nicht verschoben werden.
+	Text used as a clipping path cannot be moved with this selection.	Text, der als Beschneidungspfad dient, kann mit dieser Auswahl nicht verschoben werden.
+	These objects could not be moved. Select them again and try a smaller move.	Diese Objekte konnten nicht verschoben werden. Wählen Sie sie erneut aus und versuchen Sie eine kleinere Verschiebung.
+	This page contains objects that cannot be selected together.	Diese Seite enthält Objekte, die nicht gemeinsam ausgewählt werden können.
+	Fill colour	Füllfarbe
+	No fill	Keine Füllung
+	Fill colour: none	Füllfarbe: keine
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Strg
+key	Shift	Umschalt
+key	Delete	Entf
+key	Esc	Esc
+key	Home	Pos1
+key	End	Ende
+key	Space	Leertaste
+	Grid view	Rasteransicht
+	List view	Listenansicht
+	Files are combined in the order shown. Drag them to change it.	Dateien werden in der gezeigten Reihenfolge kombiniert. Zieh sie, um sie zu ändern.
+	Preview unavailable: {e}	Keine Vorschau: {e}
+	Pages: {k} of {n}	Seiten: {k} von {n}
+	Check the pages	Prüfe die Seiten
+	Switch to List view to change the pages it takes.	Wechsle zur Listenansicht, um die übernommenen Seiten zu ändern.
+	Expand all	Alle ausklappen
+	Collapse all	Alle einklappen
+	Remove page	Seite entfernen
+	Remove {n} pages	{n} Seiten entfernen

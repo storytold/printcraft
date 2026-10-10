@@ -311,6 +311,38 @@ fn the_shortcuts_dialog_lists_the_real_bindings() {
     h.get_by_label("Zoom in / out (also pinch or ⌘-scroll)");
 }
 
+#[test]
+fn localized_shortcuts_update_immediately_and_keep_command_ids_and_key_bindings() {
+    let mut h = harness();
+    h.ctx.set_os(OperatingSystem::Windows);
+    h.state_mut().set_option("language", "de").unwrap();
+    h.state_mut().execute("help.shortcuts");
+    h.run_steps(3);
+    h.get_by_label("Strg+Umschalt+S");
+    h.state_mut().set_option("language", "en").unwrap();
+    h.run_steps(2);
+    h.get_by_label("Ctrl+Shift+S");
+    h.state_mut().set_option("language", "de").unwrap();
+    h.ctx.set_os(OperatingSystem::Mac);
+    h.run_steps(2);
+    h.get_by_label("⇧⌘S");
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    h.ctx.set_os(OperatingSystem::Windows);
+    h.key_press_modifiers(Modifiers::CTRL | Modifiers::COMMAND, Key::K);
+    h.run_steps(3);
+    assert!(h.state().palette_open, "the localized Strg+K display still binds Ctrl+K");
+    // Searching by the stable command id still works in a translated interface.
+    h.state_mut().set_option("palette", "view.read_mode").unwrap();
+    h.run_steps(2);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().mode, pdfcraft_ui_egui::Mode::Read);
+    assert!(!h.state().palette_open);
+    let doc = h.state().session.get(h.state().views[0].id).unwrap();
+    assert!(!doc.dirty);
+}
+
 /// Menu ▸ View open, with egui told the app runs on `os`.
 fn view_menu(os: OperatingSystem) -> Harness<'static, PdfCraftApp> {
     let mut h = harness();

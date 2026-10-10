@@ -148,6 +148,7 @@ struct Ts {
     scale: f64,
     leading: f64,
     rise: f64,
+    render_mode: i64,
 }
 
 fn content_streams(doc: &Document, page: &Dict) -> Vec<(Object, Vec<u8>)> {
@@ -175,7 +176,7 @@ fn content_streams(doc: &Document, page: &Dict) -> Vec<(Object, Vec<u8>)> {
 /// between any two tokens (ISO 32000-2 §7.8.2), so an operator's operands can end one piece and
 /// its keyword start the next; removing or replacing it rewrites every piece it spans. Returns
 /// each piece's new bytes.
-fn splice(pieces: &Pieces, ops: &[Op], mut edit: impl FnMut(usize) -> (Vec<Op>, bool)) -> Vec<Vec<u8>> {
+pub(crate) fn splice(pieces: &Pieces, ops: &[Op], mut edit: impl FnMut(usize) -> (Vec<Op>, bool)) -> Vec<Vec<u8>> {
     let data = pieces.data();
     let mut edits = Vec::new();
     for (i, op) in ops.iter().enumerate() {
@@ -198,7 +199,7 @@ fn splice(pieces: &Pieces, ops: &[Op], mut edit: impl FnMut(usize) -> (Vec<Op>, 
 
 /// The page's `/Contents` after a [`splice`]: pieces whose bytes changed become new streams
 /// (keeping their dictionaries), the others stay as they were.
-fn rewritten_contents(doc: &mut Document, streams: &[(Object, Vec<u8>)], new: Vec<Vec<u8>>) -> Object {
+pub(crate) fn rewritten_contents(doc: &mut Document, streams: &[(Object, Vec<u8>)], new: Vec<Vec<u8>>) -> Object {
     let mut contents: Vec<Object> = Vec::with_capacity(streams.len());
     for ((obj, old), data) in streams.iter().zip(new) {
         if *old == data {
@@ -290,6 +291,7 @@ impl Carry {
             scale: 1.0,
             leading: 0.0,
             rise: 0.0,
+            render_mode: 0,
         };
         Carry { ts, stack: Vec::new() }
     }
@@ -356,6 +358,7 @@ fn interpret(
             b"Tz" => ts.scale = op.num(0).unwrap_or(100.0) / 100.0,
             b"TL" => ts.leading = op.num(0).unwrap_or(0.0),
             b"Ts" => ts.rise = op.num(0).unwrap_or(0.0),
+            b"Tr" => ts.render_mode = op.operands.first().and_then(Object::as_int).unwrap_or(-1),
             b"Do" => {
                 if let (Some(list), Some(name)) = (invoked.as_deref_mut(), op.name(0)) {
                     list.push((i, name.to_vec(), ts.clone()));
@@ -405,7 +408,7 @@ fn interpret(
                         Object::String(s) => {
                             for (code, len) in m.codes(&s.bytes) {
                                 match m.text_of(code) {
-                                    Some(t) => text.push_str(t),
+                                    Some(t) => text.push_str(&t),
                                     None => decodable = false,
                                 }
                                 let w = m.width(code) * ts.size + ts.char_spacing + if m.is_space(code, len) { ts.word_spacing } else { 0.0 };
@@ -437,6 +440,11 @@ fn interpret(
                     .iter()
                     .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p.0), b[1].min(p.1), b[2].max(p.0), b[3].max(p.1)]);
                 let size_user = (trm0.0[2].powi(2) + trm0.0[3].powi(2)).sqrt() * ts.size;
+                // A numeric-only TJ adjusts the current text matrix but paints no glyphs.
+                // It must not create a phantom editable line or enlarge its neighbours' boxes.
+                if !pieces.iter().any(|p| matches!(p, Object::String(s) if !s.bytes.is_empty())) {
+                    continue;
+                }
                 out.push(Shown {
                     op: i,
                     tm: Matrix([tm.0[0], tm.0[1], tm.0[2], tm.0[3], tm.0[4] - x_text * tm.0[0], tm.0[5] - x_text * tm.0[1]]),
@@ -1364,6 +1372,173 @@ pub fn rewrite_block(doc: &mut Document, page: usize, block: usize, text: Option
         }
     })?;
     Ok(LineEdit { substituted })
+}
+
+/// Existing paragraph indexes, excluding streams owned by an added-content item.
+pub(crate) fn selectable_blocks(
+    doc: &Document,
+    page: usize,
+    excluded: &std::collections::BTreeSet<pdfcraft_cos::ObjRef>,
+) -> Result<Vec<(usize, TextBlock)>, EditError> {
+    let p = page_dict(doc, page)?;
+    let streams = content_streams(doc, &p.dict);
+    let lines = text_lines(doc, page)?;
+    Ok(group_blocks(&lines)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, b)| {
+            !b.lines
+                .iter()
+                .filter_map(|i| lines.get(*i))
+                .any(|l| streams.get(l.stream).and_then(|(o, _)| o.as_ref()).is_some_and(|r| excluded.contains(&r)))
+        })
+        .collect())
+}
+
+/// Detect vertical CMaps before moving horizontal text. A broken/cyclic embedded CMap is
+/// refused rather than guessing which direction TJ advances its text matrix.
+fn vertical_encoding(doc: &Document, font: &Dict) -> Result<bool, EditError> {
+    if font.name(b"Subtype") != Some(b"Type0") {
+        return Ok(false);
+    }
+    let mut next = font.get(b"Encoding").cloned();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..8 {
+        let Some(o) = next.take() else { return Ok(false) };
+        if let Some(r) = o.as_ref()
+            && !seen.insert(r)
+        {
+            return Err(EditError::Invalid("the text encoding is cyclic".into()));
+        }
+        match &*doc.resolve(&o) {
+            Object::Name(n) => return Ok(n.ends_with(b"-V")),
+            Object::Stream(stream) => {
+                if let Some(mode) = stream.dict.get(b"WMode") {
+                    match mode.as_int() {
+                        Some(1) => return Ok(true),
+                        Some(0) => {}
+                        _ => return Err(EditError::Invalid("the text writing mode is invalid".into())),
+                    }
+                }
+                let bytes = stream
+                    .decoded_within(8 * 1024 * 1024)
+                    .map_err(|_| EditError::Invalid("the text encoding cannot be decoded within its size limit".into()))?;
+                let ops = parse(&bytes).ops;
+                if let Some(mode) = ops.iter().rev().find(|op| op.is("def") && op.name(0) == Some(b"WMode")) {
+                    return match mode.num(1) {
+                        Some(0.0) => Ok(false),
+                        Some(1.0) => Ok(true),
+                        _ => Err(EditError::Invalid("the text writing mode is invalid".into())),
+                    };
+                }
+                next = stream
+                    .dict
+                    .get(b"UseCMap")
+                    .cloned()
+                    .or_else(|| ops.iter().rev().find(|op| op.is("usecmap")).and_then(|op| op.operands.first().cloned()));
+            }
+            _ => return Err(EditError::Invalid("the text encoding is invalid".into())),
+        }
+    }
+    Err(EditError::Invalid("the text encoding is nested too deeply".into()))
+}
+
+/// Translate paragraphs together without re-encoding glyphs, changing fonts or reflowing.
+/// Numeric TJ offsets and text rise temporarily move each selected show operation, then
+/// restore both advances and rise. The PDF reader advances the original glyph bytes itself:
+/// no approximate font metrics are used to position following, unselected text (§9.4.4).
+pub(crate) fn translate_blocks(doc: &mut Document, page: usize, indexes: &[usize], offset: [f64; 2]) -> Result<(), EditError> {
+    if indexes.is_empty() {
+        return Ok(());
+    }
+    let p = page_dict(doc, page)?;
+    let streams = content_streams(doc, &p.dict);
+    let lines = text_lines(doc, page)?;
+    let blocks = group_blocks(&lines);
+    let mut selected = std::collections::BTreeSet::new();
+    for index in indexes {
+        let b = blocks.get(*index).ok_or_else(|| EditError::Invalid("a selected paragraph no longer exists".into()))?;
+        for line in &b.lines {
+            let l = lines.get(*line).ok_or_else(|| EditError::Invalid("a selected text line no longer exists".into()))?;
+            selected.extend(l.ops.iter().copied());
+        }
+    }
+    let res = p.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_default();
+    let fonts = res.get(b"Font").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_default();
+    let pieces = Pieces::join(&streams.iter().map(|(_, d)| d.as_slice()).collect::<Vec<_>>());
+    let ops = pieces.parse().ops;
+    let shown = interpret(doc, &ops, &fonts, &mut HashMap::new(), &mut Carry::new(), None);
+    let mut patches = HashMap::new();
+    // Keep full precision: a tiny rounded text-space change can be magnified by a CTM,
+    // and restoring rise/spacing must not alter following unselected text.
+    let n = Object::Real;
+    for s in shown.into_iter().filter(|s| selected.contains(&s.op)) {
+        if !(0..=3).contains(&s.state.render_mode) {
+            return Err(EditError::Invalid("text used as a clipping path cannot be moved in a group".into()));
+        }
+        let font = fonts
+            .get(&s.font)
+            .map(|f| doc.resolve(f))
+            .and_then(|f| f.as_dict().cloned())
+            .ok_or_else(|| EditError::Invalid("a selected paragraph has no font".into()))?;
+        if vertical_encoding(doc, &font)? {
+            return Err(EditError::Invalid("vertical text cannot be moved in a group".into()));
+        }
+        let inverse = s.tm.then(&s.state.ctm).invert().ok_or_else(|| EditError::Invalid("a selected paragraph has no area".into()))?;
+        let [a, b, c, d, _, _] = inverse.0;
+        let (dx, dy) = (a * offset[0] + c * offset[1], b * offset[0] + d * offset[1]);
+        let denominator = s.state.size * s.state.scale;
+        let shift = if dx == 0.0 {
+            0.0
+        } else if denominator.abs() > 1e-12 {
+            -1000.0 * dx / denominator
+        } else {
+            return Err(EditError::Invalid("a selected paragraph has no horizontal advance".into()));
+        };
+        let rise = s.state.rise + dy;
+        if ![shift, rise, dx, dy].iter().all(|v| v.is_finite() && v.abs() <= 1e12) {
+            return Err(EditError::Invalid("the paragraph move is too large".into()));
+        }
+        let original = ops.get(s.op).ok_or_else(|| EditError::Invalid("a selected text operation is missing".into()))?;
+        let mut replacement = Vec::new();
+        let show = if original.is("'") || original.is("\"") {
+            if original.is("\"") {
+                let spacing = original
+                    .operands
+                    .get(..2)
+                    .filter(|a| a.iter().all(|o| o.as_f64().is_some()))
+                    .ok_or_else(|| EditError::Invalid("a text operation has invalid spacing".into()))?;
+                for (operator, operand) in ["Tw", "Tc"].into_iter().zip(spacing) {
+                    replacement.push(Op::new(operator, vec![operand.clone()]));
+                }
+            }
+            replacement.push(Op::new("T*", vec![]));
+            Op::new("Tj", vec![original.operands.last().cloned().ok_or_else(|| EditError::Invalid("a text operation has no string".into()))?])
+        } else {
+            original.clone()
+        };
+        if dy != 0.0 {
+            replacement.push(Op::new("Ts", vec![n(rise)]));
+        }
+        if shift != 0.0 {
+            replacement.push(Op::new("TJ", vec![Object::Array(vec![n(shift)])]));
+        }
+        replacement.push(show);
+        if shift != 0.0 {
+            replacement.push(Op::new("TJ", vec![Object::Array(vec![n(-shift)])]));
+        }
+        if dy != 0.0 {
+            replacement.push(Op::new("Ts", vec![n(s.state.rise)]));
+        }
+        patches.insert(s.op, replacement);
+    }
+    if patches.len() != selected.len() {
+        return Err(EditError::Invalid("a selected text operation cannot be moved".into()));
+    }
+    let data = splice(&pieces, &ops, |i| patches.remove(&i).map_or((Vec::new(), true), |v| (v, false)));
+    let contents = rewritten_contents(doc, &streams, data);
+    doc.update_dict(p.obj, |d| d.set(b"Contents".to_vec(), contents))?;
+    Ok(())
 }
 
 #[cfg(test)]

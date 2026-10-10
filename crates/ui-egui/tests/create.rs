@@ -69,17 +69,13 @@ fn opening_images_and_text_converts_them_to_new_pdfs() {
     assert!(app.open_bytes("junk.png", None, b"\x89PNG\r\n\x1a\nnot really".to_vec()).is_err());
 }
 
-#[test]
-fn reduce_file_size_writes_a_compact_copy() {
-    use egui_kittest::Harness;
-    let dir = std::env::temp_dir().join(format!("pdfcraft-reduce-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let out = dir.join("reduced.pdf");
-    let out2 = out.clone();
-    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(move |_cc| {
+/// Open `name` and run Reduce File Size on it, saving to `out` without a dialog.
+fn reduce(name: &'static str, bytes: Vec<u8>, out: &std::path::Path) -> egui_kittest::Harness<'static, PdfCraftApp> {
+    let out2 = out.to_path_buf();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(move |_cc| {
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
-        app.open_bytes("notes.txt", None, "lorem ipsum ".repeat(500).into_bytes()).unwrap();
+        app.open_bytes(name, None, bytes).unwrap();
         app.save_override = Some(out2.to_string_lossy().into_owned());
         app
     });
@@ -87,15 +83,49 @@ fn reduce_file_size_writes_a_compact_copy() {
     assert!(h.state_mut().execute("optimize.reduce"));
     // It runs on a worker thread like the PDF Optimizer, with the progress card meanwhile.
     let start = std::time::Instant::now();
-    while (h.state().optimize_run.is_some() || !out.exists()) && start.elapsed() < std::time::Duration::from_secs(30) {
+    while h.state().optimize_run.is_some() && start.elapsed() < std::time::Duration::from_secs(30) {
         h.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    h.run_steps(1);
+    h.run_steps(2);
     assert!(h.state().optimize_run.is_none() && h.state().progress_notice.is_none(), "the run finished");
+    h
+}
+
+#[test]
+fn reduce_file_size_writes_a_compact_copy() {
+    use egui_kittest::kittest::Queryable;
+    // A photo-like picture, stored losslessly: Reduce recompresses it as JPEG.
+    let (w, h) = (600u32, 400u32);
+    let px: Vec<u8> = (0..w * h).flat_map(|i| [(i % w * 255 / w) as u8 ^ (i & 7) as u8, (i / w * 255 / h) as u8, 128]).collect();
+    let mut photo = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut photo, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&px).unwrap();
+    }
+    let dir = std::env::temp_dir().join(format!("pdfcraft-reduce-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("reduced.pdf");
+    let h = reduce("photo.png", photo, &out);
     let bytes = std::fs::read(&out).unwrap();
     assert!(bytes.starts_with(b"%PDF-"));
+    assert!(bytes.len() < h.state().session.docs()[0].bytes.len(), "the copy is smaller");
     assert!(h.state().session.docs()[0].dirty, "the open document is unchanged");
+    h.get_by_label_contains("% smaller");
+}
+
+#[test]
+fn reduce_file_size_saves_nothing_when_the_file_is_already_small() {
+    use egui_kittest::kittest::Queryable;
+    let dir = std::env::temp_dir().join(format!("pdfcraft-reduce-small-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("reduced.pdf");
+    // A new text PDF is already compact: a copy would be no smaller (#490).
+    let h = reduce("notes.txt", "lorem ipsum ".repeat(500).into_bytes(), &out);
+    assert!(!out.exists(), "no copy was written");
+    h.get_by_label_contains("This file is already as small as it can be made");
 }
 
 #[test]

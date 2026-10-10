@@ -7,25 +7,45 @@
 //! Edits are surgical: they relink only the affected siblings (`/Parent`, `/Prev`, `/Next`,
 //! `/First`, `/Last`) and recompute `/Count` values, and an object is rewritten only when one of
 //! its values changes. Everything else on an item (colour, style, actions, unknown keys) is kept.
-//! Walks are cycle- and size-safe; a broken outline is never followed forever.
+//! Walks are cycle-safe and iterative, so a broken or deep outline is never followed forever and
+//! never overflows the stack. Listing is lazy: [`bookmark_page`] visits only the bookmarks up to
+//! the end of the page it returns.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString};
 
 use crate::{OrganizeError, walk};
 
-/// Hard cap on items visited (broken or hostile outlines).
-const MAX_ITEMS: usize = 100_000;
+/// Deepest level a listing enters (the top level is 0). Bookmarks deeper than this are not
+/// listed; edits still reach them by path.
+const LIST_DEPTH: usize = 32;
 
-/// A bookmark as stored in the file.
+/// Deepest name-tree node read when looking up named destinations.
+const NAME_TREE_DEPTH: usize = 32;
+
+/// Deepest chain of indirect or named destinations followed for one bookmark.
+const DEST_DEPTH: u8 = 8;
+
+/// A bookmark in listing order, with where it sits and where it goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bookmark {
     pub obj: ObjRef,
+    /// Child indices from the top level (the paths the edit functions take).
+    pub path: Vec<usize>,
     pub title: String,
     /// Shown expanded (a positive `/Count`) when it has children.
     pub open: bool,
-    pub children: Vec<Bookmark>,
+    /// The 0-based page it goes to, when that page is in this document.
+    pub page: Option<usize>,
+}
+
+/// One page of the outline listing (see [`bookmark_page`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BookmarkPage {
+    pub bookmarks: Vec<Bookmark>,
+    /// The offset where the next page starts, or `None` when this page is the last.
+    pub next: Option<usize>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -56,7 +76,7 @@ fn children_of(doc: &Document, parent: ObjRef, seen: &mut HashSet<ObjRef>) -> Ve
     let mut out = Vec::new();
     let mut next = doc.get(parent).as_dict().and_then(|d| d.reference(b"First"));
     while let Some(r) = next {
-        if seen.len() >= MAX_ITEMS || !seen.insert(r) {
+        if !seen.insert(r) {
             break;
         }
         let item = doc.get(r);
@@ -79,23 +99,229 @@ pub(crate) fn items(doc: &Document) -> Vec<ObjRef> {
     out
 }
 
-/// The bookmark tree.
-pub fn bookmarks(doc: &Document) -> Vec<Bookmark> {
-    let Some(root) = outline_root(doc) else { return Vec::new() };
-    let mut seen = HashSet::from([root]);
-    fn build(doc: &Document, parent: ObjRef, seen: &mut HashSet<ObjRef>) -> Vec<Bookmark> {
-        children_of(doc, parent, seen)
-            .into_iter()
-            .map(|r| {
-                let item = doc.get(r);
-                let d = item.as_dict().cloned().unwrap_or_default();
-                let title = d.get(b"Title").map(|t| doc.resolve(t)).and_then(|t| t.as_string().map(|s| s.to_text())).unwrap_or_default();
-                let open = d.int(b"Count").is_some_and(|c| c > 0);
-                Bookmark { obj: r, title, open, children: build(doc, r, seen) }
-            })
-            .collect()
+/// The outline in listing order: each bookmark once, siblings by `/Next`, children right after
+/// their parent. An explicit stack keeps the walk iterative. A repeated or malformed item ends its
+/// run of siblings there, so a cycle or a broken link stops the walk instead of looping.
+struct Visit<'a> {
+    doc: &'a Document,
+    seen: HashSet<ObjRef>,
+    /// One entry per open level: the next sibling to visit, and how many siblings it has visited.
+    levels: Vec<(Option<ObjRef>, usize)>,
+    /// The deepest level the walk enters.
+    max_depth: usize,
+    /// The bookmark just visited: its children are entered by the next step.
+    enter: Option<ObjRef>,
+}
+
+impl<'a> Visit<'a> {
+    fn new(doc: &'a Document, max_depth: usize) -> Option<Self> {
+        let root = outline_root(doc)?;
+        let first = doc.get(root).as_dict().and_then(|d| d.reference(b"First"));
+        Some(Self { doc, seen: HashSet::from([root]), levels: vec![(first, 0)], max_depth, enter: None })
     }
-    build(doc, root, &mut seen)
+
+    /// Visit the next bookmark, or `None` when the listing is done.
+    fn step(&mut self) -> Option<ObjRef> {
+        if let Some(first) = self.enter.take() {
+            self.levels.push((Some(first), 0));
+        }
+        loop {
+            let depth = self.levels.len().checked_sub(1)?;
+            let level = self.levels.get_mut(depth)?;
+            let Some(r) = level.0.take() else {
+                self.levels.pop();
+                continue;
+            };
+            if !self.seen.insert(r) {
+                continue;
+            }
+            let item = self.doc.get(r);
+            let Some(d) = item.as_dict() else { continue };
+            level.0 = d.reference(b"Next");
+            level.1 = level.1.saturating_add(1);
+            self.enter = if depth < self.max_depth { d.reference(b"First") } else { None };
+            return Some(r);
+        }
+    }
+
+    /// Child indices from the top level to the bookmark last visited.
+    fn path(&self) -> Vec<usize> {
+        self.levels.iter().map(|(_, visited)| visited.saturating_sub(1)).collect()
+    }
+}
+
+/// Page targets for a listing: the page index of each page object, and the named destinations
+/// (read once, the first time one is needed).
+struct Targets {
+    pages: HashMap<ObjRef, usize>,
+    names: Option<HashMap<Vec<u8>, Object>>,
+}
+
+impl Targets {
+    fn new(doc: &Document) -> Self {
+        let pages = walk(doc).unwrap_or_default().into_iter().enumerate().map(|(i, (r, _))| (r, i)).collect();
+        Self { pages, names: None }
+    }
+
+    /// The named destination `key`: its name-tree entry, else its entry in the `/Dests` dictionary.
+    fn named(&mut self, doc: &Document, key: &[u8]) -> Option<Object> {
+        let names = self.names.get_or_insert_with(|| name_tree(doc));
+        names.get(key).cloned().or_else(|| dests_dict(doc, key))
+    }
+}
+
+/// Every entry of the catalog's `/Names /Dests` name tree, by name. The first entry of a name wins.
+/// Iterative, and nodes deeper than `NAME_TREE_DEPTH` are skipped.
+fn name_tree(doc: &Document) -> HashMap<Vec<u8>, Object> {
+    let mut out = HashMap::new();
+    let Some(root) = doc.root() else { return out };
+    let Some(names) = doc.get(root).as_dict().and_then(|c| c.get(b"Names").cloned()) else { return out };
+    let names = doc.resolve(&names);
+    let Some(tree) = names.as_dict().and_then(|n| n.get(b"Dests").cloned()) else { return out };
+    // Nodes still to read, with their depth. Kids go on the stack in reverse, so they are read in order.
+    let mut stack = vec![(tree, 0usize)];
+    let mut seen: HashSet<ObjRef> = HashSet::new();
+    while let Some((raw, depth)) = stack.pop() {
+        if depth > NAME_TREE_DEPTH {
+            continue;
+        }
+        if let Object::Ref(r) = raw
+            && !seen.insert(r)
+        {
+            continue;
+        }
+        let node = doc.resolve(&raw);
+        let Some(d) = node.as_dict() else { continue };
+        let pairs = d.get(b"Names").map(|n| doc.resolve(n));
+        if let Some(pairs) = pairs.as_deref().and_then(Object::as_array) {
+            for pair in pairs.chunks(2) {
+                if let [k, v] = pair
+                    && let Some(key) = name_key(doc, k)
+                {
+                    out.entry(key).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        let kids = d.get(b"Kids").map(|k| doc.resolve(k));
+        if let Some(kids) = kids.as_deref().and_then(Object::as_array) {
+            for kid in kids.iter().rev() {
+                stack.push((kid.clone(), depth + 1));
+            }
+        }
+    }
+    out
+}
+
+/// The bytes of a name-tree key, which is a string or a name.
+fn name_key(doc: &Document, key: &Object) -> Option<Vec<u8>> {
+    match &*doc.resolve(key) {
+        Object::String(s) => Some(s.bytes.clone()),
+        Object::Name(n) => Some(n.clone()),
+        _ => None,
+    }
+}
+
+/// A named destination in the catalog's PDF 1.1 `/Dests` dictionary.
+fn dests_dict(doc: &Document, key: &[u8]) -> Option<Object> {
+    let root = doc.root()?;
+    let dests = doc.get(root).as_dict().and_then(|c| c.get(b"Dests").cloned())?;
+    let dests = doc.resolve(&dests);
+    dests.as_dict()?.get(key).cloned()
+}
+
+/// The page index a destination names: an explicit `[page /XYZ …]` array, a dictionary whose `/D`
+/// is one, or a named destination that resolves to one.
+fn page_of_dest(doc: &Document, targets: &mut Targets, dest: &Object, depth: u8) -> Option<usize> {
+    if depth > DEST_DEPTH {
+        return None;
+    }
+    let dest = doc.resolve(dest);
+    match &*dest {
+        Object::Array(a) => match a.first()? {
+            Object::Ref(page) => targets.pages.get(page).copied(),
+            // Some producers write a page number in a remote-style destination.
+            Object::Int(n) => usize::try_from(*n).ok().filter(|&p| p < targets.pages.len()),
+            _ => None,
+        },
+        Object::Dict(d) => page_of_dest(doc, targets, d.get(b"D")?, depth + 1),
+        Object::String(s) => {
+            let inner = targets.named(doc, &s.bytes)?;
+            page_of_dest(doc, targets, &inner, depth + 1)
+        }
+        Object::Name(n) => {
+            let inner = targets.named(doc, n)?;
+            page_of_dest(doc, targets, &inner, depth + 1)
+        }
+        _ => None,
+    }
+}
+
+/// The page an item goes to: its `/Dest`, else the destination of its GoTo action `/A`.
+fn item_page(doc: &Document, targets: &mut Targets, d: &Dict) -> Option<usize> {
+    if let Some(dest) = d.get(b"Dest")
+        && let Some(page) = page_of_dest(doc, targets, dest, 0)
+    {
+        return Some(page);
+    }
+    let action = doc.resolve(d.get(b"A")?);
+    let dest = action.as_dict()?.get(b"D")?;
+    page_of_dest(doc, targets, dest, 0)
+}
+
+/// A bookmark's title as viewers show it: the decoded text, without NULs or surrounding space.
+fn title_of(doc: &Document, d: &Dict) -> String {
+    let title = d.get(b"Title").map(|t| doc.resolve(t));
+    let text = match title.as_deref() {
+        Some(Object::String(s)) => s.to_text(),
+        Some(Object::Name(n)) => String::from_utf8_lossy(n).into_owned(),
+        _ => return String::new(),
+    };
+    text.trim_matches('\0').trim().to_string()
+}
+
+fn describe(doc: &Document, targets: &mut Targets, obj: ObjRef, path: Vec<usize>) -> Bookmark {
+    let item = doc.get(obj);
+    let (title, open, page) = match item.as_dict() {
+        Some(d) => (title_of(doc, d), d.int(b"Count").is_some_and(|c| c > 0), item_page(doc, targets, d)),
+        None => (String::new(), false, None),
+    };
+    Bookmark { obj, path, title, open, page }
+}
+
+/// Lists up to `limit` bookmarks from position `offset`, entering no level deeper than `max_depth`.
+fn list(doc: &Document, max_depth: usize, offset: usize, limit: usize) -> BookmarkPage {
+    let mut bookmarks = Vec::new();
+    let Some(mut visit) = Visit::new(doc, max_depth) else { return BookmarkPage { bookmarks, next: None } };
+    for _ in 0..offset {
+        if visit.step().is_none() {
+            return BookmarkPage { bookmarks, next: None };
+        }
+    }
+    let mut targets = Targets::new(doc);
+    while bookmarks.len() < limit {
+        let Some(obj) = visit.step() else { break };
+        bookmarks.push(describe(doc, &mut targets, obj, visit.path()));
+    }
+    let next = if bookmarks.len() == limit && visit.step().is_some() { Some(offset.saturating_add(bookmarks.len())) } else { None };
+    BookmarkPage { bookmarks, next }
+}
+
+/// Every bookmark, in listing order (bookmarks deeper than the listing depth are left out).
+pub fn bookmarks(doc: &Document) -> Vec<Bookmark> {
+    list(doc, LIST_DEPTH, 0, usize::MAX).bookmarks
+}
+
+/// The top-level bookmarks, in order.
+pub fn top_level_bookmarks(doc: &Document) -> Vec<Bookmark> {
+    list(doc, 0, 0, usize::MAX).bookmarks
+}
+
+/// One page of the bookmarks in listing order: up to `limit` from position `offset`, and the offset
+/// where the next page starts. Pages are contiguous, so following `next` lists every bookmark once.
+/// Only the bookmarks up to the end of the page are visited, so the first page does not depend on
+/// how many bookmarks come after it.
+pub fn bookmark_page(doc: &Document, offset: usize, limit: usize) -> BookmarkPage {
+    list(doc, LIST_DEPTH, offset, limit)
 }
 
 /// The object of the bookmark at `path`, and its parent object (the outline root for top-level).
@@ -162,31 +388,46 @@ fn relink(doc: &mut Document, parent: ObjRef, kids: &[ObjRef]) -> Result<()> {
     Ok(())
 }
 
+/// A node whose `/Count` [`recount`] is working out.
+struct Counting {
+    node: ObjRef,
+    kids: Vec<ObjRef>,
+    /// The next child to count.
+    next: usize,
+    /// Items visible below the node, so far.
+    visible: i64,
+    is_root: bool,
+}
+
 /// Recompute every `/Count` (§12.3.3: open items count their visible descendants, closed items
 /// the negative of what opening them would show; the root counts all visible items).
 fn recount(doc: &mut Document) -> Result<()> {
     let Some(root) = outline_root(doc) else { return Ok(()) };
     let mut seen = HashSet::from([root]);
-    // Returns the number of items visible below `node` when `node` is open.
-    fn visit(doc: &mut Document, node: ObjRef, is_root: bool, seen: &mut HashSet<ObjRef>) -> Result<i64> {
-        let kids = children_of(doc, node, seen);
-        let mut visible = 0i64;
-        for k in &kids {
-            let below = visit(doc, *k, false, seen)?;
-            let open = doc.get(*k).as_dict().and_then(|d| d.int(b"Count")).is_some_and(|c| c > 0);
-            visible += 1 + if open { below } else { 0 };
+    let kids = children_of(doc, root, &mut seen);
+    let mut stack = vec![Counting { node: root, kids, next: 0, visible: 0, is_root: true }];
+    // A node is counted once its children are, so the walk keeps its own stack instead of recursing.
+    while let Some(top) = stack.last_mut() {
+        if let Some(&kid) = top.kids.get(top.next) {
+            top.next += 1;
+            let kids = children_of(doc, kid, &mut seen);
+            stack.push(Counting { node: kid, kids, next: 0, visible: 0, is_root: false });
+            continue;
         }
-        let count = if kids.is_empty() {
+        let Some(done) = stack.pop() else { break };
+        let count = if done.kids.is_empty() {
             None
-        } else if is_root || doc.get(node).as_dict().and_then(|d| d.int(b"Count")).is_some_and(|c| c > 0) {
-            Some(visible)
+        } else if done.is_root || doc.get(done.node).as_dict().and_then(|d| d.int(b"Count")).is_some_and(|c| c > 0) {
+            Some(done.visible)
         } else {
-            Some(-visible)
+            Some(-done.visible)
         };
-        put(doc, node, b"Count", count.map(Object::Int))?;
-        Ok(visible)
+        put(doc, done.node, b"Count", count.map(Object::Int))?;
+        if let Some(parent) = stack.last_mut() {
+            let open = doc.get(done.node).as_dict().and_then(|d| d.int(b"Count")).is_some_and(|c| c > 0);
+            parent.visible = parent.visible.saturating_add(1 + if open { done.visible } else { 0 });
+        }
     }
-    visit(doc, root, true, &mut seen)?;
     Ok(())
 }
 

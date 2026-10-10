@@ -6,7 +6,7 @@ use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use pdfcraft_render::{PageRenderer, RenderRequest, RequestKind};
-use pdfcraft_ui_egui::{CloseRequest, PdfCraftApp};
+use pdfcraft_ui_egui::{CloseRequest, Dialog, PdfCraftApp};
 
 /// An `n`-page document with a proper xref table; page `i` shows "Page i+1".
 fn fixture(n: usize) -> Vec<u8> {
@@ -357,6 +357,46 @@ fn the_save_prompt_answers_to_the_keyboard() {
 }
 
 #[test]
+fn keys_leave_the_document_under_a_dialog_alone() {
+    // Issue #870: ⌘W with Preferences open closed the file underneath it, and in the page grid
+    // Delete deleted the selected page. While a dialog is open its keys are its own.
+    let mut h = organize(3);
+    h.get_by_label("Page 2").click();
+    h.run_steps(2);
+    h.get_by_label("Rotate clockwise").click();
+    h.run_steps(3);
+    assert!(h.state_mut().execute("app.preferences"));
+    h.run_steps(3);
+    let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+    for (m, key) in [
+        (Modifiers::COMMAND, Key::W),
+        (shift, Key::W),
+        (Modifiers::COMMAND, Key::Z),
+        (Modifiers::COMMAND, Key::D),
+        (Modifiers::COMMAND, Key::F),
+        (Modifiers::NONE, Key::Delete),
+        (Modifiers::NONE, Key::Backspace),
+    ] {
+        h.key_press_modifiers(m, key);
+        h.run_steps(3);
+        let app = h.state();
+        assert_eq!(app.views.len(), 1, "{m:?}+{key:?} closed the file");
+        assert!(app.close_request.is_none(), "{m:?}+{key:?} asked to close the file");
+        assert!(app.session.get(app.views[0].id).unwrap().can_undo().is_some(), "{m:?}+{key:?} undid the rotation");
+        assert!(app.views[0].find.is_none(), "{m:?}+{key:?} opened Find");
+        assert_eq!(app.dialog, Some(Dialog::Preferences), "{m:?}+{key:?} replaced Preferences");
+    }
+    assert_eq!(page_texts(h.state()), ["Page 1", "Page 2", "Page 3"], "a page was deleted under the dialog");
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().dialog.is_none(), "Escape closes Preferences");
+    assert_eq!(h.state().views[0].target_pages(), [1], "Escape went to the dialog, not the page selection");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    h.run_steps(3);
+    assert!(h.state().close_request.is_some(), "with the dialog closed, ⌘W closes the file again");
+}
+
+#[test]
 fn clean_tabs_close_without_asking() {
     let mut h = harness(1, |_| {});
     h.key_press_modifiers(Modifiers::COMMAND, Key::W);
@@ -661,6 +701,7 @@ fn combining_files_opens_a_new_unsaved_tab() {
 #[test]
 fn combine_files_takes_chosen_pages_in_the_order_listed() {
     let mut h = harness(1, |app| {
+        app.set_option("combine-view", "list").unwrap();
         app.use_files(pdfcraft_ui_egui::FilePurpose::Combine, vec![("one.pdf".into(), fixture(3)), ("two.pdf".into(), fixture(2))]);
     });
     h.run_steps(3);
@@ -727,6 +768,7 @@ fn closing_the_combine_tab_forgets_its_list() {
 #[test]
 fn combine_lists_size_and_warns_before_combining() {
     let mut h = harness(1, |app| {
+        app.set_option("combine-view", "list").unwrap();
         app.use_files(
             pdfcraft_ui_egui::FilePurpose::Combine,
             vec![
@@ -792,9 +834,13 @@ fn combine_names(h: &Harness<'static, PdfCraftApp>) -> Vec<String> {
     h.state().combine_draft.iter().map(|f| f.name.clone()).collect()
 }
 
+/// Files in the Combine tab's list view (the table: headings, page ranges, row links).
 fn combine_of(names: &[(&str, usize)]) -> Harness<'static, PdfCraftApp> {
     let files: Vec<(String, Vec<u8>)> = names.iter().map(|(n, p)| (n.to_string(), fixture(*p))).collect();
-    let mut h = harness(1, move |app| app.use_files(pdfcraft_ui_egui::FilePurpose::Combine, files));
+    let mut h = harness(1, move |app| {
+        app.set_option("combine-view", "list").unwrap();
+        app.use_files(pdfcraft_ui_egui::FilePurpose::Combine, files);
+    });
     h.run_steps(3);
     h
 }
@@ -887,6 +933,7 @@ fn undo_and_redo_restore_the_combine_list() {
 #[test]
 fn protected_files_that_can_be_combined_are_flagged() {
     let mut h = harness(1, |app| {
+        app.set_option("combine-view", "list").unwrap();
         app.use_files(
             pdfcraft_ui_egui::FilePurpose::Combine,
             vec![("one.pdf".into(), fixture(1)), ("no-copy.pdf".into(), protected("", "owner", -1 ^ 16))],
@@ -1465,6 +1512,35 @@ fn password_prompt_opens_and_security_tab_reports_the_details() {
     h.run_steps(3);
     h.get_by_label("AES, 256-bit");
     h.get_by_label("User password");
+}
+
+/// #785: the notice's message used to be laid out before its buttons, so in a narrow document
+/// area (a side panel open) it ran under "Security settings" and on into the panel, and it sat
+/// off the buttons' centre line.
+#[test]
+fn the_security_notice_wraps_beside_its_buttons_and_lines_up_with_them() {
+    // Wide: one line. Narrower: wrapped. Narrowest: cut short (the full text is on hover).
+    for (width, wraps) in [(1700.0, false), (1250.0, true), (900.0, false)] {
+        let mut h = Harness::builder().with_size(egui::vec2(width, 800.0)).build_eframe(|_cc| {
+            let mut app = PdfCraftApp::new();
+            app.set_option("language", "en").unwrap();
+            app.open_bytes("locked.pdf", None, protected("", "owner", 0b0100)).unwrap();
+            app.set_option("panel", "bookmarks").unwrap();
+            app
+        });
+        h.run_steps(4);
+        let msg = h.get_by_label_contains("This document is secured").rect();
+        let button = h.get_by_label("Security settings").rect();
+        let dismiss = h.get_by_label("Dismiss").rect();
+        assert!(msg.right() <= button.left() + 0.5, "{width}: the message stops before the buttons: {msg:?} vs {button:?}");
+        assert!(button.right() <= dismiss.left() + 0.5, "{width}: {button:?} vs {dismiss:?}");
+        assert!((button.center().y - dismiss.center().y).abs() <= 0.5, "{width}: the buttons share a centre line");
+        assert!(msg.top() >= button.top(), "{width}: the message stays inside the bar: {msg:?} vs {button:?}");
+        let lines = (msg.height() / 14.0).floor().max(1.0);
+        let first_line = msg.top() + msg.height() / lines / 2.0;
+        assert!((first_line - button.center().y).abs() <= 1.5, "{width}: first line centred on the buttons: {msg:?} vs {button:?}");
+        assert_eq!(msg.height() > button.height(), wraps, "{width}: {msg:?}");
+    }
 }
 
 #[test]
@@ -2156,4 +2232,25 @@ fn the_delete_key_deletes_pages_picked_in_the_pages_panel_but_never_every_page()
     h.run_steps(4);
     assert_eq!(page_texts(h.state()), ["Page 1"]);
     assert_eq!(h.state().views[0].current, 0);
+}
+
+#[test]
+fn host_dirty_hears_when_unsaved_work_appears_and_goes() {
+    let reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = reports.clone();
+    let mut h = harness(2, move |app| {
+        app.set_option("organize", "on").unwrap();
+        app.host_dirty = Some(Box::new(move |dirty| sink.lock().unwrap().push(dirty)));
+    });
+    assert_eq!(reports.lock().unwrap().last(), Some(&false), "a freshly opened document has nothing unsaved");
+    h.get_by_label("Rotate clockwise").click();
+    h.run_steps(3);
+    assert_eq!(reports.lock().unwrap().last(), Some(&true), "an edit is unsaved work");
+
+    let out = temp_path("host-dirty.pdf");
+    h.state_mut().save_override = Some(out.to_string_lossy().into_owned());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    h.run_steps(3);
+    assert_eq!(reports.lock().unwrap().last(), Some(&false), "saving clears it");
+    let _ = std::fs::remove_file(out);
 }

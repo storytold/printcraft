@@ -1,7 +1,8 @@
 //! Export a PDF ▸ Image ▸ Export all images, and Edit ▸ Save image as: the images that pages
-//! use, as files. JPEG images are written unchanged; other images are decoded and written as
-//! PNG (with their soft mask as alpha). Images PdfCraft can't decode yet (JPEG 2000, JBIG2,
-//! CCITT, separations) are reported, never silently left out.
+//! use, as files. JPEG images are written unchanged; other images, and JPEG images with
+//! transparency, are decoded and written as PNG with their soft mask, stencil mask or colour
+//! key as alpha. Images PdfCraft can't decode yet (JPEG 2000, JBIG2, CCITT, separations) are
+//! reported, never silently left out.
 
 use std::collections::HashSet;
 
@@ -99,42 +100,75 @@ fn filters(s: &Stream) -> Vec<Vec<u8>> {
     }
 }
 
-/// The file for one image: its JPEG data as is, or a PNG.
+/// The file for one image: its JPEG data as is, or a PNG. An image with transparency (a soft
+/// mask, a stencil `/Mask` or a colour-key `/Mask`) is always a PNG with that transparency as
+/// alpha, JPEG images included, so cut-out images keep their transparent background.
 fn image(doc: &Document, s: &Stream) -> Result<(&'static str, Vec<u8>), String> {
     let f = filters(s);
+    let jpeg = matches!(f.last().map(Vec::as_slice), Some(b"DCTDecode" | b"DCT")) && f.len() == 1;
     match f.last().map(Vec::as_slice) {
-        Some(b"DCTDecode" | b"DCT") if f.len() == 1 => return Ok(("jpg", s.raw.to_vec())),
         Some(b"JPXDecode") => return Err("JPEG 2000 images can't be exported yet".into()),
         Some(b"JBIG2Decode") => return Err("JBIG2 images can't be exported yet".into()),
         Some(b"CCITTFaxDecode" | b"CCF") => return Err("CCITT fax images can't be exported yet".into()),
-        Some(b"DCTDecode" | b"DCT") => return Err("JPEG images inside other filters can't be exported yet".into()),
+        Some(b"DCTDecode" | b"DCT") if !jpeg => return Err("JPEG images inside other filters can't be exported yet".into()),
         _ => {}
     }
-    let (w, h) = (s.dict.int(b"Width").unwrap_or(0) as usize, s.dict.int(b"Height").unwrap_or(0) as usize);
-    if (w as u64) * (h as u64) > MAX_PIXELS {
-        return Err(format!("{w} × {h} is too large to export"));
-    }
-    let data = s.decoded().map_err(|e| e.to_string())?;
+    let as_is = || Ok(("jpg", s.raw.to_vec()));
+    let (w, h) = (s.dict.int(b"Width").unwrap_or(0), s.dict.int(b"Height").unwrap_or(0));
+    let Some((w, h)) = size(w, h) else {
+        return match () {
+            _ if jpeg => as_is(),
+            _ if w <= 0 || h <= 0 => Err("the image has no size".into()),
+            _ => Err(format!("{w} × {h} is too large to export")),
+        };
+    };
     let mask = s.dict.get(b"ImageMask").is_some_and(|m| matches!(&*doc.resolve(m), Object::Bool(true)));
-    let bpc = if mask { 1 } else { s.dict.int(b"BitsPerComponent").unwrap_or(8) as usize };
-    if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
-        return Err(format!("{bpc} bits per component isn't supported"));
+    // A stencil mask (`ImageMask true`) has no /SMask or /Mask of its own (8.9.6.2).
+    let mut alpha = if mask { None } else { soft_mask(doc, s, w, h).or_else(|| stencil_mask(doc, s, w, h)) };
+    let key = if mask { None } else { colour_key(doc, s) };
+    if jpeg && alpha.is_none() && key.is_none() {
+        return as_is();
     }
-    let space = if mask { Space::Gray } else { space(doc, s.dict.get(b"ColorSpace"))? };
+    let mut space = if mask { Space::Gray } else { space(doc, s.dict.get(b"ColorSpace"))? };
+    let (samples, bpc) = if jpeg {
+        // A JPEG decoder gives grey or RGB (CMYK and YCCK are converted); a JPEG that doesn't
+        // decode, or an indexed one (not valid), is written as is, without its transparency.
+        let Some((samples, decoded)) = jpeg_samples(&s.raw, &space, w, h) else { return as_is() };
+        space = decoded;
+        (samples, 8)
+    } else {
+        let data = s.decoded().map_err(|e| e.to_string())?;
+        let bpc = if mask { 1 } else { s.dict.int(b"BitsPerComponent").unwrap_or(8) };
+        let bpc = match bpc {
+            1 => 1,
+            2 => 2,
+            4 => 4,
+            8 => 8,
+            16 => 16,
+            other => return Err(format!("{other} bits per component isn't supported")),
+        };
+        (unpack(&data, w, h, space.components(), bpc).ok_or("the image data is shorter than its size says")?, bpc)
+    };
     let n = space.components();
-    let samples = unpack(&data, w, h, n, bpc).ok_or("the image data is shorter than its size says")?;
-    // Decode arrays: only inversion ([1 0] per component) is honoured, the common case.
+    if alpha.is_none() {
+        alpha = key.and_then(|k| keyed_alpha(&samples, n, bpc, &k));
+    }
+    if jpeg && alpha.is_none() {
+        return as_is();
+    }
+    // Decode arrays: only inversion ([1 0] per component) is honoured, the common case. A JPEG
+    // decoder has already applied an Adobe JPEG's own inversion.
     let invert = s
         .dict
         .get(b"Decode")
         .map(|d| doc.resolve(d))
         .and_then(|d| d.as_array().map(|a| a.first().and_then(Object::as_f64) > a.get(1).and_then(Object::as_f64)));
-    let invert = invert.unwrap_or(false) ^ mask; // a stencil mask paints its 0 samples
+    let invert = (invert.unwrap_or(false) && !jpeg) ^ mask; // a stencil mask paints its 0 samples
     let max = (1u32 << bpc.min(8)) - 1;
     let mut rgb = Vec::with_capacity(w * h * 3);
     for px in samples.chunks_exact(n) {
         let v = |i: usize| {
-            let x = (px[i] as u32 * 255 / max) as u8;
+            let x = (px.get(i).copied().unwrap_or(0) as u32 * 255 / max) as u8;
             if invert { 255 - x } else { x }
         };
         match &space {
@@ -142,7 +176,7 @@ fn image(doc: &Document, s: &Stream) -> Result<(&'static str, Vec<u8>), String> 
             Space::Rgb => rgb.extend_from_slice(&[v(0), v(1), v(2)]),
             Space::Cmyk => rgb.extend_from_slice(&cmyk(v(0), v(1), v(2), v(3))),
             Space::Indexed(base, table) => {
-                let i = px[0] as usize;
+                let i = px.first().copied().unwrap_or(0) as usize;
                 let k = base.components();
                 let e = table.get(i * k..i * k + k).unwrap_or(&[0, 0, 0, 0][..k]);
                 rgb.extend_from_slice(&match **base {
@@ -153,8 +187,87 @@ fn image(doc: &Document, s: &Stream) -> Result<(&'static str, Vec<u8>), String> 
             }
         }
     }
-    let alpha = soft_mask(doc, s, w, h);
+    if let (Some(a), Some(matte)) = (alpha.as_deref(), matte(doc, s, &space)) {
+        unpremultiply(&mut rgb, a, matte);
+    }
     png(w as u32, h as u32, &rgb, alpha.as_deref()).map(|p| ("png", p))
+}
+
+/// Width and height as sizes, when both are positive and the image is at most `MAX_PIXELS`.
+fn size(w: i64, h: i64) -> Option<(usize, usize)> {
+    let (w, h) = (usize::try_from(w).ok()?, usize::try_from(h).ok()?);
+    let pixels = (w as u64).checked_mul(h as u64)?;
+    (w > 0 && h > 0 && pixels <= MAX_PIXELS).then_some((w, h))
+}
+
+/// A JPEG's samples (8 bits): grey for a grey image, else RGB, with the space they are in.
+fn jpeg_samples(data: &[u8], space: &Space, w: usize, h: usize) -> Option<(Vec<u8>, Space)> {
+    if matches!(space, Space::Indexed(..)) {
+        return None;
+    }
+    let img = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg).ok()?;
+    if img.width() as usize != w || img.height() as usize != h {
+        return None;
+    }
+    Some(match space {
+        Space::Gray => (img.into_luma8().into_raw(), Space::Gray),
+        _ => (img.into_rgb8().into_raw(), Space::Rgb),
+    })
+}
+
+/// The colour-key `/Mask` (8.9.6.4): a [min max] pair per colour component, in sample values.
+fn colour_key(doc: &Document, s: &Stream) -> Option<Vec<(u32, u32)>> {
+    let m = doc.resolve(s.dict.get(b"Mask")?);
+    let a = m.as_array()?;
+    let v: Vec<u32> = a.iter().map(|o| doc.resolve(o).as_f64().map(|f| f.clamp(0.0, 65_535.0) as u32)).collect::<Option<_>>()?;
+    (!v.is_empty() && v.len().is_multiple_of(2)).then(|| v.as_chunks::<2>().0.iter().map(|&[lo, hi]| (lo, hi)).collect())
+}
+
+/// Alpha from a colour key: pixels whose every component falls in its range are transparent.
+fn keyed_alpha(samples: &[u8], n: usize, bpc: usize, key: &[(u32, u32)]) -> Option<Vec<u8>> {
+    if key.len() != n {
+        return None;
+    }
+    // 16-bit samples keep their high byte (see `unpack`), so compare the ranges' high bytes.
+    let shift = if bpc == 16 { 8 } else { 0 };
+    Some(
+        samples
+            .chunks_exact(n)
+            .map(|px| {
+                let hidden = px.iter().zip(key).all(|(&c, &(lo, hi))| (lo >> shift..=hi >> shift).contains(&(c as u32)));
+                if hidden { 0 } else { 255 }
+            })
+            .collect(),
+    )
+}
+
+/// The `/Matte` colour of the image's soft mask (11.6.5.3), for grey and RGB images: the colour
+/// the image samples were pre-blended with.
+fn matte(doc: &Document, s: &Stream, space: &Space) -> Option<Vec<u8>> {
+    let r = s.dict.get(b"SMask")?.as_ref()?;
+    let obj = doc.get(r);
+    let Object::Stream(m) = &*obj else { return None };
+    let a = doc.resolve(m.dict.get(b"Matte")?);
+    let v: Vec<u8> =
+        a.as_array()?.iter().map(|o| doc.resolve(o).as_f64().map(|f| (f.clamp(0.0, 1.0) * 255.0).round() as u8)).collect::<Option<_>>()?;
+    match (space, v.len()) {
+        (Space::Gray, 1) => Some(vec![v[0]; 3]),
+        (Space::Rgb, 3) => Some(v),
+        _ => None,
+    }
+}
+
+/// Undo a pre-blend with `matte`: c = m + (c′ − m) / α.
+fn unpremultiply(rgb: &mut [u8], alpha: &[u8], matte: Vec<u8>) {
+    for (px, &a) in rgb.as_chunks_mut::<3>().0.iter_mut().zip(alpha) {
+        if a == 0 {
+            continue;
+        }
+        for (c, &m) in px.iter_mut().zip(&matte) {
+            let v = m as i32 + (*c as i32 - m as i32) * 255 / a as i32;
+            *c = v.clamp(0, 255) as u8;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -249,21 +362,63 @@ fn cmyk(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
     [f(c), f(m), f(y)]
 }
 
-/// The soft mask as 8-bit alpha, when it is an 8-bit gray image of the same size.
+/// The soft mask (`/SMask`) as 8-bit alpha, scaled to the image's size when it has another.
 fn soft_mask(doc: &Document, s: &Stream, w: usize, h: usize) -> Option<Vec<u8>> {
     let r = s.dict.get(b"SMask")?.as_ref()?;
     let obj = doc.get(r);
     let Object::Stream(m) = &*obj else { return None };
-    if m.dict.int(b"Width")? as usize != w || m.dict.int(b"Height")? as usize != h {
-        return None;
+    gray_plane(doc, m, w, h)
+}
+
+/// A stencil `/Mask` (an image mask stream, 8.9.6.3) as 8-bit alpha: its 1 samples (0 with
+/// `/Decode [1 0]`) hide the image.
+fn stencil_mask(doc: &Document, s: &Stream, w: usize, h: usize) -> Option<Vec<u8>> {
+    let r = s.dict.get(b"Mask")?.as_ref()?;
+    let obj = doc.get(r);
+    let Object::Stream(m) = &*obj else { return None };
+    Some(gray_plane(doc, m, w, h)?.into_iter().map(|v| 255 - v).collect())
+}
+
+/// A one-component mask image as 8-bit values (its `/Decode` inversion applied), scaled to
+/// `w` × `h`. `None` when it can't be decoded (JPEG 2000, JBIG2 and CCITT masks).
+fn gray_plane(doc: &Document, m: &Stream, w: usize, h: usize) -> Option<Vec<u8>> {
+    let (mw, mh) = size(m.dict.int(b"Width")?, m.dict.int(b"Height")?)?;
+    let stencil = m.dict.get(b"ImageMask").is_some_and(|v| matches!(&*doc.resolve(v), Object::Bool(true)));
+    let f = filters(m);
+    let mut px = match f.last().map(Vec::as_slice) {
+        Some(b"DCTDecode" | b"DCT") if f.len() == 1 => {
+            let img = image::load_from_memory_with_format(&m.raw, image::ImageFormat::Jpeg).ok()?.into_luma8();
+            (img.width() as usize == mw && img.height() as usize == mh).then(|| img.into_raw())?
+        }
+        Some(b"DCTDecode" | b"DCT" | b"JPXDecode" | b"JBIG2Decode" | b"CCITTFaxDecode" | b"CCF") => return None,
+        _ => {
+            let bpc = if stencil { 1 } else { m.dict.int(b"BitsPerComponent").unwrap_or(8) };
+            let bpc = match bpc {
+                1 => 1,
+                2 => 2,
+                4 => 4,
+                8 => 8,
+                16 => 16,
+                _ => return None,
+            };
+            let max = (1u32 << bpc.min(8)) - 1;
+            unpack(&m.decoded().ok()?, mw, mh, 1, bpc)?.into_iter().map(|v| (v as u32 * 255 / max) as u8).collect()
+        }
+    };
+    let invert = m
+        .dict
+        .get(b"Decode")
+        .map(|d| doc.resolve(d))
+        .and_then(|d| d.as_array().map(|a| a.first().and_then(Object::as_f64) > a.get(1).and_then(Object::as_f64)))
+        .unwrap_or(false);
+    if invert {
+        px.iter_mut().for_each(|v| *v = 255 - *v);
     }
-    let bpc = m.dict.int(b"BitsPerComponent").unwrap_or(8) as usize;
-    if !filters(m).iter().all(|f| !matches!(f.as_slice(), b"DCTDecode" | b"JPXDecode" | b"JBIG2Decode" | b"CCITTFaxDecode")) {
-        return None;
+    if (mw, mh) == (w, h) {
+        return Some(px);
     }
-    let px = unpack(&m.decoded().ok()?, w, h, 1, bpc)?;
-    let max = (1u32 << bpc.min(8)) - 1;
-    Some(px.into_iter().map(|v| (v as u32 * 255 / max) as u8).collect())
+    let img = image::GrayImage::from_raw(mw as u32, mh as u32, px)?;
+    Some(image::imageops::resize(&img, w as u32, h as u32, image::imageops::FilterType::Triangle).into_raw())
 }
 
 fn png(w: u32, h: u32, rgb: &[u8], alpha: Option<&[u8]>) -> Result<Vec<u8>, String> {

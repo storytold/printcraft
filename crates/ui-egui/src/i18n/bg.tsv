@@ -55,6 +55,9 @@
 	Preferences	Настройки
 	Preferences…	Настройки…
 	Interface language	Език на интерфейса
+	Interface size	Размер на интерфейса
+	Auto ({percent}%)	Автоматично ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	Автоматично следва размера на текста в системата. Страниците винаги се изобразяват с пълната разделителна способност на екрана.
 	Identity	Самоличност
 	Name on new comments	Име в новите коментари
 	Open…	Отвори…
@@ -109,6 +112,7 @@
 	Rotate view clockwise	Завърти изгледа по часовниковата стрелка
 	Rotate view counterclockwise	Завърти изгледа обратно на часовниковата стрелка
 	Take a snapshot	Направи моментна снимка
+	Column select	Избор на колона
 	Full screen mode	Цял екран
 	Read mode	Режим на четене
 	Switch light / dark theme	Превключи светла / тъмна тема
@@ -789,6 +793,7 @@
 	Dates	Дати
 	Text in images isn't found; recognise text (OCR) first.	Текстът в изображения не се открива; първо разпознайте текста (OCR).
 	No matches.	Няма съвпадения.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Някои отметки не са показани тук: панелът показва ограничен брой, с ограничена дълбочина на влагане.
 	{n} match(es) marked for redaction.	{n} съвпадение(я) маркирани за заличаване.
 	Multiple words or phrases	Няколко думи или фрази
 	One word or phrase per line	По една дума или фраза на ред
@@ -1451,6 +1456,8 @@
 	Right Edge	Десен ръб
 	Language	Език
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	Записано {place}: {before} → {after} (с {pct}% по-малко){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	Файлът вече е възможно най-малък ({size}). Не е записано копие.
+	Saved {place}: {before} → {after} (not smaller){detail}	Записано {place}: {before} → {after} (не е по-малко){detail}
 	Couldn't save the image: {e}	Изображението не можа да бъде записано: {e}
 	Adding images arrives on the web with file pickers for images	Добавянето на изображения в уеб версията ще стане достъпно с инструментите за избор на файлове с изображения
 	Replacing images on page {p} arrives on the web with image pickers ({i})	Замяната на изображения на страница {p} в уеб версията ще стане достъпна с инструментите за избор на изображения ({i})
@@ -2106,3 +2113,39 @@ action wizard	Start	Старт
 	The field {name} no longer exists.	Полето {name} вече не съществува.
 	A selected field has no widget on any page, so the fields can't be edited together.	Едно от избраните полета няма елемент на нито една страница, затова полетата не могат да се редактират заедно.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} с {dpi} dpi, най-голямата резолюция, с която могат да бъдат изобразени)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	Избран е {n} обект|Избрани са {n} обекта
+	Drag the selection to move it. Esc clears the selection.	Плъзнете избраното, за да го преместите. Esc премахва избора.
+	Shift-click to select several objects. Drag empty space to select an area.	Щракнете с Shift, за да изберете няколко обекта. Плъзнете в празно място, за да изберете област.
+	Select at most 1000 objects at a time.	Изберете най-много 1000 обекта наведнъж.
+	Finish or discard the text being edited before selecting several objects.	Завършете или отменете редактирането на текста, преди да изберете няколко обекта.
+	Move object	Преместване на обект
+	Move objects	Преместване на обекти
+	Vertical text cannot be moved with this selection.	Вертикалният текст не може да се премести с този избор.
+	Text used as a clipping path cannot be moved with this selection.	Текстът, използван като изрязващ контур, не може да се премести с този избор.
+	These objects could not be moved. Select them again and try a smaller move.	Тези обекти не можаха да бъдат преместени. Изберете ги отново и опитайте по-малко отместване.
+	This page contains objects that cannot be selected together.	Тази страница съдържа обекти, които не могат да се изберат заедно.
+	Fill colour	Цвят на запълване
+	No fill	Без запълване
+	Fill colour: none	Цвят на запълване: няма
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	Интервал
+	Grid view	Изглед мрежа
+	List view	Изглед списък
+	Files are combined in the order shown. Drag them to change it.	Файловете се обединяват в показания ред. Плъзнете ги, за да го промените.
+	Preview unavailable: {e}	Няма преглед: {e}
+	Pages: {k} of {n}	Страници: {k} от {n}
+	Check the pages	Проверете страниците
+	Switch to List view to change the pages it takes.	Превключете към изглед списък, за да промените кои страници се вземат.
+	Expand all	Разгъни всички
+	Collapse all	Свий всички
+	Remove page	Премахни страницата
+	Remove {n} pages	Премахни {n} страници

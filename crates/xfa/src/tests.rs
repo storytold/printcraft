@@ -1041,3 +1041,71 @@ fn pictures_are_embedded_once_across_relayouts_and_bad_data_pictures_are_reporte
     }
     assert!(find_image(&t.root.children).is_some_and(|n| n > 1_200_000));
 }
+
+/// A repeating subform drawn inside positioned content (a top-to-bottom table in an area of a
+/// positioned subform) gets its `occur` instances, as in Adobe's viewers: real Designer forms
+/// have tables like this whose calculations read every row. Before, only one row was laid
+/// out, and the field after the table was placed as if there were one.
+#[test]
+fn repeating_subforms_inside_positioned_content_get_their_instances() {
+    let xdp = r##"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ <subform name="page1" w="7.5in" h="8in">
+  <area name="box" x="0.5in" y="1in">
+   <subform name="wrap" layout="tb" w="4in">
+    <subform name="table" layout="tb" w="4in">
+     <subform name="row" w="4in" h="0.3in"><occur min="3" max="-1"/>
+      <field name="reason" w="4in" h="0.3in"><ui><textEdit/></ui></field>
+     </subform>
+    </subform>
+    <field name="after" w="4in" h="0.3in"><ui><textEdit/></ui></field>
+   </subform>
+  </area>
+ </subform>
+</subform>
+</template>
+</xdp:xdp>
+"##;
+    let form = layout_xml(xdp).unwrap();
+    let all: Vec<&Widget> = form.pages.iter().flat_map(widgets).collect();
+    let rows: Vec<&Widget> = all.iter().copied().filter(|w| w.som.ends_with(".reason[0]")).collect();
+    let soms: Vec<&str> = rows.iter().map(|w| w.som.as_str()).collect();
+    assert_eq!(
+        soms,
+        [
+            "form[0].page1[0].box[0].wrap[0].table[0].row[0].reason[0]",
+            "form[0].page1[0].box[0].wrap[0].table[0].row[1].reason[0]",
+            "form[0].page1[0].box[0].wrap[0].table[0].row[2].reason[0]",
+        ],
+        "one widget per instance, each with its own SOM index"
+    );
+    // The rows are stacked, not drawn on top of each other…
+    let step = rows[1].rect.y - rows[0].rect.y;
+    assert!(step.abs() > 1.0, "rows overlap: {:?}", rows.iter().map(|w| w.rect).collect::<Vec<_>>());
+    assert!(((rows[2].rect.y - rows[1].rect.y) - step).abs() < 0.01, "rows are evenly spaced");
+    // …and what follows the table is placed after all of them (the table was measured with
+    // its instances, not with one row).
+    let after = all.iter().find(|w| w.som.ends_with(".after[0]")).expect("the field after the table");
+    assert!(((after.rect.y - rows[2].rect.y) - step).abs() < 0.01, "after: {:?}, last row: {:?}", after.rect, rows[2].rect);
+}
+
+/// Areas are named in SOM expressions but are not data scopes; unnamed subforms and areas have
+/// no segment at all. What the template doesn't have is kept as it is.
+#[test]
+fn data_paths_leave_areas_out() {
+    let (tpl, _) = parse(&crate::fixtures::leave_template("")).unwrap();
+    let path = |som: &str| data_path(&tpl, som).into_iter().map(|(n, i)| format!("{n}[{i}]")).collect::<Vec<_>>().join(".");
+    // The area `box` (inside an unnamed subform) is dropped; indexes are kept.
+    assert_eq!(path("form[0].page[0].box[0].table[0].row[2].days[0]"), "form[0].page[0].table[0].row[2].days[0]");
+    assert_eq!(path("form[0].page[0].box[0].rest[0]"), "form[0].page[0].rest[0]");
+    // No area on the way: as som_to_path.
+    assert_eq!(path("form[0].page[0]"), "form[0].page[0]");
+    // Unknown segments, past a leaf, or a SOM from another template: kept.
+    assert_eq!(path("form[0].page[0].box[0].nothing[0].x[1]"), "form[0].page[0].nothing[0].x[1]");
+    assert_eq!(path("form[0].page[0].box[0].rest[0].box[0]"), "form[0].page[0].rest[0].box[0]");
+    assert_eq!(path("other[0].box[0].rest[0]"), "other[0].box[0].rest[0]");
+    assert_eq!(data_path(&tpl, ""), Vec::new());
+}

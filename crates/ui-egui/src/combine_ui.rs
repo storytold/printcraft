@@ -5,7 +5,7 @@
 //! column heading; PDFs dropped on the tab join the list. Every change to the list can be undone.
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -17,8 +17,8 @@ use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, icons, widgets};
 
 /// Same reds and ambers as the signature status (`sign_ui`).
-const ERROR: Color32 = Color32::from_rgb(0xD7, 0x37, 0x3F);
-const WARNING: Color32 = Color32::from_rgb(0xE6, 0x86, 0x19);
+pub(crate) const ERROR: Color32 = Color32::from_rgb(0xD7, 0x37, 0x3F);
+pub(crate) const WARNING: Color32 = Color32::from_rgb(0xE6, 0x86, 0x19);
 /// Undo steps kept for the list (each holds the list itself; the files' bytes are shared).
 const HISTORY: usize = 100;
 
@@ -113,6 +113,32 @@ impl Columns {
     }
 }
 
+/// How the files are shown: a thumbnail of each (the default, to see what goes where) or the
+/// table (kept in the settings).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CombineView {
+    #[default]
+    Grid,
+    List,
+}
+
+impl CombineView {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CombineView::Grid => "grid",
+            CombineView::List => "list",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "grid" => Some(CombineView::Grid),
+            "list" => Some(CombineView::List),
+            _ => None,
+        }
+    }
+}
+
 /// A column heading being dragged to a new place.
 #[derive(Clone, Copy)]
 struct HeadingDrag(SortKey);
@@ -152,6 +178,55 @@ pub struct CombineTab {
     fitted: f32,
     /// The password box of Unlock…, while it shows.
     unlock: Option<UnlockPrompt>,
+    /// Bumped on every change to the list, so a grid drag that began before one is dropped.
+    pub(crate) revision: u64,
+    /// The file the keyboard moved to, for the grid to scroll into view.
+    pub(crate) reveal: Option<u64>,
+    /// Files per grid row as last drawn (Up/Down move a row in the grid).
+    pub(crate) grid_columns: usize,
+    /// A grid zoom asked for this frame (toolbar, keys, pinch); the grid applies it once it has
+    /// laid out, so it can keep the same cards in view.
+    pub(crate) zoom_request: Option<f32>,
+    /// The card size slider, which takes the arrow keys while it has the keyboard.
+    pub(crate) zoom_slider: Option<egui::Id>,
+    /// The card kept in place through a zoom gesture: its file, its place among the file's pages
+    /// (0 for the file's own card), how far below the top of the grid it was, and when the grid
+    /// last zoomed (seconds).
+    pub(crate) zoom_anchor: Option<(u64, usize, f32, f64)>,
+    /// Files shown as their pages in the grid (a view, not an edit: no undo step).
+    pub(crate) expanded: BTreeSet<u64>,
+    /// The pages each expanded file shows, worked out again only when its range changes.
+    pub(crate) page_lists: HashMap<u64, crate::combine_grid::PageList>,
+    /// The file (by place in the list) at each place of the grid as last drawn: Up and Down step
+    /// a row of cards, page cards included.
+    pub(crate) grid_places: Vec<usize>,
+    /// A file shown large (a card's magnifier), while it shows.
+    pub(crate) preview: Option<Preview>,
+    /// The card that had the keyboard last frame: Space shows its file large; on any other focused
+    /// widget Space is that widget's.
+    pub(crate) card_focus: Option<egui::Id>,
+    /// That card's file and its place among the file's pages (0 for the file's own card): Space
+    /// on a page card shows that page.
+    pub(crate) card_focus_at: Option<(u64, usize)>,
+    /// Single pages selected in the grid (an expanded file's page cards), by entry id and place
+    /// among the entry's pages; the files' selection is empty while any is.
+    pub(crate) selected_pages: BTreeSet<(u64, usize)>,
+    /// The page a Shift-click selects from.
+    pub(crate) page_anchor: Option<(u64, usize)>,
+}
+
+/// The pages a range takes, and the range and page count they were worked out for.
+pub(crate) type PagesTaken = ((String, usize), Arc<[usize]>);
+
+/// A file shown large: which, the place among the pages it adds, and those pages (worked out
+/// again only when its page range or page count changes).
+#[derive(Clone, Debug)]
+pub(crate) struct Preview {
+    pub(crate) file: u64,
+    pub(crate) at: usize,
+    /// The page (0-based, in the file) on screen, for the thumbnails to render.
+    pub(crate) page: Option<usize>,
+    pub(crate) pages: Option<PagesTaken>,
 }
 
 /// A password: kept in memory only, never printed (debug output ends up in logs).
@@ -186,8 +261,11 @@ struct UnlockPrompt {
 }
 
 /// What can be known about a file up front, opened with a password or not.
+#[derive(Clone)]
 struct Assessed {
     pages: usize,
+    /// Each page's displayed size in points (empty when the inspector couldn't read it).
+    sizes: Arc<[(f32, f32)]>,
     problem: Option<String>,
     lock: Option<Lock>,
     notes: Vec<String>,
@@ -216,6 +294,10 @@ fn assess(bytes: &Arc<Vec<u8>>, password: Option<&str>) -> Result<Assessed, Asse
         Some(i) => i.pages.len(),
         None => pdfcraft_engine::source_page_count(bytes, password).unwrap_or(0),
     };
+    let sizes: Arc<[(f32, f32)]> = match &info {
+        Some(i) => i.pages.iter().map(|p| (p.width, p.height)).collect(),
+        None => Arc::from(Vec::new()),
+    };
     let encrypted = password.is_some() || info.as_ref().is_some_and(|i| i.encrypted);
     let warnings = info.map(|i| i.warnings).unwrap_or_default();
     let (problem, lock) = match check {
@@ -239,7 +321,7 @@ fn assess(bytes: &Arc<Vec<u8>>, password: Option<&str>) -> Result<Assessed, Asse
         });
     }
     notes.extend(warnings.into_iter().take(5));
-    Ok(Assessed { pages, problem, lock, notes })
+    Ok(Assessed { pages, sizes, problem, lock, notes })
 }
 
 #[derive(Clone, Debug)]
@@ -258,13 +340,30 @@ pub(crate) struct Incoming {
     pub note: Option<String>,
 }
 
+/// A new value for [`CombineFile::auth`]: counted for the whole run, outside the undo history.
+fn next_auth() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A page range checked: the pages it takes and the first of them (0-based), or why it's wrong.
+type RangeCheck = Result<(usize, usize), String>;
+
 #[derive(Clone, Debug)]
 pub struct CombineFile {
     /// Stable while the file is in the list (selection, undo).
     pub id: u64,
+    /// The file it is (part of): the entries a file is split into (a page moved between another
+    /// file's pages) share it. Combined as one file, unlocked together, counted once.
+    pub(crate) group: u64,
     pub name: String,
     pub bytes: Arc<Vec<u8>>,
     pub pages: usize,
+    /// Each page's displayed size in points; shared, so undo snapshots don't copy it.
+    pub(crate) sizes: Arc<[(f32, f32)]>,
+    /// How the file was read (with which password): a new value every time it is read, never
+    /// reused, not even after undo, so a thumbnail made another way is never taken for this one.
+    pub(crate) auth: u64,
     /// The pages to take ("" = all).
     pub range: String,
     /// When the file was last modified (desktop picks and drops only).
@@ -279,34 +378,76 @@ pub struct CombineFile {
     pub notes: Vec<String>,
     /// Where it came from, shown among the warnings (e.g. an open document's unsaved changes).
     origin_note: Option<String>,
-    /// The range last checked and the result: the number of pages it takes, or why it is wrong.
-    checked: Option<(String, Result<usize, String>)>,
+    /// The range last checked and the result: the number of pages it takes and the first of
+    /// them (0-based), or why it is wrong.
+    checked: Option<(String, RangeCheck)>,
 }
 
 impl CombineFile {
     fn take(&mut self, a: Assessed, password: Option<Secret>) {
         self.pages = a.pages;
+        self.sizes = a.sizes;
         self.problem = a.problem;
         self.lock = a.lock;
         self.password = password;
+        self.auth = next_auth();
         self.notes = self.origin_note.iter().cloned().chain(a.notes).collect();
         self.checked = None;
+    }
+
+    /// The password the file was unlocked with, if any.
+    pub(crate) fn password(&self) -> Option<&str> {
+        self.password.as_ref().map(|p| p.0.as_str())
     }
 
     /// The number of pages `range` takes, or why it can't be used. Checked again only when the
     /// range changes.
     pub fn selection(&mut self) -> Result<usize, String> {
+        self.checked_range().map(|(count, _)| count)
+    }
+
+    /// The first page (0-based) the range takes, in its order ("3, 1" starts with page 3): the
+    /// page the grid shows for the file.
+    pub fn first_page(&mut self) -> Result<usize, String> {
+        self.checked_range().map(|(_, first)| first)
+    }
+
+    /// The first page the range takes, without updating the cache (read-only callers).
+    pub(crate) fn first_taken(&self) -> Option<usize> {
+        match &self.checked {
+            Some((range, result)) if *range == self.range => result.as_ref().ok().map(|(_, first)| *first),
+            _ => self.pages_taken().ok()?.first().copied(),
+        }
+    }
+
+    /// Every page (0-based) the range takes, in its order: what the preview flips through.
+    pub(crate) fn pages_taken(&self) -> Result<Vec<usize>, String> {
+        if self.range.trim().is_empty() {
+            return Ok((0..self.pages).collect());
+        }
+        match pdfcraft_engine::print::select_pages(self.pages, Some(&self.range), &[], pdfcraft_engine::print::Subset::All, false) {
+            Ok(p) if p.is_empty() => Err(tl!("No pages selected").to_string()),
+            Ok(p) => Ok(p),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn checked_range(&mut self) -> RangeCheck {
         if let Some((range, result)) = &self.checked
             && *range == self.range
         {
             return result.clone();
         }
         let result = if self.range.trim().is_empty() {
-            Ok(self.pages)
+            // (A file whose pages couldn't be counted is left to the engine, as before; the grid
+            // checks the first page against the page count.)
+            Ok((self.pages, 0))
         } else {
             match pdfcraft_engine::print::select_pages(self.pages, Some(&self.range), &[], pdfcraft_engine::print::Subset::All, false) {
-                Ok(p) if p.is_empty() => Err(tl!("No pages selected").to_string()),
-                Ok(p) => Ok(p.len()),
+                Ok(p) => match p.first() {
+                    Some(first) => Ok((p.len(), *first)),
+                    None => Err(tl!("No pages selected").to_string()),
+                },
                 Err(e) => Err(e.to_string()),
             }
         };
@@ -326,22 +467,58 @@ impl CombineFile {
     }
 }
 
-enum RowAction {
+#[derive(Clone)]
+pub(crate) enum RowAction {
     /// A click on row `i` (Ctrl/⌘ toggles it, Shift selects up to it).
     Click(usize, Modifiers),
     SelectAll,
-    /// Up/Down arrow; with Shift the selection grows.
+    /// An arrow key: `by` files on (1 in the list, or along a grid row; a grid row's length for
+    /// Up/Down in the grid). With Shift the selection grows.
     Step {
         down: bool,
+        by: usize,
         extend: bool,
     },
     MoveUp,
     MoveDown,
     Remove,
+    /// One file's card trash: that file only, whatever else is selected.
+    RemoveFile(u64),
+    /// One file's magnifier: show it large.
+    Preview(u64),
+    /// Space: show the file the keyboard is on (or the first selected) large.
+    PreviewSelected,
+    /// A page card's magnifier: show its file large, from that page (its place among the pages
+    /// the file adds).
+    PreviewAt(u64, usize),
+    /// Show one file as its pages in the grid (`true`), or as its card again.
+    Expand(u64, bool),
+    /// Every file that adds more than one page, as its pages (`true`), or all as cards again.
+    ExpandAll(bool),
+    /// A click on a page card: that page (by entry id and place among its pages) selected,
+    /// Ctrl/⌘ toggling it, Shift selecting up to it.
+    ClickPage(u64, usize, Modifiers),
+    /// A page card (and the rest of the selected pages, if it is selected) dropped before page
+    /// `gap` of the list (see [`moved_pages`]), if the list hasn't changed since the drag began.
+    MovePages {
+        page: (u64, usize),
+        revision: u64,
+        gap: usize,
+    },
+    /// One page's trash (`Some`), or the selected pages: out of the list.
+    RemovePages(Option<(u64, usize)>),
     /// Row `from` (and the rest of the selection, if it is selected) dropped on row `to`.
     Drop {
         from: usize,
         to: usize,
+    },
+    /// A grid card (and the rest of the selection, if it is selected) dropped at `gap`
+    /// (0 = before the first file, n = after the last), if the list hasn't changed since the
+    /// drag began.
+    DropAt {
+        file: u64,
+        revision: u64,
+        gap: usize,
     },
     Sort(SortKey),
     /// Unlock… on row `i` (and the rest of the selection, if it is selected), or on the
@@ -366,10 +543,61 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let n = app.combine_draft.len();
     let ids: Vec<u64> = app.combine_draft.iter().map(|f| f.id).collect();
     app.combine_tab.selected.retain(|id| ids.contains(id));
+    // Pages stay picked only while they show (a grid card of an expanded file), so the trash or
+    // Delete never takes a page the user can't see.
+    {
+        let tab = &mut app.combine_tab;
+        if app.combine_view == CombineView::Grid {
+            let shown: BTreeSet<(u64, usize)> = app
+                .combine_draft
+                .iter_mut()
+                .filter(|f| tab.expanded.contains(&f.id))
+                .flat_map(|f| {
+                    let id = f.id;
+                    (0..f.selection().unwrap_or(0)).map(move |nth| (id, nth))
+                })
+                .collect();
+            tab.selected_pages.retain(|p| shown.contains(p));
+        } else {
+            tab.selected_pages.clear();
+        }
+        if tab.selected_pages.is_empty() {
+            tab.page_anchor = None;
+        }
+    }
+    // A file stays expanded only while it can show as its pages (not locked again by undo, nor
+    // edited down to one page or a bad range): it doesn't come back expanded by itself.
+    {
+        let tab = &mut app.combine_tab;
+        let draft = &app.combine_draft;
+        let lists = &mut tab.page_lists;
+        tab.expanded.retain(|id| draft.iter().find(|f| f.id == *id).is_some_and(|f| crate::combine_grid::pages_shown(lists, f).is_some()));
+        let expanded = &tab.expanded;
+        tab.page_lists.retain(|id, _| expanded.contains(id));
+    }
     let selected: Vec<bool> = ids.iter().map(|id| app.combine_tab.selected.contains(id)).collect();
     let count = selected.iter().filter(|s| **s).count();
     let blocker = blocker(&app.combine_draft, &checks);
-    let mut events = TableEvents { action: keyboard(ui, n, count > 0), ..Default::default() };
+    let grid = app.combine_view == CombineView::Grid;
+    let columns = grid.then_some(app.combine_tab.grid_columns);
+    // The keyboard is the list's unless a text field, the password box or the size slider has it.
+    let slider_focused = grid && app.combine_tab.zoom_slider.is_some_and(|id| ui.memory(|m| m.has_focus(id)));
+    // (Nor while a file is shown large: its window may only open or close this frame.)
+    let covered = app.combine_tab.unlock.is_some() || app.combine_tab.preview.is_some();
+    let focus = ui.memory(|m| m.focused());
+    let space = focus.is_none() || focus == app.combine_tab.card_focus;
+    let any_picked = count > 0 || !app.combine_tab.selected_pages.is_empty();
+    let keys = if covered || slider_focused { None } else { keyboard(ui, n, any_picked, columns, space) };
+    let mut events = TableEvents { action: keys, ..Default::default() };
+    // ⌘+ / ⌘− / ⌘0 size the grid's cards (instead of the whole window's text).
+    if grid && n > 0 && !covered {
+        app.combine_tab.zoom_request = zoom_keys(ui, app.combine_zoom).or(app.combine_tab.zoom_request);
+    }
+    // An arrow pressed or a zoom asked for in the list has nothing for the grid to do later.
+    if !grid {
+        app.combine_tab.reveal = None;
+        app.combine_tab.zoom_request = None;
+    }
     let mut combine = false;
 
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(28, 20)).show(ui, |ui| {
@@ -386,12 +614,19 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
             });
         });
-        ui.label(egui::RichText::new(tl!("Files are combined from top to bottom. Leave Pages empty to take every page.")).color(t.text_faint));
+        let hint = if grid {
+            tl!("Files are combined in the order shown. Drag them to change it.")
+        } else {
+            tl!("Files are combined from top to bottom. Leave Pages empty to take every page.")
+        };
+        ui.label(egui::RichText::new(hint).color(t.text_faint));
         ui.add_space(12.0);
 
-        // Toolbar.
-        ui.horizontal(|ui| {
+        // Toolbar: on two lines when the window is narrow.
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            // Where the line ends (an overflowing line would move it).
+            let edge = ui.max_rect().right();
             add_menu(app, ui);
             let open_docs: Vec<(usize, String)> =
                 app.views.iter().enumerate().filter_map(|(i, v)| app.session.get(v.id).map(|d| (i, d.display_name()))).collect();
@@ -409,18 +644,21 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     }
                 }
             });
-            separator(ui, &t);
+            group(ui, &t, edge, 4.0 * 30.0 + 3.0 * 6.0);
             // Moves need a selected row with room to move; the buttons stay put either way.
             let can_up = selected.iter().skip_while(|s| **s).any(|s| *s);
             let can_down = selected.iter().rev().skip_while(|s| **s).any(|s| *s);
             let why = tl!("Select a file first");
-            let remove = match count {
-                1 => {
+            let pages_picked = app.combine_tab.selected_pages.len();
+            let remove = match (pages_picked, count) {
+                (1, _) => tl!("Remove page").to_string(),
+                (k, _) if k > 1 => crate::i18n::fmt(tl!("Remove {n} pages"), &[("n", &k.to_string())]),
+                (_, 1) => {
                     let name = app.combine_draft.iter().find(|f| app.combine_tab.selected.contains(&f.id)).map_or("", |f| f.name.as_str());
                     crate::i18n::fmt(tl!("Remove {name}"), &[("name", name)])
                 }
-                0 => tl!("Remove").to_string(),
-                k => crate::i18n::fmt(tl!("Remove {n} files"), &[("n", &k.to_string())]),
+                (_, 0) => tl!("Remove").to_string(),
+                (_, k) => crate::i18n::fmt(tl!("Remove {n} files"), &[("n", &k.to_string())]),
             };
             if tool(ui, can_up, "chevron-up", tl!("Move up"), why).clicked() {
                 events.action = Some(RowAction::MoveUp);
@@ -428,7 +666,7 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             if tool(ui, can_down, "chevron-down", tl!("Move down"), why).clicked() {
                 events.action = Some(RowAction::MoveDown);
             }
-            if tool(ui, count > 0, "trash-2", &remove, why).clicked() {
+            if tool(ui, count > 0 || pages_picked > 0, "trash-2", &remove, why).clicked() {
                 events.action = Some(RowAction::Remove);
             }
             let locked = app.combine_draft.iter().any(|f| f.lock.is_some() && app.combine_tab.selected.contains(&f.id));
@@ -436,7 +674,7 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             if unlock.clicked() {
                 events.action = Some(RowAction::Unlock(None, unlock.rect.left_bottom() + vec2(0.0, 6.0)));
             }
-            separator(ui, &t);
+            group(ui, &t, edge, 2.0 * 30.0 + 6.0);
             let (undo, redo) = (!app.combine_tab.undo.is_empty(), !app.combine_tab.redo.is_empty());
             if tool(ui, undo, "undo-2", tl!("Undo"), tl!("Nothing to undo")).clicked() {
                 app.execute("edit.undo");
@@ -444,9 +682,29 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             if tool(ui, redo, "redo-2", tl!("Redo"), tl!("Nothing to redo")).clicked() {
                 app.execute("edit.redo");
             }
+            group(ui, &t, edge, 2.0 * 30.0 + 6.0);
+            // Thumbnails or the table; the choice is kept in the settings.
+            for (view, icon, label) in [(CombineView::Grid, "layout-grid", tl!("Grid view")), (CombineView::List, "list", tl!("List view"))] {
+                if icons::button(ui, icon, 30.0, app.combine_view == view, label).clicked() {
+                    app.combine_view = view;
+                }
+            }
             if count > 1 {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(crate::i18n::fmt(tl!("{n} selected"), &[("n", &count.to_string())])).color(t.text_muted));
+            }
+            if grid && n > 0 {
+                // Every file as its pages, or all as cards again.
+                group(ui, &t, edge, 2.0 * 30.0 + 6.0);
+                let can_expand = app.combine_draft.iter_mut().any(|f| !app.combine_tab.expanded.contains(&f.id) && expandable(f));
+                if ui.add_enabled_ui(can_expand, |ui| icons::button(ui, "maximize-2", 30.0, false, tl!("Expand all"))).inner.clicked() {
+                    events.action = Some(RowAction::ExpandAll(true));
+                }
+                let can_collapse = !app.combine_tab.expanded.is_empty();
+                if ui.add_enabled_ui(can_collapse, |ui| icons::button(ui, "minimize-2", 30.0, false, tl!("Collapse all"))).inner.clicked() {
+                    events.action = Some(RowAction::ExpandAll(false));
+                }
+                zoom_controls(app, ui, &t, edge);
             }
         });
         ui.add_space(10.0);
@@ -459,9 +717,19 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             ui,
             |ui| {
                 ui.set_min_height(card_h - 12.0);
+                // The grid scrolls inside the card, leaving room for the totals below it.
+                if grid {
+                    ui.set_max_height(card_h - 12.0);
+                }
                 ui.set_width(ui.available_width());
                 if n == 0 {
                     empty_state(app, ui, &t, files_hovering);
+                // The view as the toolbar left it: a click on List view this frame starts no
+                // thumbnail renders.
+                } else if app.combine_view == CombineView::Grid {
+                    if let Some(action) = crate::combine_grid::grid(app, ui, &t, &checks, &selected) {
+                        events.action = Some(action);
+                    }
                 } else {
                     let table_events = table(app, ui, &t, &checks, &selected);
                     events.range_focused |= table_events.range_focused;
@@ -473,16 +741,30 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             },
         );
 
+        // A file shown large, over everything.
+        crate::combine_grid::preview(app, ui.ctx(), &t);
+
         // Totals.
         ui.add_space(8.0);
         if n > 0 {
             ui.horizontal(|ui| {
                 let pages: usize = checks.iter().filter_map(|c| c.as_ref().ok()).sum();
-                let size: usize = app.combine_draft.iter().map(|f| f.bytes.len()).sum();
+                // Each file's size once, however many parts it is in.
+                let mut counted = BTreeSet::new();
+                let size: usize = app.combine_draft.iter().filter(|f| counted.insert(f.group)).map(|f| f.bytes.len()).sum();
+                // A file split into parts counts once.
+                let n = app.combine_draft.iter().map(|f| f.group).collect::<BTreeSet<u64>>().len();
                 let files = if n == 1 { tl!("1 file").to_string() } else { crate::i18n::fmt(tl!("{n} files"), &[("n", &n.to_string())]) };
                 let pages = if pages == 1 { tl!("1 page").to_string() } else { crate::i18n::fmt(tl!("{n} pages"), &[("n", &pages.to_string())]) };
                 ui.label(egui::RichText::new(format!("{files} · {pages} · {}", crate::panels::human_size(size))).color(t.text_muted));
-                let bad = app.combine_draft.iter().zip(&checks).filter(|(f, c)| f.problem.is_some() || c.is_err()).count();
+                let bad = app
+                    .combine_draft
+                    .iter()
+                    .zip(&checks)
+                    .filter(|(f, c)| f.problem.is_some() || c.is_err())
+                    .map(|(f, _)| f.group)
+                    .collect::<BTreeSet<u64>>()
+                    .len();
                 if bad > 0 {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let text = if bad == 1 {
@@ -597,8 +879,20 @@ fn unlock_prompt(app: &mut PdfCraftApp, ctx: &egui::Context) {
 
 fn separator(ui: &mut egui::Ui, t: &Tokens) {
     ui.add_space(4.0);
-    ui.painter().vline(ui.cursor().left(), ui.max_rect().y_range().shrink(4.0), Stroke::new(1.0, t.divider));
+    // As tall as the buttons on this line (the toolbar can take two).
+    let top = ui.cursor().top();
+    ui.painter().vline(ui.cursor().left(), (top + 4.0)..=(top + 26.0), Stroke::new(1.0, t.divider));
     ui.add_space(6.0);
+}
+
+/// Before a group of toolbar buttons `width` wide: a divider, or a new line when the group
+/// doesn't fit before `edge` (the toolbar wraps between groups, never inside one).
+fn group(ui: &mut egui::Ui, t: &Tokens, edge: f32, width: f32) {
+    if edge - ui.cursor().min.x < width + 10.0 {
+        ui.end_row();
+    } else {
+        separator(ui, t);
+    }
 }
 
 /// A toolbar icon button, disabled with a reason.
@@ -606,9 +900,15 @@ fn tool(ui: &mut egui::Ui, enabled: bool, icon: &str, label: &str, disabled_why:
     ui.add_enabled_ui(enabled, |ui| icons::button(ui, icon, 30.0, false, label)).inner.on_disabled_hover_text(disabled_why)
 }
 
+/// Whether a file can be shown as its pages: readable, unlocked, and adding more than one.
+fn expandable(f: &mut CombineFile) -> bool {
+    f.lock.is_none() && f.problem.is_none() && f.selection().is_ok_and(|k| k > 1 && k <= crate::combine_grid::MAX_EXPAND)
+}
+
 /// Why Combine can't run yet, if so.
 fn blocker(files: &[CombineFile], checks: &[Result<usize, String>]) -> Option<String> {
-    if files.len() < 2 {
+    // (A file split into parts is still one file.)
+    if files.iter().map(|f| f.group).collect::<BTreeSet<u64>>().len() < 2 {
         return Some(tl!("Add at least two files").to_string());
     }
     for (f, check) in files.iter().zip(checks) {
@@ -623,15 +923,24 @@ fn blocker(files: &[CombineFile], checks: &[Result<usize, String>]) -> Option<St
 }
 
 /// While no text field has the keyboard: Up/Down select (Shift extends), Alt+Up/Down move the
-/// selection, Delete removes it, Ctrl/⌘+A selects every file.
-fn keyboard(ui: &egui::Ui, n: usize, any_selected: bool) -> Option<RowAction> {
-    if n == 0 || ui.ctx().memory(|m| m.focused().is_some()) {
+/// selection, Delete removes it, Ctrl/⌘+A selects every file. In the grid (`columns` per row)
+/// Left/Right step one file and Up/Down one row.
+pub(crate) fn keyboard(ui: &egui::Ui, n: usize, any_selected: bool, grid_columns: Option<usize>, space: bool) -> Option<RowAction> {
+    // A focused card or button still leaves the arrows to the list; a text field, an open menu
+    // or a dialog doesn't.
+    let ctx = ui.ctx();
+    if n == 0 || ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.top_modal_layer().is_some()) {
         return None;
     }
     use egui::Key;
     ui.ctx().input_mut(|i| {
         if i.consume_key(Modifiers::COMMAND, Key::A) {
             return Some(RowAction::SelectAll);
+        }
+        // As Quick Look: the file the keyboard is on, large (the way there without a pointer). A
+        // focused button keeps its Space.
+        if any_selected && space && i.consume_key(Modifiers::NONE, Key::Space) {
+            return Some(RowAction::PreviewSelected);
         }
         if any_selected {
             if i.consume_key(Modifiers::ALT, Key::ArrowUp) {
@@ -644,16 +953,87 @@ fn keyboard(ui: &egui::Ui, n: usize, any_selected: bool) -> Option<RowAction> {
                 return Some(RowAction::Remove);
             }
         }
-        for (down, key) in [(false, Key::ArrowUp), (true, Key::ArrowDown)] {
-            if i.consume_key(Modifiers::NONE, key) {
-                return Some(RowAction::Step { down, extend: false });
-            }
+        let row = grid_columns.unwrap_or(1).max(1);
+        let mut keys = vec![(false, row, Key::ArrowUp), (true, row, Key::ArrowDown)];
+        if grid_columns.is_some() {
+            keys.extend([(false, 1, Key::ArrowLeft), (true, 1, Key::ArrowRight)]);
+        }
+        for (down, by, key) in keys {
+            // Shift first: a plain arrow also matches with Shift held (egui ignores an extra
+            // Shift), which would step instead of extending.
             if i.consume_key(Modifiers::SHIFT, key) {
-                return Some(RowAction::Step { down, extend: true });
+                return Some(RowAction::Step { down, by, extend: true });
+            }
+            if i.consume_key(Modifiers::NONE, key) {
+                return Some(RowAction::Step { down, by, extend: false });
             }
         }
         None
     })
+}
+
+/// ⌘+ (or ⌘=), ⌘− and ⌘0, while no text field, menu or dialog has the keyboard: the grid zoom
+/// they ask for, from `zoom`.
+fn zoom_keys(ui: &egui::Ui, zoom: f32) -> Option<f32> {
+    use crate::combine_grid::zoom_step;
+    use egui::{Key, KeyboardShortcut};
+    let ctx = ui.ctx();
+    if ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.top_modal_layer().is_some()) {
+        return None;
+    }
+    // All of them are taken (several can arrive in one slow frame), so none is left for egui to
+    // zoom the whole window with.
+    let (larger, smaller, reset) = ctx.input_mut(|i| {
+        let mut pressed = |k| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, k));
+        (pressed(Key::Plus) | pressed(Key::Equals), pressed(Key::Minus), pressed(Key::Num0))
+    });
+    match (larger, smaller, reset) {
+        (_, _, true) => Some(1.0),
+        (true, false, _) => Some(zoom_step(zoom, true)),
+        (false, true, _) => Some(zoom_step(zoom, false)),
+        _ => None,
+    }
+}
+
+/// The grid's card size, at the right of the toolbar (right to left: larger, the percentage, the
+/// slider, smaller), as the page grid's.
+fn zoom_controls(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, edge: f32) {
+    use crate::combine_grid::{ZOOM_RANGE, zoom_step};
+    let zoom = app.combine_zoom;
+    // Two buttons, the percentage, the slider and the spaces between: on a line of their own when
+    // they don't fit beside the rest.
+    let needed = 30.0 + 44.0 + 96.0 + 30.0 + 4.0 * ui.spacing().item_spacing.x + 8.0;
+    if edge - ui.cursor().min.x < needed {
+        ui.end_row();
+    }
+    // Right-aligned on the line, up to its end.
+    let line = Rect::from_min_max(ui.cursor().min, egui::pos2(edge, ui.cursor().min.y + 30.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(line).layout(Layout::right_to_left(Align::Center)), |ui| {
+        let larger = ui.add_enabled_ui(zoom < *ZOOM_RANGE.end(), |ui| icons::button(ui, "zoom-in", 30.0, false, tl!("Larger pages"))).inner;
+        if larger.clicked() {
+            app.combine_tab.zoom_request = Some(zoom_step(zoom, true));
+        }
+        let percent =
+            egui::Button::new(egui::RichText::new(format!("{:.0}%", zoom * 100.0)).font(theme::medium(12.0)).color(t.text_muted)).frame(false);
+        let percent = ui.add_sized([44.0, 30.0], percent);
+        percent.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Reset page size")));
+        if percent.on_hover_text(tl!("Reset page size")).clicked() {
+            app.combine_tab.zoom_request = Some(1.0);
+        }
+        let mut value = zoom;
+        ui.spacing_mut().slider_width = 96.0;
+        let slider = ui.add(egui::Slider::new(&mut value, ZOOM_RANGE).show_value(false));
+        // Read out as a percentage, as shown beside it.
+        slider.widget_info(|| egui::WidgetInfo::slider(true, f64::from(value * 100.0).round(), tl!("Page size")));
+        app.combine_tab.zoom_slider = Some(slider.id);
+        if slider.on_hover_text(tl!("Page size")).changed() {
+            app.combine_tab.zoom_request = Some(value);
+        }
+        let smaller = ui.add_enabled_ui(zoom > *ZOOM_RANGE.start(), |ui| icons::button(ui, "zoom-out", 30.0, false, tl!("Smaller pages"))).inner;
+        if smaller.clicked() {
+            app.combine_tab.zoom_request = Some(zoom_step(zoom, false));
+        }
+    });
 }
 
 fn empty_state(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, files_hovering: bool) {
@@ -722,10 +1102,11 @@ fn add_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
 fn table(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, checks: &[Result<usize, String>], selected: &[bool]) -> TableEvents {
     let mut events = TableEvents::default();
     // The same file twice is allowed (e.g. a cover sheet), but probably a mistake.
+    // (A file's parts are the one file, not copies.)
     let twice: Vec<bool> = app
         .combine_draft
         .iter()
-        .map(|f| app.combine_draft.iter().filter(|g| g.name == f.name && g.bytes.len() == f.bytes.len()).count() > 1)
+        .map(|f| app.combine_draft.iter().filter(|g| g.group != f.group && g.name == f.name && g.bytes.len() == f.bytes.len()).count() > 0)
         .collect();
     let dragging = egui::DragAndDrop::has_payload_of_type::<usize>(ui.ctx());
     // Until the user resizes a column, the widths follow the window.
@@ -1092,6 +1473,166 @@ fn natural(a: &str, b: &str) -> Ordering {
     }
 }
 
+/// Where an arrow key goes from `at` among `n` files, `by` at a time (1 in the list; a grid
+/// row's length for Up/Down in the grid). It stays put on the first row going up and on the last
+/// row going down; a short last row is reached from the row above at its last file.
+pub(crate) fn step_to(at: usize, n: usize, by: usize, down: bool) -> usize {
+    let by = by.max(1);
+    let last = n.saturating_sub(1);
+    let at = at.min(last);
+    if down {
+        if at >= last / by * by { at } else { at.saturating_add(by).min(last) }
+    } else if at < by {
+        at
+    } else {
+        at - by
+    }
+}
+
+/// The order after moving the files `moving` (keeping their order) to `gap` in `ids` as it is
+/// (0 = before the first, `ids.len()` = after the last); `None` when nothing would change.
+pub(crate) fn moved_order(ids: &[u64], moving: &BTreeSet<u64>, gap: usize) -> Option<Vec<u64>> {
+    let gap = gap.min(ids.len());
+    // The gap counted among the files that stay.
+    let before = ids.get(..gap).map_or(0, |s| s.iter().filter(|id| moving.contains(id)).count());
+    let (taken, mut rest): (Vec<u64>, Vec<u64>) = ids.iter().partition(|id| moving.contains(id));
+    if taken.is_empty() {
+        return None;
+    }
+    let at = gap.saturating_sub(before).min(rest.len());
+    rest.splice(at..at, taken);
+    (rest != ids).then_some(rest)
+}
+
+/// A page range (1-based: "1-3, 6, 9-7") that takes exactly `pages` (0-based, in that order)
+/// from a file of `count` pages; empty (every page) when that is all of them in order.
+pub(crate) fn range_of(pages: &[usize], count: usize) -> String {
+    if pages.len() == count && pages.iter().enumerate().all(|(i, p)| i == *p) {
+        return String::new();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(&start) = pages.get(i) {
+        // The longest run going up (or down) one page at a time from here.
+        let step = |a: usize, b: usize| {
+            if b == a.wrapping_add(1) {
+                1
+            } else if a == b.wrapping_add(1) {
+                -1
+            } else {
+                0
+            }
+        };
+        let dir = pages.get(i + 1).map_or(0, |&next| step(start, next));
+        let mut end = i;
+        while dir != 0 && pages.get(end + 1).is_some_and(|&next| pages.get(end).is_some_and(|&cur| step(cur, next) == dir)) {
+            end += 1;
+        }
+        let last = pages.get(end).copied().unwrap_or(start);
+        parts.push(if end == i { format!("{}", start.saturating_add(1)) } else { format!("{}-{}", start.saturating_add(1), last.saturating_add(1)) });
+        i = end + 1;
+    }
+    parts.join(", ")
+}
+
+/// One list entry, for moving and removing single pages: its file (`group`: the parts of one
+/// file split around share it) and the pages it takes, in order; `None` when they can't be
+/// listed (a locked file, a bad range): such an entry only ever moves whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Part {
+    pub(crate) id: u64,
+    pub(crate) group: u64,
+    pub(crate) pages: Option<Vec<usize>>,
+}
+
+/// One page in the list's order, or an entry that moves whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Item {
+    Page { group: u64, from: u64, nth: usize, page: usize },
+    Whole(u64),
+}
+
+/// Every page in the list's order (and the entries that can't be split, whole).
+fn items_of(parts: &[Part]) -> Vec<Item> {
+    let mut items = Vec::new();
+    for p in parts {
+        match &p.pages {
+            Some(pages) => items.extend(pages.iter().enumerate().map(|(nth, &page)| Item::Page { group: p.group, from: p.id, nth, page })),
+            None => items.push(Item::Whole(p.id)),
+        }
+    }
+    items
+}
+
+/// Entries again from `items`: a file's pages side by side are one entry (its first unused id
+/// among them, else a new one from `new_id`); entries that move whole keep theirs.
+fn parts_of(items: &[Item], parts: &[Part], new_id: &mut dyn FnMut() -> u64) -> Vec<Part> {
+    let mut out: Vec<Part> = Vec::new();
+    let mut used: BTreeSet<u64> = BTreeSet::new();
+    let mut run: Vec<Item> = Vec::new();
+    let mut close = |run: &mut Vec<Item>, out: &mut Vec<Part>, used: &mut BTreeSet<u64>| {
+        let Some(Item::Page { group, .. }) = run.first().copied() else { return };
+        let id = run.iter().find_map(|i| match i {
+            Item::Page { from, .. } if !used.contains(from) => Some(*from),
+            _ => None,
+        });
+        let id = id.unwrap_or_else(&mut *new_id);
+        used.insert(id);
+        let pages = run.iter().filter_map(|i| if let Item::Page { page, .. } = i { Some(*page) } else { None }).collect();
+        out.push(Part { id, group, pages: Some(pages) });
+        run.clear();
+    };
+    for item in items {
+        match item {
+            Item::Whole(id) => {
+                close(&mut run, &mut out, &mut used);
+                if let Some(p) = parts.iter().find(|p| p.id == *id) {
+                    used.insert(*id);
+                    out.push(p.clone());
+                }
+            }
+            Item::Page { group, .. } => {
+                if run.first().is_some_and(|f| !matches!(f, Item::Page { group: g, .. } if g == group)) {
+                    close(&mut run, &mut out, &mut used);
+                }
+                run.push(*item);
+            }
+        }
+    }
+    close(&mut run, &mut out, &mut used);
+    out
+}
+
+/// The entries after moving the pages `moving` (by entry id and place among its pages), in
+/// their order, to before page `gap` of the list (counted over every page, an entry that can't be
+/// split counting as one; 0 = before the first): a page moved between another file's pages
+/// splits its file into parts, and parts of one file brought side by side join. `None` when
+/// nothing would change.
+pub(crate) fn moved_pages(parts: &[Part], moving: &BTreeSet<(u64, usize)>, gap: usize, new_id: &mut dyn FnMut() -> u64) -> Option<Vec<Part>> {
+    let items = items_of(parts);
+    let gap = gap.min(items.len());
+    let picked = |i: &Item| matches!(i, Item::Page { from, nth, .. } if moving.contains(&(*from, *nth)));
+    let before = items.get(..gap).map_or(0, |s| s.iter().filter(|i| picked(i)).count());
+    let (taken, mut rest): (Vec<Item>, Vec<Item>) = items.iter().partition(|i| picked(i));
+    if taken.is_empty() {
+        return None;
+    }
+    let at = gap.saturating_sub(before).min(rest.len());
+    rest.splice(at..at, taken);
+    let out = parts_of(&rest, parts, new_id);
+    (out != parts).then_some(out)
+}
+
+/// The entries after taking out the pages `removing` (by entry id and place among its pages);
+/// an entry left with none goes, and parts of one file left side by side join. `None` when
+/// nothing would change.
+pub(crate) fn removed_pages(parts: &[Part], removing: &BTreeSet<(u64, usize)>, new_id: &mut dyn FnMut() -> u64) -> Option<Vec<Part>> {
+    let items: Vec<Item> =
+        items_of(parts).into_iter().filter(|i| !matches!(i, Item::Page { from, nth, .. } if removing.contains(&(*from, *nth)))).collect();
+    let out = parts_of(&items, parts, new_id);
+    (out != parts).then_some(out)
+}
+
 /// Six dots: the drag handle.
 fn grip(ui: &egui::Ui, rect: Rect, colour: Color32) {
     for dx in [-2.5, 2.5] {
@@ -1153,6 +1694,9 @@ impl PdfCraftApp {
 
     /// Select these rows (tests and automation).
     pub fn select_combine_rows(&mut self, rows: &[usize]) {
+        // Files picked: no page stays picked (the trash and Delete act on these files).
+        self.combine_tab.selected_pages.clear();
+        self.combine_tab.page_anchor = None;
         self.combine_tab.selected = rows.iter().filter_map(|i| self.combine_draft.get(*i)).map(|f| f.id).collect();
         let last = rows.last().and_then(|i| self.combine_draft.get(*i)).map(|f| f.id);
         (self.combine_tab.anchor, self.combine_tab.cursor) = (last, last);
@@ -1165,8 +1709,11 @@ impl PdfCraftApp {
     fn combine_restore(&mut self, s: Snapshot) {
         self.combine_draft = s.files;
         self.combine_tab.selected = s.selected;
+        self.combine_tab.selected_pages.clear();
+        self.combine_tab.page_anchor = None;
         self.combine_tab.sort = s.sort;
         self.combine_tab.range_edit = None;
+        self.combine_tab.revision = self.combine_tab.revision.wrapping_add(1);
         // A Pages field with the keyboard would otherwise keep typing into the restored list
         // without an undo step.
         if let Some(ctx) = &self.ctx {
@@ -1175,6 +1722,7 @@ impl PdfCraftApp {
     }
 
     fn combine_push_undo(&mut self, before: Snapshot) {
+        self.combine_tab.revision = self.combine_tab.revision.wrapping_add(1);
         let undo = &mut self.combine_tab.undo;
         undo.push(before);
         if undo.len() > HISTORY {
@@ -1230,7 +1778,199 @@ impl PdfCraftApp {
         self.combine_tab.sort = Some((key, ascending));
     }
 
-    fn combine_apply(&mut self, action: RowAction) {
+    /// The list as parts, for page edits: each entry's pages, or `None` for one that can't be
+    /// split (locked, unreadable, a bad range).
+    fn combine_parts(&self) -> Vec<Part> {
+        self.combine_draft
+            .iter()
+            .map(|f| Part {
+                id: f.id,
+                group: f.group,
+                // (No page listed, e.g. its pages couldn't be counted: it moves whole, never lost.)
+                pages: (f.lock.is_none() && f.problem.is_none()).then(|| f.pages_taken().ok()).flatten().filter(|p| !p.is_empty()),
+            })
+            .collect()
+    }
+
+    /// Make the list `parts`, as one undo step: entries kept by id, new parts made from their
+    /// file's other entries, each taking exactly its pages (its range rewritten). The parts of a
+    /// file shown as its pages stay shown so; the page selection is let go of.
+    fn combine_set_parts(&mut self, parts: Vec<Part>) {
+        self.combine_record();
+        self.combine_put_parts(parts);
+        let tab = &mut self.combine_tab;
+        tab.selected_pages.clear();
+        tab.page_anchor = None;
+        // An order made by hand isn't sorted any more.
+        tab.sort = None;
+    }
+
+    /// Join the parts of a file that have come to be side by side (no undo step of its own: it
+    /// belongs to the change that brought them together).
+    fn combine_join_parts(&mut self) {
+        let parts = self.combine_parts();
+        // Nothing to join unless some file is in more than one part.
+        let groups: BTreeSet<u64> = parts.iter().map(|p| p.group).collect();
+        if groups.len() == parts.len() {
+            return;
+        }
+        let next = &mut self.combine_tab.next_id;
+        let mut new_id = || {
+            let id = *next;
+            *next = next.wrapping_add(1);
+            id
+        };
+        let joined = parts_of(&items_of(&parts), &parts, &mut new_id);
+        if joined != parts {
+            self.combine_put_parts(joined);
+        }
+    }
+
+    /// Make the list `parts`: entries kept by id, new parts made from their file's other entries,
+    /// each taking exactly its pages (its range rewritten only when they differ).
+    fn combine_put_parts(&mut self, parts: Vec<Part>) {
+        let old = std::mem::take(&mut self.combine_draft);
+        let expanded: BTreeSet<u64> = old.iter().filter(|f| self.combine_tab.expanded.contains(&f.id)).map(|f| f.group).collect();
+        for p in parts {
+            let Some(base) = old.iter().find(|f| f.id == p.id).or_else(|| old.iter().find(|f| f.group == p.group)) else { continue };
+            let mut f = base.clone();
+            f.id = p.id;
+            // (A range that already takes these pages stays as the user typed it.)
+            if let Some(pages) = &p.pages
+                && f.pages_taken().ok().as_ref() != Some(pages)
+            {
+                f.range = range_of(pages, f.pages);
+                f.checked = None;
+            }
+            if expanded.contains(&f.group) {
+                self.combine_tab.expanded.insert(f.id);
+            }
+            self.combine_draft.push(f);
+        }
+        let ids: BTreeSet<u64> = self.combine_draft.iter().map(|f| f.id).collect();
+        self.combine_tab.selected.retain(|id| ids.contains(id));
+    }
+
+    /// A page card clicked: that page selected (Ctrl/⌘ toggles it, Shift selects every page from
+    /// the last one clicked, in the list's order); the files' selection is let go of.
+    fn combine_click_page(&mut self, id: u64, nth: usize, m: Modifiers) {
+        let page = (id, nth);
+        let tab = &mut self.combine_tab;
+        tab.selected.clear();
+        tab.cursor = Some(id);
+        if m.shift
+            && let Some(from) = tab.page_anchor
+        {
+            // Every page between the two, as the grid shows them.
+            let order: Vec<(u64, usize)> = self
+                .combine_draft
+                .iter()
+                .filter(|f| tab.expanded.contains(&f.id))
+                .flat_map(|f| (0..f.pages_taken().map_or(0, |p| p.len())).map(move |n| (f.id, n)))
+                .collect();
+            let (a, b) = (order.iter().position(|p| *p == from), order.iter().position(|p| *p == page));
+            if let (Some(a), Some(b)) = (a, b) {
+                if !m.command {
+                    tab.selected_pages.clear();
+                }
+                tab.selected_pages.extend(order.get(a.min(b)..=a.max(b)).unwrap_or_default().iter().copied());
+                return;
+            }
+        }
+        if m.command {
+            if !tab.selected_pages.remove(&page) {
+                tab.selected_pages.insert(page);
+            }
+        } else {
+            tab.selected_pages = BTreeSet::from([page]);
+        }
+        tab.page_anchor = Some(page);
+    }
+
+    /// Move `moving` to `gap`, as one undo step; a move that changes nothing leaves the list,
+    /// its sort and the history alone.
+    fn combine_move_to_gap(&mut self, moving: BTreeSet<u64>, gap: usize) {
+        let ids: Vec<u64> = self.combine_draft.iter().map(|f| f.id).collect();
+        let Some(order) = moved_order(&ids, &moving, gap) else { return };
+        self.combine_record();
+        let rank: std::collections::HashMap<u64, usize> = order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        self.combine_draft.sort_by_key(|f| rank.get(&f.id).copied().unwrap_or(usize::MAX));
+        self.combine_tab.selected = moving.into_iter().filter(|id| rank.contains_key(id)).collect();
+        self.combine_tab.sort = None;
+    }
+
+    pub(crate) fn combine_apply(&mut self, action: RowAction) {
+        let page_edit = matches!(action, RowAction::ClickPage(..) | RowAction::MovePages { .. } | RowAction::RemovePages(_));
+        self.combine_apply_once(action);
+        // One kind of selection at a time: files picked (by a click, the keys, a drop, Unlock…)
+        // let go of the pages picked, so the trash never takes pages the user no longer means.
+        if !self.combine_tab.selected.is_empty() {
+            self.combine_tab.selected_pages.clear();
+            self.combine_tab.page_anchor = None;
+        }
+        // A file's parts brought side by side (the file between them removed or moved away) are
+        // one entry again, as in the same undo step.
+        if !page_edit {
+            self.combine_join_parts();
+        }
+    }
+
+    fn combine_apply_once(&mut self, action: RowAction) {
+        // The trash and Delete act on the selected pages while there are any.
+        let action = match action {
+            // (Files picked come first: the two are never both picked, but if they ever were, the
+            // files the user sees picked are what goes.)
+            RowAction::Remove if self.combine_tab.selected.is_empty() && !self.combine_tab.selected_pages.is_empty() => RowAction::RemovePages(None),
+            a => a,
+        };
+        // Page edits work on the list as parts.
+        match action {
+            RowAction::ClickPage(id, nth, m) => return self.combine_click_page(id, nth, m),
+            RowAction::MovePages { page, revision, gap } => {
+                if revision != self.combine_tab.revision {
+                    return;
+                }
+                let moving =
+                    if self.combine_tab.selected_pages.contains(&page) { self.combine_tab.selected_pages.clone() } else { BTreeSet::from([page]) };
+                let parts = self.combine_parts();
+                let next = &mut self.combine_tab.next_id;
+                let mut new_id = || {
+                    let id = *next;
+                    *next = next.wrapping_add(1);
+                    id
+                };
+                if let Some(moved) = moved_pages(&parts, &moving, gap, &mut new_id) {
+                    self.combine_set_parts(moved);
+                }
+                return;
+            }
+            RowAction::RemovePages(one) => {
+                let removing = match one {
+                    Some(page) => BTreeSet::from([page]),
+                    None => self.combine_tab.selected_pages.clone(),
+                };
+                if removing.is_empty() {
+                    return;
+                }
+                let parts = self.combine_parts();
+                let next = &mut self.combine_tab.next_id;
+                let mut new_id = || {
+                    let id = *next;
+                    *next = next.wrapping_add(1);
+                    id
+                };
+                // (Nothing to take out: no undo step, the redo history kept.)
+                if let Some(left) = removed_pages(&parts, &removing, &mut new_id) {
+                    self.combine_set_parts(left);
+                }
+                return;
+            }
+            _ => {}
+        }
+        // A file's card clicked (or the list's keys): the files are selected, no page.
+        if matches!(action, RowAction::Click(..) | RowAction::SelectAll | RowAction::Step { .. }) {
+            self.combine_tab.selected_pages.clear();
+        }
         let ids: Vec<u64> = self.combine_draft.iter().map(|f| f.id).collect();
         let n = ids.len();
         let index_of = |id: Option<u64>| id.and_then(|id| ids.iter().position(|x| *x == id));
@@ -1259,10 +1999,17 @@ impl PdfCraftApp {
             RowAction::SelectAll => {
                 tab.selected = ids.iter().copied().collect();
             }
-            RowAction::Step { down, extend } => {
+            RowAction::Step { down, by, extend } => {
+                // With files shown as their pages, Up and Down go a row of cards (from the last
+                // of a file's cards down, from its first up) to the file there.
+                let places = &tab.grid_places;
+                let rows_of_cards = by > 1 && places.len() > n;
                 let next = match index_of(tab.cursor) {
-                    Some(c) if down => (c + 1).min(n.saturating_sub(1)),
-                    Some(c) => c.saturating_sub(1),
+                    Some(c) if rows_of_cards => {
+                        let from = if down { places.iter().rposition(|f| *f == c) } else { places.iter().position(|f| *f == c) };
+                        from.and_then(|at| places.get(step_to(at, places.len(), by, down)).copied()).unwrap_or(c)
+                    }
+                    Some(c) => step_to(c, n, by, down),
                     None if down => 0,
                     None => n.saturating_sub(1),
                 };
@@ -1275,6 +2022,7 @@ impl PdfCraftApp {
                     tab.anchor = Some(id);
                 }
                 tab.cursor = Some(id);
+                tab.reveal = Some(id);
             }
             RowAction::MoveUp | RowAction::MoveDown => {
                 let up = matches!(action, RowAction::MoveUp);
@@ -1313,21 +2061,88 @@ impl PdfCraftApp {
                 self.combine_tab.selected = next.into_iter().collect();
                 (self.combine_tab.anchor, self.combine_tab.cursor) = (next, next);
             }
+            RowAction::RemoveFile(id) => {
+                if !ids.contains(&id) {
+                    return;
+                }
+                self.combine_record();
+                self.combine_draft.retain(|f| f.id != id);
+                // The rest of the selection stays as it was.
+                self.combine_tab.selected.remove(&id);
+                if self.combine_tab.anchor == Some(id) {
+                    self.combine_tab.anchor = None;
+                }
+                if self.combine_tab.cursor == Some(id) {
+                    self.combine_tab.cursor = None;
+                }
+            }
+            RowAction::Preview(id) => {
+                if ids.contains(&id) {
+                    self.combine_tab.preview = Some(Preview { file: id, at: 0, page: None, pages: None });
+                }
+            }
+            RowAction::PreviewAt(id, at) => {
+                if ids.contains(&id) {
+                    self.combine_tab.preview = Some(Preview { file: id, at, page: None, pages: None });
+                }
+            }
+            RowAction::Expand(id, on) => {
+                if on {
+                    if self.combine_draft.iter_mut().any(|f| f.id == id && expandable(f)) {
+                        self.combine_tab.expanded.insert(id);
+                    }
+                } else {
+                    self.combine_tab.expanded.remove(&id);
+                    // Its card may be far from where its pages were: brought into view.
+                    self.combine_tab.reveal = Some(id);
+                }
+            }
+            RowAction::ExpandAll(on) => {
+                self.combine_tab.expanded =
+                    if on { self.combine_draft.iter_mut().filter_map(|f| expandable(f).then_some(f.id)).collect() } else { BTreeSet::new() };
+                if !on {
+                    self.combine_tab.reveal = self.combine_tab.cursor;
+                }
+            }
+            RowAction::PreviewSelected => {
+                // The file the keyboard is on, or the first selected; with pages selected, the
+                // page card that has the keyboard, or the first selected page.
+                let first_page = tab.selected_pages.iter().min_by_key(|(id, nth)| (ids.iter().position(|x| x == id), *nth)).copied();
+                let page = tab.card_focus_at.filter(|p| tab.selected_pages.contains(p)).or(first_page);
+                let id = tab
+                    .cursor
+                    .filter(|c| tab.selected.contains(c))
+                    .or_else(|| ids.iter().copied().find(|id| tab.selected.contains(id)))
+                    .or(page.map(|(id, _)| id));
+                // Only what its card would offer a magnifier for (unlocked, readable, measured).
+                let shows = |id: u64| self.combine_draft.iter().any(|f| f.id == id && f.lock.is_none() && f.problem.is_none() && !f.sizes.is_empty());
+                if let Some(id) = id.filter(|id| shows(*id)) {
+                    // From the page card that has the keyboard (or the selected page), if it's one
+                    // of this file's.
+                    let at = self.combine_tab.card_focus_at.or(page).filter(|(file, _)| *file == id).map_or(0, |(_, nth)| nth);
+                    self.combine_tab.preview = Some(Preview { file: id, at, page: None, pages: None });
+                }
+            }
+            // (Page edits were done above.)
+            RowAction::ClickPage(..) | RowAction::MovePages { .. } | RowAction::RemovePages(_) => {}
             RowAction::Drop { from, to } => {
                 let (Some(&dragged), Some(&target)) = (ids.get(from), ids.get(to)) else { return };
                 // Dragging a selected file takes the whole selection along.
                 let moving: BTreeSet<u64> = if tab.selected.contains(&dragged) { tab.selected.clone() } else { BTreeSet::from([dragged]) };
+                // Dropped on the selection itself: nothing to do.
                 if moving.contains(&target) {
                     return;
                 }
-                self.combine_record();
-                let list = &mut self.combine_draft;
-                let (taken, mut rest): (Vec<_>, Vec<_>) = list.drain(..).partition(|f| moving.contains(&f.id));
-                let at = rest.iter().position(|f| f.id == target).map_or(rest.len(), |p| if from < to { p + 1 } else { p });
-                rest.splice(at..at, taken);
-                *list = rest;
-                self.combine_tab.selected = moving;
-                self.combine_tab.sort = None;
+                // Below the row when dragged down, above it when dragged up.
+                self.combine_move_to_gap(moving, if from < to { to + 1 } else { to });
+            }
+            RowAction::DropAt { file, revision, gap } => {
+                // The list changed under the drag (e.g. undo): the gap no longer means the same.
+                if revision != tab.revision || !ids.contains(&file) {
+                    return;
+                }
+                let moving: BTreeSet<u64> = if tab.selected.contains(&file) { tab.selected.clone() } else { BTreeSet::from([file]) };
+                self.combine_move_to_gap(moving, gap);
             }
             RowAction::Unlock(row, at) => {
                 let locked: BTreeSet<u64> = self.combine_draft.iter().filter(|f| f.lock.is_some()).map(|f| f.id).collect();
@@ -1356,8 +2171,11 @@ impl PdfCraftApp {
     /// Close the Combine files tab and forget its list; the last document shows, if any.
     pub fn close_combine_tab(&mut self) {
         let showing = self.combine_showing();
-        self.combine_tab = CombineTab::default();
+        // (Revisions keep counting: a drag begun before can never match a list made after.)
+        let revision = self.combine_tab.revision.wrapping_add(1);
+        self.combine_tab = CombineTab { revision, ..CombineTab::default() };
         self.combine_draft.clear();
+        self.combine_thumbs.clear();
         if showing {
             self.active = self.views.len().checked_sub(1);
         }
@@ -1386,6 +2204,7 @@ impl PdfCraftApp {
             };
             let mut f = CombineFile {
                 id: 0,
+                group: 0,
                 name,
                 bytes,
                 pages: 0,
@@ -1394,6 +2213,8 @@ impl PdfCraftApp {
                 problem: None,
                 lock: None,
                 password: None,
+                sizes: Arc::from(Vec::new()),
+                auth: 0,
                 notes: Vec::new(),
                 origin_note: note,
                 checked: None,
@@ -1405,6 +2226,7 @@ impl PdfCraftApp {
             self.combine_record();
             for mut f in added {
                 f.id = self.combine_tab.next_id;
+                f.group = f.id;
                 self.combine_tab.next_id = self.combine_tab.next_id.wrapping_add(1);
                 self.combine_draft.push(f);
             }
@@ -1427,24 +2249,30 @@ impl PdfCraftApp {
     /// Try `password` on the protected files `rows` (as one undo step). Returns false when it
     /// opened none of them.
     pub fn combine_unlock(&mut self, rows: &[u64], password: &str) -> bool {
+        // A file split into parts is unlocked as one: each file once, all its parts alike.
+        let groups: BTreeSet<u64> =
+            rows.iter().filter_map(|id| self.combine_draft.iter().find(|f| f.id == *id && f.lock.is_some())).map(|f| f.group).collect();
         let mut accepted = Vec::new();
-        for id in rows {
-            let Some(f) = self.combine_draft.iter().find(|f| f.id == *id && f.lock.is_some()) else { continue };
+        for group in &groups {
+            let Some(f) = self.combine_draft.iter().find(|f| f.group == *group) else { continue };
             if let Ok(a) = assess(&f.bytes, Some(password)) {
-                accepted.push((*id, a));
+                accepted.push((*group, a));
             }
         }
         if accepted.is_empty() {
             return false;
         }
         self.combine_record();
-        let tried = rows.len();
+        let tried = groups.len();
         let mut unlocked = 0;
-        for (id, a) in accepted {
-            if let Some(f) = self.combine_draft.iter_mut().find(|f| f.id == id) {
-                f.take(a, Some(Secret(password.to_owned())));
-                unlocked += usize::from(f.lock.is_none());
+        for (group, a) in accepted {
+            let mut auth = None;
+            for f in self.combine_draft.iter_mut().filter(|f| f.group == group) {
+                f.take(a.clone(), Some(Secret(password.to_owned())));
+                // Read once: one way of reading for all its parts (their thumbnails are shared).
+                f.auth = *auth.get_or_insert(f.auth);
             }
+            unlocked += usize::from(self.combine_draft.iter().any(|f| f.group == group && f.lock.is_none()));
         }
         if tried > 1 {
             self.notify_fmt("Unlocked {n} of {m} files", &[("n", &unlocked.to_string()), ("m", &tried.to_string())]);
@@ -1508,13 +2336,15 @@ impl PdfCraftApp {
         if files.is_empty() {
             return;
         }
-        let count = files.len();
+        // Each file once, however many parts it is in.
+        let count = files.iter().map(|f| f.group).collect::<BTreeSet<u64>>().len();
+        let groups: Vec<u64> = files.iter().map(|f| f.group).collect();
         let sources: Vec<(String, Arc<Vec<u8>>, Option<String>)> = files
             .iter()
             .map(|f| (crate::files::strip_pdf(&f.name).to_string(), f.bytes.clone(), Some(f.range.clone()).filter(|r| !r.trim().is_empty())))
             .collect();
         let passwords: Vec<Option<&str>> = files.iter().map(|f| f.password.as_ref().map(|p| p.0.as_str())).collect();
-        match self.session.combine_unlocked(&sources, &passwords) {
+        match self.session.combine_grouped(&sources, &groups, &passwords) {
             Ok(bytes) => {
                 self.close_combine_tab();
                 let message = crate::i18n::fmt(tl!("Combined {n} files"), &[("n", &count.to_string())]);
@@ -1523,5 +2353,146 @@ impl PdfCraftApp {
             // The list stays, so the user can fix it.
             Err(e) => self.notify_fmt("Couldn't combine files: {e}", &[("e", &e.to_string())]),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-page PDF that opens with "pw".
+    fn locked() -> Vec<u8> {
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] >>",
+            "<< /Type /Page /Parent 2 0 R >>",
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+        for o in offsets {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+        let mut doc = pdfcraft_cos::Document::open(Arc::new(out)).unwrap();
+        doc.set_encryption(&pdfcraft_cos::NewEncryption {
+            algorithm: pdfcraft_cos::Algorithm::Aes256,
+            user_password: "pw",
+            owner_password: "owner",
+            permissions: -1,
+            encrypt_metadata: true,
+            seed: [4; 32],
+        })
+        .unwrap();
+        pdfcraft_cos::write_full(&doc, &Default::default()).unwrap()
+    }
+
+    #[test]
+    fn every_read_of_a_file_is_new_even_after_undo() {
+        // Regression: the read counter lived in the undo history, so unlock → undo → unlock (with
+        // another password) could repeat a value and keep a thumbnail of the other read.
+        let mut app = PdfCraftApp::new();
+        app.stage_combine(vec![("secret.pdf".into(), locked())]);
+        let added = app.combine_draft[0].auth;
+        assert!(app.combine_unlock_rows(&[0], "pw"));
+        let first = app.combine_draft[0].auth;
+        app.combine_history_step(true);
+        assert_eq!(app.combine_draft[0].auth, added, "undo brings back the file as it was read");
+        assert!(app.combine_unlock_rows(&[0], "owner"));
+        let second = app.combine_draft[0].auth;
+        assert!(second != first && second != added, "added {added}, unlocked {first}, unlocked again {second}");
+    }
+
+    #[test]
+    fn moves_by_rank_never_lose_or_repeat_a_file() {
+        let mut app = PdfCraftApp::new();
+        app.stage_combine((0..6).map(|i| (format!("f{i}.pdf"), locked())).collect());
+        let mut ids: Vec<u64> = app.combine_draft.iter().map(|f| f.id).collect();
+        for (moving, gap) in [(vec![0usize, 2, 4], 6), (vec![5], 0), (vec![1, 3], 3)] {
+            let set: BTreeSet<u64> = moving.iter().filter_map(|i| ids.get(*i).copied()).collect();
+            app.combine_move_to_gap(set, gap);
+            let mut now: Vec<u64> = app.combine_draft.iter().map(|f| f.id).collect();
+            ids = now.clone();
+            now.sort_unstable();
+            assert_eq!(now, (0..6).collect::<Vec<u64>>(), "every file once");
+        }
+    }
+
+    #[test]
+    fn page_lists_become_the_shortest_range() {
+        assert_eq!(range_of(&[0, 1, 2], 3), "", "every page in order: no range");
+        assert_eq!(range_of(&[0, 1, 2], 5), "1-3");
+        assert_eq!(range_of(&[2, 0, 3], 5), "3, 1, 4");
+        assert_eq!(range_of(&[8, 7, 6, 0], 9), "9-7, 1");
+        assert_eq!(range_of(&[0, 0, 1], 2), "1, 1-2");
+        assert_eq!(range_of(&[4], 9), "5");
+        assert_eq!(range_of(&[], 3), "");
+        // Whatever comes out reads back as the same pages.
+        for pages in [vec![0, 1, 2, 5, 4, 3, 3, 7], vec![9, 0, 9, 1], vec![2, 1, 0, 1, 2]] {
+            let range = range_of(&pages, 10);
+            let back = pdfcraft_engine::print::select_pages(10, Some(&range), &[], pdfcraft_engine::print::Subset::All, false).unwrap();
+            assert_eq!(back, pages, "{range}");
+        }
+    }
+
+    fn part(id: u64, group: u64, pages: &[usize]) -> Part {
+        Part { id, group, pages: Some(pages.to_vec()) }
+    }
+
+    #[test]
+    fn a_page_moved_between_another_files_pages_splits_its_file_and_parts_rejoin() {
+        let mut next = 100;
+        let mut new_id = || {
+            next += 1;
+            next
+        };
+        // A: pages 1-3, B: pages 1-2.
+        let list = [part(1, 1, &[0, 1, 2]), part(2, 2, &[0, 1])];
+        // A's page 3 between B's pages: A splits around B's first page.
+        let moved = moved_pages(&list, &BTreeSet::from([(1, 2)]), 4, &mut new_id).unwrap();
+        assert_eq!(moved, [part(1, 1, &[0, 1]), part(2, 2, &[0]), part(101, 1, &[2]), part(102, 2, &[1])]);
+        // Back where it was: the parts join again, under their first ids.
+        let back = moved_pages(&moved, &BTreeSet::from([(101, 0)]), 2, &mut new_id).unwrap();
+        assert_eq!(back, [part(1, 1, &[0, 1, 2]), part(2, 2, &[0, 1])]);
+        // Within a file: only its order changes.
+        let within = moved_pages(&list, &BTreeSet::from([(1, 0)]), 3, &mut new_id).unwrap();
+        assert_eq!(within, [part(1, 1, &[1, 2, 0]), part(2, 2, &[0, 1])]);
+        // Several pages carried together keep their order.
+        let both = moved_pages(&list, &BTreeSet::from([(1, 0), (1, 2)]), 5, &mut new_id).unwrap();
+        assert_eq!(both, [part(1, 1, &[1]), part(2, 2, &[0, 1]), part(103, 1, &[0, 2])]);
+        // Dropped where it is, or nothing picked: no change.
+        assert_eq!(moved_pages(&list, &BTreeSet::from([(1, 1)]), 1, &mut new_id), None);
+        assert_eq!(moved_pages(&list, &BTreeSet::from([(9, 9)]), 0, &mut new_id), None);
+        // A file that can't be split moves whole, and pages move around it.
+        let locked = [part(1, 1, &[0, 1]), Part { id: 3, group: 3, pages: None }];
+        let around = moved_pages(&locked, &BTreeSet::from([(1, 0)]), 3, &mut new_id).unwrap();
+        assert_eq!(around, [part(1, 1, &[1]), Part { id: 3, group: 3, pages: None }, part(104, 1, &[0])]);
+    }
+
+    #[test]
+    fn removing_pages_drops_emptied_parts_and_joins_what_meets() {
+        let mut next = 200;
+        let mut new_id = || {
+            next += 1;
+            next
+        };
+        // A split around B: A[1], B[1], A[2].
+        let list = [part(1, 1, &[0]), part(2, 2, &[0]), part(3, 1, &[1])];
+        // B goes: A's two parts meet and join.
+        assert_eq!(removed_pages(&list, &BTreeSet::from([(2, 0)]), &mut new_id), Some(vec![part(1, 1, &[0, 1])]));
+        // One page of a part.
+        let two = [part(1, 1, &[0, 1, 2])];
+        assert_eq!(removed_pages(&two, &BTreeSet::from([(1, 1)]), &mut new_id), Some(vec![part(1, 1, &[0, 2])]));
+        // Every page: nothing left. Repeated pages are told apart by their place.
+        assert_eq!(removed_pages(&two, &BTreeSet::from([(1, 0), (1, 1), (1, 2)]), &mut new_id), Some(Vec::new()));
+        let repeats = [part(1, 1, &[0, 0])];
+        assert_eq!(removed_pages(&repeats, &BTreeSet::from([(1, 1)]), &mut new_id), Some(vec![part(1, 1, &[0])]));
+        // A page that isn't there: nothing changes, and it says so.
+        assert_eq!(removed_pages(&two, &BTreeSet::from([(1, 9)]), &mut new_id), None);
     }
 }

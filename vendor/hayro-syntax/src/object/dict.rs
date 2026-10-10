@@ -177,8 +177,10 @@ impl Debug for Dict<'_> {
 impl Skippable for Dict<'_> {
     fn skip(r: &mut Reader<'_>, is_content_stream: bool) -> Option<()> {
         r.forward_tag(b"<<")?;
+        r.enter_container()?;
 
-        loop {
+        // PdfCraft patch: leave even when a value or garbage fails through `?`.
+        let result = (|| loop {
             r.skip_white_spaces_and_comments();
 
             if let Some(()) = r.forward_tag(b">>") {
@@ -198,7 +200,9 @@ impl Skippable for Dict<'_> {
                     r.skip::<MaybeRef<Object<'_>>>(is_content_stream)?;
                 }
             }
-        }
+        })();
+        r.leave_container();
+        result
     }
 }
 
@@ -362,7 +366,26 @@ pub(crate) fn probe_dict<'a>(
     })
 }
 
+// PdfCraft patch: an object where a key belongs is read, not skipped, so a dictionary
+// holding another one there (`<< << …`) recursed without a bound. Count each parsed
+// dictionary like a skipped one, and leave on every exit of the parse below.
 fn parse_dict_with<'a, F>(
+    r: &mut Reader<'a>,
+    ctx: &ReaderContext<'a>,
+    start_tag: Option<&[u8]>,
+    end_tag: &[u8],
+    on_entry: F,
+) -> Option<(&'a [u8], bool)>
+where
+    F: FnMut(Name<'a>, usize, &Reader<'a>) -> Option<()>,
+{
+    r.enter_container()?;
+    let result = parse_dict_with_inner(r, ctx, start_tag, end_tag, on_entry);
+    r.leave_container();
+    result
+}
+
+fn parse_dict_with_inner<'a, F>(
     r: &mut Reader<'a>,
     ctx: &ReaderContext<'a>,
     start_tag: Option<&[u8]>,

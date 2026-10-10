@@ -57,6 +57,11 @@ impl Name {
         self.get(C)
     }
 
+    /// The name Acrobat shows: the common name, else the organization, else the DN.
+    pub fn display_name(&self) -> String {
+        self.common_name().or(self.organization()).map(str::to_string).unwrap_or_else(|| self.display())
+    }
+
     /// "CN=Ada Lovelace, O=Example, E=ada@example.com"
     pub fn display(&self) -> String {
         self.attrs
@@ -400,7 +405,7 @@ impl Certificate {
 
     /// The display name Acrobat uses: the common name, else the organization, else the DN.
     pub fn display_name(&self) -> String {
-        self.subject.common_name().or(self.subject.organization()).map(str::to_string).unwrap_or_else(|| self.subject.display())
+        self.subject.display_name()
     }
 
     /// SHA-256 fingerprint as upper-case hex pairs.
@@ -450,6 +455,19 @@ impl Certificate {
         let cert = der::seq(&[&tbs, &sig_alg, &der::bit_string(&signature)]);
         Certificate::parse(&cert)
     }
+}
+
+/// The subject alone, to name a certificate `Certificate::parse` rejects (one with a key type
+/// PdfCraft doesn't support, say). `None` when even that can't be read.
+pub fn subject_of(raw: &[u8]) -> Option<Name> {
+    let cert = Tlv::parse_all(raw).ok()?.expect(tag::SEQUENCE, "Certificate").ok()?;
+    let tbs = cert.children().ok()?.into_iter().next()?;
+    let mut f = tbs.children().ok()?.into_iter().peekable();
+    if f.peek().is_some_and(|t| t.tag == tag::ctx(0)) {
+        f.next();
+    }
+    // serial, signature algorithm, issuer, validity, then the subject.
+    Name::parse(&f.nth(4)?).ok()
 }
 
 /// The chain from `leaf` up through `pool`, as far as issuers can be found and may issue: each

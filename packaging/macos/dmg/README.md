@@ -2,8 +2,8 @@
 
 What Finder shows when the DMG opens: a 660 × 400 pt background with the app icon and the
 `Applications` link side by side. `package.sh` copies these files into the image; nothing here is
-generated at build time, so the DMG still builds with `hdiutil makehybrid` (no mounted device, no
-Finder scripting on CI, nothing extra installed in the signing job).
+generated at build time, so the DMG builds with a plain `hdiutil create -srcfolder` (no Finder
+scripting on CI, nothing extra installed in the signing job).
 
 | File | What |
 |---|---|

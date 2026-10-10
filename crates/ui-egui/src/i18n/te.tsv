@@ -22,6 +22,9 @@ comment menu	Edit	సవరించు
 	Preferences	ప్రాధాన్యతలు
 	Preferences…	ప్రాధాన్యతలు…
 	Interface language	ఇంటర్‌ఫేస్ భాష
+	Interface size	ఇంటర్‌ఫేస్ పరిమాణం
+	Auto ({percent}%)	ఆటో ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	ఆటో సిస్టమ్ టెక్స్ట్ పరిమాణాన్ని అనుసరిస్తుంది. పేజీలు ఎల్లప్పుడూ డిస్‌ప్లే పూర్తి రిజల్యూషన్‌లో చూపబడతాయి.
 	Identity	గుర్తింపు
 	Name on new comments	కొత్త వ్యాఖ్యలపై చూపే పేరు
 	Open…	తెరువు…
@@ -50,6 +53,7 @@ comment menu	Edit	సవరించు
 	Fit visible	కనిపించే భాగానికి సరిపోయేలా
 	Marquee zoom	ఎంచుకున్న ప్రాంతానికి జూమ్
 	Take a snapshot	స్నాప్‌షాట్ తీయి
+	Column select	నిలువు వరుస ఎంపిక
 	Full screen mode	పూర్తి స్క్రీన్ మోడ్
 	Read mode	చదివే మోడ్
 	Switch light / dark theme	లేత / ముదురు థీమ్‌ల మధ్య మారు
@@ -1072,6 +1076,7 @@ comment menu	Edit	సవరించు
 	Dates	తేదీలు
 	Text in images isn't found; recognise text (OCR) first.	చిత్రాలలోని టెక్స్ట్ కనుగొనబడదు; ముందుగా టెక్స్ట్‌ను గుర్తించండి (OCR).
 	No matches.	సరిపోలికలు ఏవీ లేవు.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	కొన్ని బుక్‌మార్క్‌లు ఇక్కడ చూపబడవు: ప్యానెల్ పరిమిత సంఖ్యలో, పరిమిత లోతు వరకు మాత్రమే జాబితా చేస్తుంది.
 	{n} match(es) marked for redaction.	రెడాక్షన్ కోసం గుర్తించిన సరిపోలికలు: {n}.
 	Multiple words or phrases	బహుళ పదాలు లేదా పదబంధాలు
 	One word or phrase per line	ఒక్కో పంక్తికి ఒక పదం లేదా పదబంధం
@@ -1474,6 +1479,8 @@ action wizard	Start	ప్రారంభించు
 	Right Edge	కుడి అంచు
 	Language	భాష
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	{place} సేవ్ చేయబడింది: {before} → {after} ({pct}% తగ్గింది){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	ఈ ఫైల్ ఇప్పటికే సాధ్యమైనంత చిన్నదిగా ఉంది ({size}). కాపీ ఏదీ సేవ్ చేయబడలేదు.
+	Saved {place}: {before} → {after} (not smaller){detail}	{place} సేవ్ చేయబడింది: {before} → {after} (తగ్గలేదు){detail}
 	Couldn't save the image: {e}	చిత్రాన్ని సేవ్ చేయడం సాధ్యం కాలేదు: {e}
 	Adding images arrives on the web with file pickers for images	చిత్రాలను జోడించడం, చిత్రాల కోసం ఫైల్ పికర్‌లతో పాటు వెబ్‌లో వస్తుంది
 	Replacing images on page {p} arrives on the web with image pickers ({i})	{p}వ పేజీలోని చిత్రాలను భర్తీ చేయడం, చిత్రాల పికర్‌లతో పాటు వెబ్‌లో వస్తుంది ({i})
@@ -2075,3 +2082,38 @@ action wizard	Start	ప్రారంభించు
 	The field {name} no longer exists.	{name} ఫీల్డ్ ఇకపై లేదు.
 	A selected field has no widget on any page, so the fields can't be edited together.	ఎంచుకున్న ఒక ఫీల్డ్‌కు ఏ పేజీలోనూ విడ్జెట్ లేదు, కాబట్టి ఫీల్డ్‌లను కలిపి సవరించలేము.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} {dpi} dpi వద్ద, అవి గీయగల అతిపెద్ద పరిమాణం)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	{n} వస్తువు ఎంచుకోబడింది|{n} వస్తువులు ఎంచుకోబడ్డాయి
+	Drag the selection to move it. Esc clears the selection.	ఎంపికను కదిలించడానికి లాగండి. Esc ఎంపికను తొలగిస్తుంది.
+	Shift-click to select several objects. Drag empty space to select an area.	అనేక వస్తువులను ఎంచుకోవడానికి Shift నొక్కి క్లిక్ చేయండి. ప్రాంతాన్ని ఎంచుకోవడానికి ఖాళీ ప్రదేశంలో లాగండి.
+	Select at most 1000 objects at a time.	ఒకేసారి గరిష్ఠంగా 1000 వస్తువులను ఎంచుకోండి.
+	Finish or discard the text being edited before selecting several objects.	అనేక వస్తువులను ఎంచుకునే ముందు వచన సవరణను పూర్తి చేయండి లేదా విస్మరించండి.
+	Move object	వస్తువును కదిలించు
+	Move objects	వస్తువులను కదిలించు
+	Vertical text cannot be moved with this selection.	ఈ ఎంపికతో నిలువు వచనాన్ని కదిలించలేరు.
+	Text used as a clipping path cannot be moved with this selection.	క్లిప్పింగ్ పాత్‌గా ఉపయోగించిన వచనాన్ని ఈ ఎంపికతో కదిలించలేరు.
+	These objects could not be moved. Select them again and try a smaller move.	ఈ వస్తువులను కదిలించలేకపోయాము. మళ్లీ ఎంచుకుని తక్కువ దూరం కదిలించడానికి ప్రయత్నించండి.
+	This page contains objects that cannot be selected together.	ఈ పేజీలో కలిసి ఎంచుకోలేని వస్తువులు ఉన్నాయి.
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	స్పేస్
+	Grid view	గ్రిడ్ వీక్షణ
+	List view	జాబితా వీక్షణ
+	Files are combined in the order shown. Drag them to change it.	ఫైల్‌లు చూపిన క్రమంలో కలపబడతాయి. క్రమాన్ని మార్చడానికి వాటిని లాగండి.
+	Preview unavailable: {e}	ప్రివ్యూ అందుబాటులో లేదు: {e}
+	Pages: {k} of {n}	పేజీలు: {n}లో {k}
+	Check the pages	పేజీలను తనిఖీ చేయండి
+	Switch to List view to change the pages it takes.	ఇది తీసుకునే పేజీలను మార్చడానికి జాబితా వీక్షణకు మారండి.
+	Larger pages	పెద్ద పేజీలు
+	Smaller pages	చిన్న పేజీలు
+	Reset page size	పేజీ పరిమాణాన్ని రీసెట్ చేయి
+	Expand all	అన్నీ విస్తరించు
+	Collapse all	అన్నీ ముడుచు
+	Remove page	పేజీని తీసివేయి
+	Remove {n} pages	{n} పేజీలను తీసివేయి

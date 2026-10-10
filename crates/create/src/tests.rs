@@ -290,6 +290,28 @@ fn jpeg_2000_images_are_embedded_as_is() {
 }
 
 #[test]
+fn text_files_are_decoded_by_byte_order_mark_then_utf8_then_code_page() {
+    let utf16 = |text: &str, big: bool| -> Vec<u8> {
+        let mut v = if big { vec![0xFE, 0xFF] } else { vec![0xFF, 0xFE] };
+        for u in text.encode_utf16() {
+            v.extend_from_slice(&if big { u.to_be_bytes() } else { u.to_le_bytes() });
+        }
+        v
+    };
+    assert_eq!(decode_text("Kış İstanbul".as_bytes()), "Kış İstanbul");
+    assert_eq!(decode_text(b"\xEF\xBB\xBFMerhaba"), "Merhaba", "a UTF-8 byte order mark is dropped");
+    assert_eq!(decode_text(&utf16("Kış İstanbul\r\nŞubat", false)), "Kış İstanbul\r\nŞubat");
+    assert_eq!(decode_text(&utf16("Grüße 日本", true)), "Grüße 日本");
+    // Not UTF-8: Windows-1254 for Turkish, 1252 for other Western text (Icelandic included).
+    assert_eq!(decode_text(b"K\xFD\xFE \xDDstanbul \xF0\xFC\xE7"), "Kış İstanbul ğüç");
+    assert_eq!(decode_text(b"\xDE\xF3r\xF0ur \xE1 \xEDslandi"), "Þórður á íslandi");
+    assert_eq!(decode_text(b"caf\xE9 \x80 5"), "café € 5");
+    // Odd and broken input never fails.
+    assert_eq!(decode_text(&[0xFF, 0xFE, b'A']), "\u{FFFD}");
+    assert_eq!(decode_text(b""), "");
+}
+
+#[test]
 fn source_kind_tells_pdfs_images_and_text_apart() {
     assert_eq!(source_kind("a.bin", b"%PDF-1.7\n"), Some(SourceKind::Pdf));
     assert_eq!(source_kind("a.txt", b"junk before\n%PDF-1.4"), Some(SourceKind::Pdf), "a header after leading junk");
@@ -344,6 +366,64 @@ fn icc_of(doc: &Document, image: &Dict) -> Option<(i64, Vec<u8>, Vec<u8>, Object
     let r = cs.get(1)?.clone();
     let Object::Stream(s) = &*doc.resolve(&r) else { panic!("the ICC profile is not a stream") };
     Some((s.dict.int(b"N")?, s.dict.name(b"Alternate")?.to_vec(), s.decoded().unwrap(), r))
+}
+
+/// Move the synthetic fixture's frame before its application segments.
+fn jpeg_frame_first(mut bytes: Vec<u8>) -> Vec<u8> {
+    let at = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    let len = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+    let frame: Vec<_> = bytes.drain(at..at + 2 + len).collect();
+    bytes.splice(2..2, frame);
+    bytes
+}
+
+#[test]
+fn jpeg_fill_bytes_and_metadata_after_frame_are_preserved() {
+    let profile = icc_profile(b"CMYK");
+    let mut bytes = jpeg_frame_first(cmyk_jpeg_bytes(&profile));
+    // Fill before SOF and APP14, including multiple consecutive fill bytes.
+    bytes.splice(24..24, [0xFF, 0xFF]);
+    bytes.insert(2, 0xFF);
+    let doc = reopen(&from_images(&[("filled.jpg".into(), bytes.clone())]).unwrap());
+    let image = image_of(&doc, 0);
+    let (n, alt, data, _) = icc_of(&doc, &image).unwrap();
+    assert_eq!((n, alt.as_slice(), data), (4, &b"DeviceCMYK"[..], profile));
+    assert!(image.contains(b"Decode"), "APP14 after SOF still inverts CMYK");
+    assert_eq!(extract_images(&doc, &[0], 0).images[0].data, bytes);
+
+    let embedded = jpeg("density.jpg", &jpeg_frame_first(jpeg_bytes())).unwrap();
+    assert_eq!(embedded.px, (3, 2));
+    assert_eq!(embedded.dpi, (300.0, 300.0), "JFIF after SOF is read");
+
+    // A mismatched profile found after SOF still falls back leniently, as in #729.
+    let bytes = jpeg_frame_first(cmyk_jpeg_bytes(&icc_profile(b"RGB ")));
+    let doc = reopen(&from_images(&[("mismatch.jpg".into(), bytes)]).unwrap());
+    assert_eq!(image_of(&doc, 0).name(b"ColorSpace"), Some(&b"DeviceCMYK"[..]));
+}
+
+#[test]
+fn jpeg_segment_scan_stops_at_sos_or_eoi() {
+    let profile = icc_profile(b"CMYK");
+    for marker in [0xDA, 0xD9] {
+        let mut bytes = jpeg_frame_first(cmyk_jpeg_bytes(&profile));
+        bytes.truncate(bytes.len() - 2);
+        // Neither marker needs a segment length to stop metadata scanning. The trailing
+        // invalid APP2 would fail if entropy data or bytes after EOI were walked.
+        bytes.extend_from_slice(&[0xFF, 0xFF, marker, 0xFF, 0xE2, 0, 1]);
+        let embedded = jpeg("boundary.jpg", &bytes).unwrap();
+        assert_eq!(embedded.icc, Some(profile.clone()));
+        assert_eq!(embedded.px, (3, 2));
+    }
+}
+
+#[test]
+fn jpeg_segment_scan_rejects_truncated_or_invalid_lengths() {
+    for tail in [&[0xFF][..], &[0xFF, 0xFF], &[0xFF, 0xE2], &[0xFF, 0xE2, 0], &[0xFF, 0xE2, 0, 0], &[0xFF, 0xE2, 0, 1], &[0xFF, 0xE2, 0, 3]] {
+        let mut bytes = jpeg_bytes();
+        bytes.truncate(bytes.len() - 2);
+        bytes.extend_from_slice(tail);
+        assert!(jpeg("truncated.jpg", &bytes).is_err(), "tail: {tail:?}");
+    }
 }
 
 #[test]
@@ -402,4 +482,158 @@ fn embedded_icc_profiles_tag_the_image_colour_space() {
     let (r, _) = image_xobject(&mut doc, "a.jpg", &jpeg).unwrap();
     let Object::Stream(s) = &*doc.get(r) else { panic!() };
     assert_eq!(icc_of(&doc, &s.dict).map(|(n, ..)| n), Some(4));
+}
+
+/// Replaces page 0's image with the stream `image` builds (it can add objects, e.g. a mask).
+fn with_image(doc: &mut Document, image: impl FnOnce(&mut Document) -> Stream) {
+    let page = pdfcraft_model::pages(doc)[0].clone();
+    let res = doc.resolve(page.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+    let xo = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
+    let r = xo.iter().next().map(|(_, v)| v.as_ref().unwrap()).unwrap();
+    let s = image(doc);
+    doc.set(r, Object::Stream(s));
+}
+
+fn image_dict(w: i64, h: i64, space: &str, bpc: i64) -> Dict {
+    let mut d = Dict::new();
+    d.set(b"Type".to_vec(), Object::name("XObject"));
+    d.set(b"Subtype".to_vec(), Object::name("Image"));
+    d.set(b"Width".to_vec(), Object::Int(w));
+    d.set(b"Height".to_vec(), Object::Int(h));
+    d.set(b"ColorSpace".to_vec(), Object::name(space));
+    d.set(b"BitsPerComponent".to_vec(), Object::Int(bpc));
+    d
+}
+
+/// The exported file's extension and its pixels as RGBA.
+fn exported_rgba(doc: &Document) -> (&'static str, Vec<u8>) {
+    let out = extract_images(doc, &[0], 0);
+    assert!(out.skipped.is_empty(), "{:?}", out.skipped);
+    let img = &out.images[0];
+    if img.extension == "jpg" {
+        return ("jpg", image::load_from_memory(&img.data).unwrap().into_rgba8().into_raw());
+    }
+    let dec = png::Decoder::new(std::io::Cursor::new(img.data.clone()));
+    let mut r = dec.read_info().unwrap();
+    let mut buf = vec![0; r.output_buffer_size().unwrap()];
+    let info = r.next_frame(&mut buf).unwrap();
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        other => panic!("unexpected {other:?}"),
+    };
+    ("png", rgba)
+}
+
+fn alphas(rgba: &[u8]) -> Vec<u8> {
+    rgba.as_chunks::<4>().0.iter().map(|p| p[3]).collect()
+}
+
+/// A 4×2 grey JPEG (mid grey).
+fn real_jpeg() -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95).encode(&[128u8; 8], 4, 2, image::ExtendedColorType::L8).unwrap();
+    out
+}
+
+#[test]
+fn jpeg_images_with_a_soft_mask_export_as_png_with_alpha() {
+    // Issue #645: a cut-out photo (JPEG with an /SMask) lost its transparent background.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |doc| {
+        let mask = Stream::from_raw(image_dict(4, 2, "DeviceGray", 8), vec![0, 255, 0, 255, 255, 0, 255, 0]);
+        let m = doc.add(Object::Stream(mask));
+        let mut d = image_dict(4, 2, "DeviceGray", 8);
+        d.set(b"Filter".to_vec(), Object::name("DCTDecode"));
+        d.set(b"SMask".to_vec(), Object::Ref(m));
+        Stream::from_raw(d, real_jpeg())
+    });
+    let (ext, rgba) = exported_rgba(&doc);
+    assert_eq!(ext, "png", "a JPEG with transparency is written as a PNG");
+    assert_eq!(alphas(&rgba), [0, 255, 0, 255, 255, 0, 255, 0]);
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| p[0].abs_diff(128) <= 4 && p[0] == p[1] && p[1] == p[2]), "{rgba:?}");
+    // Without a mask the JPEG is still written as is.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |_| {
+        let mut d = image_dict(4, 2, "DeviceGray", 8);
+        d.set(b"Filter".to_vec(), Object::name("DCTDecode"));
+        Stream::from_raw(d, real_jpeg())
+    });
+    let out = extract_images(&doc, &[0], 0);
+    assert_eq!((out.images[0].extension, &out.images[0].data), ("jpg", &real_jpeg()));
+}
+
+#[test]
+fn soft_masks_of_another_size_and_stencil_and_colour_key_masks_become_alpha() {
+    // A 2×1 soft mask on a 4×2 image is scaled to the image's size.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |doc| {
+        let m = doc.add(Object::Stream(Stream::from_raw(image_dict(2, 1, "DeviceGray", 8), vec![0, 255])));
+        let mut d = image_dict(4, 2, "DeviceRGB", 8);
+        d.set(b"SMask".to_vec(), Object::Ref(m));
+        Stream::from_raw(d, vec![10; 24])
+    });
+    let a = alphas(&exported_rgba(&doc).1);
+    assert!(a[0] < 64 && a[3] > 192 && a[4] < 64 && a[7] > 192, "{a:?}");
+
+    // A stencil /Mask: its 1 samples hide the image.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |doc| {
+        let mut md = Dict::new();
+        md.set(b"Type".to_vec(), Object::name("XObject"));
+        md.set(b"Subtype".to_vec(), Object::name("Image"));
+        md.set(b"Width".to_vec(), Object::Int(4));
+        md.set(b"Height".to_vec(), Object::Int(2));
+        md.set(b"ImageMask".to_vec(), Object::Bool(true));
+        let m = doc.add(Object::Stream(Stream::from_raw(md, vec![0b1100_0000, 0b0011_0000])));
+        let mut d = image_dict(4, 2, "DeviceRGB", 8);
+        d.set(b"Mask".to_vec(), Object::Ref(m));
+        Stream::from_raw(d, vec![10; 24])
+    });
+    assert_eq!(alphas(&exported_rgba(&doc).1), [0, 0, 255, 255, 255, 255, 0, 0]);
+
+    // A colour-key /Mask: pure white pixels are transparent.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |_| {
+        let mut d = image_dict(2, 1, "DeviceRGB", 8);
+        d.set(b"Mask".to_vec(), Object::Array([250, 255, 250, 255, 250, 255].map(Object::Int).to_vec()));
+        Stream::from_raw(d, vec![255, 255, 255, 255, 0, 0])
+    });
+    assert_eq!(exported_rgba(&doc).1, [255, 255, 255, 0, 255, 0, 0, 255]);
+
+    // A soft mask with /Matte: the colours are un-blended from the matte colour.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |doc| {
+        let mut md = image_dict(2, 1, "DeviceGray", 8);
+        md.set(b"Matte".to_vec(), Object::Array(vec![Object::Int(1)]));
+        let m = doc.add(Object::Stream(Stream::from_raw(md, vec![255, 128])));
+        let mut d = image_dict(2, 1, "DeviceGray", 8);
+        d.set(b"SMask".to_vec(), Object::Ref(m));
+        // Black at half alpha, pre-blended with white: 255 + (0 − 255) × 128 / 255 ≈ 127.
+        Stream::from_raw(d, vec![0, 127])
+    });
+    let rgba = exported_rgba(&doc).1;
+    assert_eq!(rgba[..4], [0, 0, 0, 255]);
+    assert!(rgba[4] <= 2 && rgba[7] == 128, "{rgba:?}");
+}
+
+#[test]
+fn damaged_masks_and_sizes_never_panic() {
+    for (w, h, mw, mh, data) in [(4, 2, -3, 1, vec![]), (4, 2, i64::MAX, 2, vec![0; 8]), (-4, 2, 4, 2, vec![0; 8]), (4, 2, 4, 2, vec![])] {
+        let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+        with_image(&mut doc, |doc| {
+            let m = doc.add(Object::Stream(Stream::from_raw(image_dict(mw, mh, "DeviceGray", 8), data.clone())));
+            let mut d = image_dict(w, h, "DeviceRGB", 8);
+            d.set(b"SMask".to_vec(), Object::Ref(m));
+            d.set(b"Mask".to_vec(), Object::Array(vec![Object::Real(f64::NAN), Object::Int(-5)]));
+            Stream::from_raw(d, vec![10; 24])
+        });
+        let page = pdfcraft_model::pages(&doc)[0].clone();
+        let res = doc.resolve(page.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+        let xo = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
+        let r = xo.iter().next().map(|(_, v)| v.as_ref().unwrap()).unwrap();
+        let _ = extract_images(&doc, &[0], 0);
+        let _ = image_file(&doc, r);
+    }
 }

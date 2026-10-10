@@ -23,7 +23,8 @@ the automation tools) works on it unchanged. The engine does this when it opens 
   container without a width is as wide as its content; flow across content areas and pages with
   page masters chosen by occurrence; a table's header row repeats after a break; presence
   `hidden` takes no space, `invisible` takes space; repeating subforms get their initial
-  instances; fields that compute the page number or count on layout show the numbers.
+  instances, in flowed content and in a top-to-bottom container inside positioned content (a
+  table in an area) alike; fields that compute the page number or count on layout show the numbers.
 - **PDF** (`pdf::write_form`): pages with content streams in the standard 14 fonts (Arial and
   friends → Helvetica, Courier New → Courier, serif faces → Times; nothing is embedded), JPEG
   XObjects, and widgets: text (multi-line, max length, alignment), date (Acrobat's `AFDate`
@@ -34,7 +35,8 @@ the automation tools) works on it unchanged. The engine does this when it opens 
   twice. The XFA packets stay, so Adobe's viewers keep rendering the form from them.
 
 - **Data** (`data`): the `datasets` packet. On layout, a field takes its value from the data
-  node at its SOM path (dates in ISO form, check and radio states by their on values), and a
+  node at its data path: its SOM path without areas, which are named in SOM expressions but are
+  not data scopes (`data_path`, as Adobe's viewers bind) (dates in ISO form, check and radio states by their on values), and a
   repeating subform or row gets as many instances as the data has. `write_datasets` merges the
   AcroForm fields' values (by `/PCSom`, or by the Designer field names of a static form) into
   the existing `xfa:data`: only the bound nodes' text changes and missing nodes are added, so

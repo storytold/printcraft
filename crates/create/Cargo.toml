@@ -14,9 +14,11 @@ pdfcraft-model = { workspace = true }
 pdfcraft-fonts = { workspace = true }
 png = "0.18"
 tiff = "0.11"
-image = { version = "0.25", default-features = false, features = ["bmp", "gif"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg"] }
 thiserror = { workspace = true }
+# Already in the graph through lopdf; used only to read plain-text files (decode_text).
+encoding_rs = "0.8"
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["bmp", "gif"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg"] }
 hayro-syntax = { workspace = true }

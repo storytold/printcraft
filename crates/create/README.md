@@ -8,7 +8,10 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
   (`/DCTDecode`, grey, RGB or Adobe-inverted CMYK); PNG is decoded and stored with Flate,
   with transparency as a soft mask. An ICC profile in the file (JPEG `APP2 ICC_PROFILE`, PNG
   `iCCP`) that matches the image's colour space is kept as an `/ICCBased` colour space with
-  the device space as `/Alternate`; images with the same profile share one profile object;
+  the device space as `/Alternate`; images with the same profile share one profile object.
+  JPEG metadata scanning skips marker fill bytes and reads application segments after the
+  frame header, stopping at the first scan or end marker. Broken or mismatched ICC profiles
+  still fall back to the device colour space;
 - `from_images_with_resolution(images, ImageResolution::Dpi(dpi))`: override the page
   resolution (1–1200 dpi), without resampling or recompressing image pixels. Use 72 dpi
   for one point per pixel, or `ImageResolution::Embedded` for the same behavior as

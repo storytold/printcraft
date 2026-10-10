@@ -466,6 +466,105 @@ fn mixed_files_convert_and_combine_in_order() {
 }
 
 #[test]
+fn utf16_and_code_page_text_files_convert_to_their_text() {
+    let mut s = Session::new();
+    // Notepad's "Unicode": UTF-16 little endian with a byte order mark.
+    let mut utf16 = vec![0xFF, 0xFE];
+    utf16.extend("Grüße aus Köln".encode_utf16().flat_map(u16::to_le_bytes));
+    let (_, pdf) = s.convert_to_pdf("notes.txt", &Arc::new(utf16)).unwrap();
+    let id = s.open_new("notes.pdf", pdf).unwrap();
+    assert_eq!(page_texts(&s, id), ["Grüße aus Köln"]);
+    // A UTF-8 byte order mark is not text; Windows-1252 bytes are not replacement characters.
+    let (_, pdf) = s.convert_to_pdf("menu.txt", &Arc::new(b"\xEF\xBB\xBFCaf\xC3\xA9".to_vec())).unwrap();
+    let id = s.open_new("menu.pdf", pdf).unwrap();
+    assert_eq!(page_texts(&s, id), ["Café"]);
+    let (_, pdf) = s.convert_to_pdf("old.txt", &Arc::new(b"Cr\xE8me br\xFBl\xE9e".to_vec())).unwrap();
+    let id = s.open_new("old.pdf", pdf).unwrap();
+    assert_eq!(page_texts(&s, id), ["Crème brûlée"]);
+}
+
+#[test]
+fn a_file_split_around_another_combines_in_order_with_one_bookmark() {
+    let mut s = Session::new();
+    let (a, b) = (Arc::new(fixture(3)), Arc::new(fixture(2)));
+    // a's pages 1–2, then b, then a's page 3: one file (group 7) split around another.
+    let sources: Vec<CombineSource> = vec![("a".into(), a.clone(), Some("1-2".into())), ("b".into(), b, None), ("a".into(), a, Some("3".into()))];
+    let combined = s.combine_grouped(&sources, &[7, 9, 7], &[]).unwrap();
+    let id = s.open_new("Combined.pdf", combined).unwrap();
+    assert_eq!(page_texts(&s, id), ["Page 1", "Page 2", "Page 1", "Page 2", "Page 3"]);
+    assert_eq!(outline_titles(&s.get(id).unwrap().info.outline), ["a→1", "b→3"], "one bookmark for a, at its first page");
+    // Without groups each source is a file of its own, as combine_ranges.
+    let (a, b) = (Arc::new(fixture(3)), Arc::new(fixture(2)));
+    let sources: Vec<CombineSource> = vec![("a".into(), a.clone(), Some("1".into())), ("b".into(), b, None), ("a".into(), a, Some("3".into()))];
+    let combined = s.combine_grouped(&sources, &[], &[]).unwrap();
+    let id = s.open_new("Combined 2.pdf", combined).unwrap();
+    assert_eq!(outline_titles(&s.get(id).unwrap().info.outline), ["a→1", "b→2", "a→4"]);
+    // A bad range is refused with the file's name.
+    let bad: Vec<CombineSource> = vec![("a".into(), Arc::new(fixture(1)), Some("9".into()))];
+    assert!(matches!(s.combine_grouped(&bad, &[1], &[]), Err(EditError::Print(e)) if e.starts_with("a:")));
+}
+
+#[test]
+fn a_page_with_a_form_field_shown_twice_keeps_one_field() {
+    // Regression (found by review): the repeated page copied the whole field again, so the
+    // result had two fields named "shared", filled in separately.
+    use pdfcraft_cos::{Dict, Document, Object, PdfString};
+    let mut doc = Document::open(Arc::new(fixture(2))).unwrap();
+    let pages: Vec<_> = pdfcraft_organize::pages(&doc).unwrap().into_iter().map(|p| p.obj).collect();
+    let field = doc.add(Object::Null);
+    let widgets: Vec<_> = pages
+        .iter()
+        .map(|p| {
+            let mut w = Dict::new();
+            w.set(b"Type".to_vec(), Object::name("Annot"));
+            w.set(b"Subtype".to_vec(), Object::name("Widget"));
+            w.set(b"Rect".to_vec(), Object::Array(vec![Object::Int(0), Object::Int(0), Object::Int(100), Object::Int(20)]));
+            w.set(b"Parent".to_vec(), Object::Ref(field));
+            w.set(b"P".to_vec(), Object::Ref(*p));
+            doc.add(w)
+        })
+        .collect();
+    let mut f = Dict::new();
+    f.set(b"FT".to_vec(), Object::name("Tx"));
+    f.set(b"T".to_vec(), Object::String(PdfString::text("shared")));
+    f.set(b"V".to_vec(), Object::String(PdfString::text("Ada")));
+    f.set(b"Kids".to_vec(), Object::Array(widgets.iter().copied().map(Object::Ref).collect()));
+    doc.set(field, Object::Dict(f));
+    for (p, w) in pages.iter().zip(&widgets) {
+        doc.update_dict(*p, |d| d.set(b"Annots".to_vec(), Object::Array(vec![Object::Ref(*w)]))).unwrap();
+    }
+    let mut form = Dict::new();
+    form.set(b"Fields".to_vec(), Object::Array(vec![Object::Ref(field)]));
+    doc.update_dict(doc.root().unwrap(), |d| d.set(b"AcroForm".to_vec(), Object::Dict(form))).unwrap();
+    let bytes = Arc::new(pdfcraft_cos::write_full(&doc, &Default::default()).unwrap());
+    // Pages 1, 2, then page 1 again: one file split around nothing but itself.
+    let s = Session::new();
+    let sources: Vec<CombineSource> = vec![("form".into(), bytes.clone(), Some("1-2".into())), ("form".into(), bytes, Some("1".into()))];
+    let out = s.combine_grouped(&sources, &[1, 1], &[]).unwrap();
+    let mut out = Document::open(out).unwrap();
+    pdfcraft_forms::set_value(&mut out, "shared", &pdfcraft_forms::FieldValue::Text("Grace".into())).unwrap();
+    let fields = pdfcraft_forms::fields(&out);
+    assert!(
+        !fields.is_empty() && fields.iter().all(|f| f.name == "shared" && f.value == ["Grace"]),
+        "one field, one value: {:?}",
+        fields.iter().map(|f| (&f.name, &f.value)).collect::<Vec<_>>()
+    );
+    let catalog = out.get(out.root().unwrap()).as_dict().cloned().unwrap();
+    let form = out.resolve(catalog.get(b"AcroForm").unwrap()).as_dict().cloned().unwrap();
+    let listed = form.get(b"Fields").and_then(|f| f.as_array()).cloned().unwrap();
+    assert_eq!(listed.len(), 1, "the field isn't copied again for the repeated page");
+    // Its widgets: one on each of the three pages, each belonging to its own page.
+    let out_pages: Vec<_> = pdfcraft_organize::pages(&out).unwrap().into_iter().map(|p| p.obj).collect();
+    let kids = out.resolve(&listed[0]).as_dict().and_then(|f| f.get(b"Kids").and_then(|k| k.as_array()).cloned()).unwrap();
+    assert_eq!(kids.len(), 3);
+    let mut on: Vec<_> = kids.iter().map(|k| out.resolve(k).as_dict().and_then(|w| w.reference(b"P")).unwrap()).collect();
+    on.sort();
+    let mut expected = out_pages.clone();
+    expected.sort();
+    assert_eq!(on, expected, "a widget per page, on its own page");
+}
+
+#[test]
 fn files_that_cannot_be_converted_are_refused_clearly() {
     let s = Session::new();
     let err = s.convert_to_pdf("report.docx", &Arc::new(b"PK\x03\x04".to_vec())).unwrap_err();
@@ -2325,6 +2424,46 @@ fn xfa_scripts_initialize_calculate_validate_toggle_and_add_rows() {
     assert!(!d2.dirty);
 }
 
+/// A repeating table inside an area of a positioned page (as in real Designer forms): every
+/// row is laid out, the values Adobe wrote (under the area's parent: areas are
+/// not data scopes) are read, a FormCalc total over all rows computes, and what is filled here
+/// is written back where Adobe's viewers read it, with no element for the area.
+#[test]
+fn xfa_rows_in_areas_are_laid_out_read_calculated_and_written_where_adobe_binds_them() {
+    let data = "<form><page><table><row><reason>Regular</reason><days>4</days></row><row><reason/><days/></row><row><reason/><days/></row></table><carried>5</carried></page></form>";
+    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&pdfcraft_xfa::fixtures::leave_template(data)));
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("leave.pdf", None, bytes, None).expect("opens");
+    let value = |s: &Session, n: &str| {
+        s.get(id).unwrap().form.iter().find(|f| f.name == n).unwrap_or_else(|| panic!("no field {n}")).value.first().cloned().unwrap_or_default()
+    };
+    let names = |s: &Session| s.get(id).unwrap().form.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    // Three rows (occur min="3"), not one.
+    assert_eq!(names(&s).iter().filter(|n| n.starts_with("reason")).count(), 3, "{:?}", names(&s));
+    // Adobe's data, bound past the area.
+    assert_eq!((value(&s, "reason"), value(&s, "days"), value(&s, "carried")), ("Regular".into(), "4".into(), "5".into()));
+    // The total walks rows 0 to 2: 5 + 30 - 4.
+    assert_eq!(value(&s, "rest"), "31", "{:?}", s.take_js_output(id));
+    // A second regular row recalculates it.
+    s.apply(id, Edit::SetFieldValue { name: "reason_2".into(), value: FieldValue::Text("Regular".into()) }).unwrap();
+    s.apply(id, Edit::SetFieldValue { name: "days_2".into(), value: FieldValue::Text("2".into()) }).unwrap();
+    assert_eq!(value(&s, "rest"), "29", "{:?}", s.take_js_output(id));
+    assert!(s.take_js_output(id).errors.is_empty());
+    // Written where Adobe reads it: no element for the area, the rows under the table.
+    let cos = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()).unwrap();
+    let d = pdfcraft_xfa::data_of(&cos).unwrap();
+    let path = |som: &str| pdfcraft_xfa::som_to_path(som);
+    assert_eq!(d.count(&path("form[0].page[0]"), "box"), 0, "an element for the area was written");
+    assert_eq!(d.count(&path("form[0].page[0].table[0]"), "row"), 3);
+    assert_eq!(d.text_at(&path("form[0].page[0].table[0].row[1].days[0]")), Some("2"));
+    assert_eq!(d.text_at(&path("form[0].page[0].rest[0]")), Some("29"));
+    // Reopened, the values come back from that data.
+    let mut s2 = Session::new().with_clock(|| 1_700_000_000);
+    let id2 = s2.open("again.pdf", None, s.get(id).unwrap().bytes.clone(), None).expect("reopens");
+    let v2 = |n: &str| s2.get(id2).unwrap().form.iter().find(|f| f.name == n).unwrap().value.first().cloned().unwrap_or_default();
+    assert_eq!((v2("days_2"), v2("rest")), ("2".into(), "29".into()));
+}
+
 #[test]
 fn dynamic_xfa_forms_run_formcalc_scripts() {
     let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&pdfcraft_xfa::fixtures::formcalc_template()));
@@ -2677,4 +2816,177 @@ fn oversized_exports_clamp_and_report_their_dpi_unless_strict() {
     strict.config.reject_oversize = true;
     let err = export::Exporter::from_source(strict).png(0, 600.0).unwrap_err();
     assert!(err.contains("exceeds renderer limits"), "{err}");
+}
+
+#[test]
+fn mixed_object_moves_are_one_undo_step_and_survive_save_reopen() {
+    let (mut s, id) = session_with(1);
+    let text = AddedText { text: "Added label".into(), rect: [20.0, 240.0, 140.0, 265.0], ..Default::default() };
+    s.apply(id, Edit::AddText { page: 0, text }).unwrap();
+    let image = image::RgbImage::from_pixel(12, 8, image::Rgb([240, 20, 20]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    s.apply(id, Edit::AddImage { page: 0, rect: Some([40.0, 40.0, 80.0, 70.0]), name: "red.png".into(), bytes: Arc::new(png.into_inner()) }).unwrap();
+    let saved = s.save_bytes(id).unwrap();
+    s.mark_saved(id, saved.clone(), None).unwrap();
+    let before = s.get(id).unwrap().editable_objects(0).unwrap();
+    assert_eq!(before.len(), 3, "one native paragraph, one added label and one added image");
+    let generation = s.get(id).unwrap().edit_generation();
+    let targets = before.iter().map(|o| o.target).collect();
+    s.apply(id, Edit::MoveObjects { page: 0, objects: targets, offset: [24.0, -24.0] }).unwrap();
+    let doc = s.get(id).unwrap();
+    assert!(doc.dirty && doc.edit_generation() > generation);
+    assert_eq!(doc.can_undo(), Some("Move objects"));
+    let after = doc.editable_objects(0).unwrap();
+    for (a, b) in before.iter().zip(&after) {
+        assert_eq!(a.text, b.text);
+        for (i, (x, y)) in a.rect.iter().zip(b.rect).enumerate() {
+            assert!((y - x - if i % 2 == 0 { 24.0 } else { -24.0 }).abs() < 0.001);
+        }
+    }
+    let moved = s.save_bytes(id).unwrap();
+    assert!(moved.starts_with(saved.as_ref()), "an incremental update preserves the original revision");
+    let mut again = Session::new();
+    let other = again.open("moved.pdf", None, moved.clone(), None).unwrap();
+    assert_eq!(again.get(other).unwrap().editable_objects(0).unwrap(), after);
+    assert_eq!(s.undo(id).unwrap(), "Move objects");
+    assert_eq!(s.get(id).unwrap().editable_objects(0).unwrap(), before);
+    assert_eq!(s.get(id).unwrap().can_undo(), Some("Add image"), "one undo restores all three objects");
+    s.redo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().editable_objects(0).unwrap(), after);
+    let mut renderer = pdfcraft_render::PageRenderer::new(moved, Default::default());
+    let rendered = renderer.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+    let pixel = |x: usize, y: usize| &rendered.rgba[(y * rendered.width as usize + x) * 4..][..3];
+    assert!(pixel(84, 269)[0] > 200 && pixel(84, 269)[1] < 50, "the added image renders at its new position");
+    assert!(pixel(45, 240).iter().all(|v| *v > 240), "the old image position is clear");
+}
+
+#[test]
+fn failed_group_moves_preserve_generation_dirty_state_and_redo_history() {
+    let (mut s, id) = session_with(1);
+    let objects: Vec<_> = s.get(id).unwrap().editable_objects(0).unwrap().iter().map(|o| o.target).collect();
+    s.apply(id, Edit::MoveObjects { page: 0, objects: objects.clone(), offset: [10.0, 0.0] }).unwrap();
+    s.undo(id).unwrap();
+    let before = s.save_bytes(id).unwrap();
+    let generation = s.get(id).unwrap().edit_generation();
+    let dirty = s.get(id).unwrap().dirty;
+    let mut bad = objects;
+    bad.push(ObjectTarget { kind: ObjectKind::Image, index: 999 });
+    assert!(s.apply(id, Edit::MoveObjects { page: 0, objects: bad, offset: [10.0, 0.0] }).is_err());
+    let doc = s.get(id).unwrap();
+    assert_eq!(doc.edit_generation(), generation);
+    assert_eq!(doc.dirty, dirty);
+    assert!(doc.can_undo().is_none());
+    assert_eq!(doc.can_redo(), Some("Move object"));
+    assert_eq!(s.save_bytes(id).unwrap(), before);
+    s.redo(id).unwrap();
+    assert!(s.get(id).unwrap().dirty);
+}
+
+#[test]
+fn group_move_respects_modify_permission_and_display_coordinate_rotation() {
+    for rotation in [0, 90, 180, 270] {
+        let (mut s, id) = session_with(1);
+        s.apply(id, Edit::RotatePages { pages: vec![0], degrees: rotation }).unwrap();
+        let doc = s.get(id).unwrap();
+        let delta = doc.object_move_offset(0, [17.0, 23.0]).unwrap();
+        let info = &doc.info.pages[0];
+        let a = info.user_to_view(30.0, 70.0);
+        let b = info.user_to_view(30.0 + delta[0] as f32, 70.0 + delta[1] as f32);
+        assert!((b[0] - a[0] - 17.0).abs() < 0.001 && (b[1] - a[1] - 23.0).abs() < 0.001);
+    }
+    let (mut s, id) = session_with(1);
+    let mut p = protection(None, Some("owner"));
+    p.changes = Changes::None;
+    s.apply(id, Edit::Protect(p)).unwrap();
+    let bytes = s.save_bytes(id).unwrap();
+    let mut reader = Session::new();
+    let id = reader.open("restricted.pdf", None, bytes, None).unwrap();
+    let objects = reader.get(id).unwrap().editable_objects(0).unwrap().iter().map(|o| o.target).collect();
+    let generation = reader.get(id).unwrap().edit_generation();
+    assert!(reader.apply(id, Edit::MoveObjects { page: 0, objects, offset: [10.0, 0.0] }).is_err());
+    let doc = reader.get(id).unwrap();
+    assert!(!doc.dirty && doc.can_undo().is_none() && doc.edit_generation() == generation);
+}
+
+#[test]
+fn group_moves_preserve_rotated_added_content_raster_geometry() {
+    let (mut s, id) = session_with(1);
+    s.apply(id, Edit::AddText { page: 0, text: AddedText { text: "Added label".into(), rect: [20.0, 240.0, 140.0, 265.0], ..Default::default() } })
+        .unwrap();
+    let image = image::RgbImage::from_fn(20, 10, |x, _| image::Rgb(if x < 10 { [240, 20, 20] } else { [20, 20, 240] }));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    s.apply(id, Edit::AddImage { page: 0, rect: Some([40.0, 40.0, 80.0, 70.0]), name: "quadrants.png".into(), bytes: Arc::new(png.into_inner()) })
+        .unwrap();
+    let AddedContent::Image(mut image) = s.get(id).unwrap().added[1].content.clone() else { panic!() };
+    image.flip_h = true;
+    image.crop = [0.1, 0.0, 0.2, 0.0];
+    s.apply(id, Edit::UpdateContent { page: 0, index: 1, content: AddedContent::Image(image) }).unwrap();
+    s.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+    let render = |bytes| {
+        let mut r = pdfcraft_render::PageRenderer::new(bytes, Default::default());
+        r.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() })
+    };
+    let before = render(s.get(id).unwrap().bytes.clone());
+    let doc = s.get(id).unwrap();
+    let offset = doc.object_move_offset(0, [24.0, 36.0]).unwrap();
+    let objects = doc.editable_objects(0).unwrap().iter().map(|o| o.target).collect();
+    s.apply(id, Edit::MoveObjects { page: 0, objects, offset }).unwrap();
+    let after = render(s.get(id).unwrap().bytes.clone());
+    assert_eq!((before.width, before.height), (after.width, after.height));
+    let mut painted = 0;
+    for y in 0..before.height as usize {
+        for x in 0..before.width as usize {
+            let pos = (y * before.width as usize + x) * 4;
+            let expected = if x >= 24 && y >= 36 {
+                let old = ((y - 36) * before.width as usize + x - 24) * 4;
+                &before.rgba[old..old + 4]
+            } else {
+                &[255, 255, 255, 255]
+            };
+            // Raster coverage can round by one intensity level when equivalent placements
+            // reach the renderer through different text operators. Geometry and image colours
+            // must still agree across every pixel of the translated page.
+            assert!(after.rgba[pos..pos + 4].iter().zip(expected).all(|(a, b)| a.abs_diff(*b) <= 2), "pixel {x},{y}");
+            painted += usize::from(expected[..3].iter().any(|c| *c < 240));
+        }
+    }
+    assert!(painted > 500, "the comparison contains real rendered text and image pixels");
+}
+
+#[test]
+fn legacy_passwords_with_turkish_characters_open() {
+    // RC4-128 (R3): user "ılık€" in PDFDocEncoding (ı = 0x9A, € = 0xA0), owner "Çağlar"
+    // (PDFDocEncoding has no ğ: written without it, as pdfcraft-crypt writes R2–R4 passwords).
+    let mut cos = pdfcraft_cos::Document::open(Arc::new(fixture(1))).unwrap();
+    let params = pdfcraft_cos::NewEncryption {
+        algorithm: pdfcraft_cos::Algorithm::Rc4_128,
+        user_password: "ılık€",
+        owner_password: "Çağlar",
+        permissions: -1,
+        encrypt_metadata: true,
+        seed: [7; 32],
+    };
+    cos.set_encryption(&params).unwrap();
+    let bytes = Arc::new(pdfcraft_cos::write_full(&cos, &pdfcraft_cos::SaveOptions::default()).unwrap());
+    let mut s = Session::new();
+    // The renderer used to try only the UTF-8 bytes, and the owner fallback handed it the
+    // recovered user password as Latin-1: both came back as a wrong password.
+    for pw in ["ılık€", "Çağlar"] {
+        let id = s.open("x.pdf", None, bytes.clone(), Some(pw)).unwrap_or_else(|e| panic!("{pw}: {e:?}"));
+        assert_eq!(page_texts(&s, id), ["Page 1"], "{pw}");
+        assert!(s.get(id).unwrap().info.encrypted, "{pw}");
+    }
+    assert!(matches!(s.open("x.pdf", None, bytes, Some("ilik€")), Err(OpenError::WrongPassword)));
+}
+
+#[test]
+fn recovered_user_passwords_reach_the_renderer_byte_for_byte() {
+    assert_eq!(crate::renderer_password(b"pw"), "pw");
+    // UTF-8 bytes (qpdf writes "şifre" so; its \xC5\x9F has no PDFDocEncoding reading).
+    assert_eq!(crate::renderer_password("şifre".as_bytes()), "şifre");
+    // PDFDocEncoding bytes: ı = 0x9A, € = 0xA0, Ç = 0xC7.
+    assert_eq!(crate::renderer_password(&[0x9A, b'l', 0x9A, b'k', 0xA0]), "ılık€");
+    assert_eq!(crate::renderer_password(&[0xC7, b'o', b'k']), "Çok");
 }

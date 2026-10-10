@@ -252,6 +252,30 @@ pub(crate) fn preferences_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tok
             crate::i18n::set_current(crate::i18n::Lang::from_pref(&app.language));
         }
     });
+    ui.horizontal(|ui| {
+        use crate::ui_scale;
+        ui.label(tl!("Interface size"));
+        let auto =
+            crate::i18n::fmt(tl!("Auto ({percent}%)"), &[("percent", &ui_scale::percent(ui_scale::factor(None, app.system_text_scale)).to_string())]);
+        let selected = app.ui_scale.map_or_else(|| auto.clone(), |f| format!("{}%", ui_scale::percent(f)));
+        egui::ComboBox::from_id_salt("interface-size").selected_text(selected).show_ui(ui, |ui| {
+            if ui.selectable_value(&mut app.ui_scale, None, auto).clicked() {
+                ui.close();
+            }
+            for p in ui_scale::PRESETS {
+                let factor = f32::from(p) / 100.0;
+                if ui.selectable_label(app.ui_scale.is_some_and(|f| ui_scale::percent(f) == u32::from(p)), format!("{p}%")).clicked() {
+                    app.ui_scale = Some(factor);
+                    ui.close();
+                }
+            }
+        });
+    });
+    ui.label(
+        egui::RichText::new(tl!("Auto follows the system's text size. Pages always render at the display's full resolution."))
+            .small()
+            .color(t.text_muted),
+    );
     ui.add_space(8.0);
     ui.label(egui::RichText::new(tl!("Documents and view")).font(theme::semibold(13.0)));
     ui.horizontal(|ui| {

@@ -1,0 +1,31 @@
+PdfCraft PDF document icon (pdfcraft-document.svg and pdfcraft-document.ico).
+SPDX-License-Identifier: ISC AND (MIT OR Apache-2.0)
+
+The document outline and fold are adapted from Lucide file-text (lucide-static 1.49.0):
+https://github.com/lucide-icons/lucide
+The original is kept in assets/icons/file-text.svg.
+
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The badge, outlined PDF lettering, colours and composition are original work
+by the PdfCraft contributors. Copyright (c) 2026 PdfCraft contributors.
+Licensed under either the MIT License or the Apache License, Version 2.0,
+at your option. Full texts are LICENSE-MIT and LICENSE-APACHE at the
+repository root, and beside this file in Windows distributions.
+
+The icon uses no typeface or external image. Regenerate the ICO with
+packaging/icons.sh; every asset and its SHA-256 is recorded in ATTRIBUTION.toml.

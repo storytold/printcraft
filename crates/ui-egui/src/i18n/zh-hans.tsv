@@ -140,6 +140,9 @@
 	OK	确定
 	Cancel	取消
 	Close	关闭
+	Minimize	最小化
+	Maximize	最大化
+	Restore Down	向下还原
 	Don't save	不保存
 	Delete	删除
 	Apply	应用

@@ -17,11 +17,12 @@ struct Hit {
     ready: bool,
 }
 
+/// Where `needle` (folded with [`pdfcraft_render::text::fold_case`]) matches `hay`, for ranking.
 fn score(hay: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
-    let h = hay.to_lowercase();
+    let h = pdfcraft_render::text::fold_case(hay);
     if let Some(p) = h.find(needle) {
         return Some(p);
     }
@@ -48,7 +49,7 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
         app.palette_open = false;
         return;
     }
-    let q = app.palette_query.trim().to_lowercase();
+    let q = pdfcraft_render::text::fold_case(app.palette_query.trim());
     let mut hits: Vec<(usize, Hit)> = Vec::new();
     let active = app.active_ids().map(|(_, id)| id);
     for spec in pdfcraft_engine::commands::COMMANDS {
@@ -190,5 +191,20 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
         if let Some(c) = command {
             app.run_command(c);
         }
+    }
+}
+
+#[cfg(test)]
+mod search {
+    use super::score;
+    use pdfcraft_render::text::fold_case;
+
+    #[test]
+    fn commands_match_in_any_case_with_turkish_i() {
+        assert_eq!(score("İçe aktar", &fold_case("içe")), Some(0));
+        assert_eq!(score("Yazdır", &fold_case("YAZDIR")), Some(0));
+        assert_eq!(score("Insert Pages", &fold_case("ınsert")), Some(0));
+        assert_eq!(score("Print", &fold_case("print")), Some(0));
+        assert_eq!(score("Print", &fold_case("zz")), None);
     }
 }

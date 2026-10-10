@@ -90,8 +90,13 @@ pub fn count(info: &DocInfo) -> usize {
 }
 
 fn matches(a: &Annotation, q: &str) -> bool {
-    let q = q.to_lowercase();
-    [a.author.as_deref(), a.contents.as_deref(), Some(kind_label(a))].into_iter().flatten().any(|s| s.to_lowercase().contains(&q))
+    any_contains([a.author.as_deref(), a.contents.as_deref(), Some(kind_label(a))].into_iter().flatten(), q)
+}
+
+/// Whether one of `fields` contains `q` in any case, Turkish dotted and dotless i included.
+fn any_contains<'a>(fields: impl IntoIterator<Item = &'a str>, q: &str) -> bool {
+    let q = pdfcraft_render::text::fold_case(q);
+    fields.into_iter().any(|s| pdfcraft_render::text::fold_case(s).contains(&q))
 }
 
 /// Draw the panel body. Returns an edit to apply (posting, replying, deleting…).
@@ -587,4 +592,18 @@ pub(crate) fn header_controls(ui: &mut egui::Ui, info: &DocInfo, view: &mut DocV
         }
     });
     command
+}
+
+#[cfg(test)]
+mod filter {
+    use super::any_contains;
+
+    #[test]
+    fn comments_match_in_any_case_with_turkish_i() {
+        assert!(any_contains(["Ayşe Yılmaz", "Lütfen İMZALAYIN"], "imzalayın"));
+        assert!(any_contains(["Ayşe Yılmaz"], "YILMAZ"));
+        assert!(any_contains(["IRMAK"], "ırmak"));
+        assert!(any_contains(["Note"], "NOTE"));
+        assert!(!any_contains(["Ayşe Yılmaz"], "mehmet"));
+    }
 }

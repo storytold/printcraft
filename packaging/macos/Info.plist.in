@@ -59,6 +59,8 @@
       <string>Editor</string>
       <key>LSHandlerRank</key>
       <string>Alternate</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>PdfCraft</string>
       <key>LSItemContentTypes</key>
       <array><string>com.adobe.pdf</string></array>
       <key>CFBundleTypeExtensions</key>

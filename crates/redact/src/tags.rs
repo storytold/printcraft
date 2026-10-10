@@ -7,10 +7,22 @@
 //! (their alternate text stands for everything below), for marked content kept in a form XObject
 //! that was rewritten (`/Stm`), and for object references (`/OBJR`) to removed annotations or
 //! forms. The parent tree forgets what no longer exists.
+//!
+//! Retirement owns names where they live. A name whose `Do` disappeared leaves the page's own
+//! /Resources — and every page-tree node above whose own /Resources still maps it: `/Resources`
+//! is an inheritable entry (ISO 32000-2, 7.8.3, Table 30), so an inherited entry is owned by the
+//! ancestor, and as long as the node maps the name the original object stays reachable and a
+//! full save keeps it. A node's entry only goes when no page still draws the name — in its own
+//! content, or through a form without its own /Resources (a form draws with the resources of the
+//! scope that drew it) — so a sibling that inherits and draws it keeps the entry and the object
+//! with it. When a page or such a form can't be read in full, nothing is retired from the tree:
+//! it could be drawing any name. Reads use the same model: a page-own /Resources shadows an
+//! inherited one whole (per entry, not per name), which `pdfcraft_model::pages` resolves into
+//! every page's dictionary.
 
 use std::collections::{HashMap, HashSet};
 
-use pdfcraft_cos::{Dict, Document, ObjRef, Object};
+use pdfcraft_cos::{Dict, Document, ObjRef, Object, Stream};
 
 use crate::RedactError;
 
@@ -400,11 +412,31 @@ fn scrub(doc: &mut Document, spec: &Spec<'_>) -> Result<usize, RedactError> {
     Ok(n)
 }
 
-/// Form XObjects reachable from `roots` through their resources.
-fn forms_below(doc: &Document, roots: &[ObjRef]) -> Result<HashSet<ObjRef>, RedactError> {
+/// The resources a page's content is read with: its own /Resources, or the inherited one of the
+/// nearest page-tree node above it that has one (ISO 32000-2, 7.8.3: /Resources is inheritable,
+/// and a page-own entry shadows the inherited one whole). Page reads go through
+/// `pdfcraft_model::pages`, which resolves the same way; this local walk is for one node after
+/// the content pass has run. Bounded: a cycle or absurd depth in `/Parent` ends it.
+fn effective_resources(doc: &Document, page: ObjRef) -> Dict {
+    let mut cur = Some(page);
+    for _ in 0..MAX_DEPTH {
+        let Some(node) = cur else { break };
+        let Some(d) = doc.get(node).as_dict().cloned() else { break };
+        if let Some(res) = d.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()) {
+            return res;
+        }
+        cur = d.get(b"Parent").and_then(Object::as_ref);
+    }
+    Dict::new()
+}
+
+/// Form XObjects reachable from `roots` through their resources. A form without its own
+/// /Resources draws with the resources of the scope that drew it, so each form is followed with
+/// the resources of its parent scope (`inherited` is the page's for the roots).
+fn forms_below(doc: &Document, roots: &[ObjRef], inherited: &Dict) -> Result<HashSet<ObjRef>, RedactError> {
     let mut seen: HashSet<ObjRef> = HashSet::new();
-    let mut todo: Vec<ObjRef> = roots.to_vec();
-    while let Some(r) = todo.pop() {
+    let mut todo: Vec<(ObjRef, Dict)> = roots.iter().map(|r| (*r, inherited.clone())).collect();
+    while let Some((r, parent)) = todo.pop() {
         if !seen.insert(r) {
             continue;
         }
@@ -413,46 +445,164 @@ fn forms_below(doc: &Document, roots: &[ObjRef]) -> Result<HashSet<ObjRef>, Reda
         }
         let o = doc.get(r);
         let Some(d) = o.as_dict() else { continue };
-        let xo = d.get(b"Resources").and_then(|x| doc.dict(x)).and_then(|res| res.get(b"XObject").and_then(|x| doc.dict(x)));
-        if let Some(xo) = xo {
-            todo.extend(xo.iter().filter_map(|(_, v)| v.as_ref()));
+        let own = d.get(b"Resources").and_then(|x| doc.dict(x));
+        let res = own.unwrap_or_else(|| parent.clone());
+        if let Some(xo) = res.get(b"XObject").and_then(|x| doc.dict(x)) {
+            todo.extend(xo.iter().filter_map(|(_, v)| v.as_ref()).map(|f| (f, res.clone())));
         }
     }
     Ok(seen)
 }
 
-/// The XObject names `before` draws with `Do` that `after` no longer does.
-pub(crate) fn retired_names(before: &[u8], after: &[u8]) -> Vec<Vec<u8>> {
-    let names = |data: &[u8]| -> HashSet<Vec<u8>> {
-        pdfcraft_content::parse(data)
-            .ops
-            .into_iter()
-            .filter(|op| op.op.as_slice() == b"Do")
-            .filter_map(|op| op.operands.first().and_then(Object::as_name).map(<[u8]>::to_vec))
-            .collect()
-    };
-    let is = names(after);
-    names(before).into_iter().filter(|n| !is.contains(n)).collect()
+/// The XObject names `data` draws with `Do`.
+fn names_in(data: &[u8]) -> HashSet<Vec<u8>> {
+    pdfcraft_content::parse(data)
+        .ops
+        .iter()
+        .filter(|op| op.op.as_slice() == b"Do")
+        .filter_map(|op| op.operands.first().and_then(Object::as_name).map(<[u8]>::to_vec))
+        .collect()
 }
 
-/// The form XObjects the page drew before but no longer draws by that name: applying the marks
-/// replaced them with rewritten copies (or removed them). They leave the page's resources, so the
-/// original content is not kept there; the forms are returned.
-pub(crate) fn retire_forms(doc: &mut Document, page: ObjRef, before: &[u8], after: &[u8]) -> Result<Vec<ObjRef>, RedactError> {
-    let gone = retired_names(before, after);
-    let Some(mut res) = doc.get(page).as_dict().and_then(|d| d.get(b"Resources").and_then(|r| doc.dict(r))) else { return Ok(Vec::new()) };
-    let Some(mut xo) = res.get(b"XObject").and_then(|x| doc.dict(x)) else { return Ok(Vec::new()) };
-    let mut forms = Vec::new();
-    for n in &gone {
-        if let Some(r) = xo.remove(n).and_then(|o| o.as_ref()) {
-            forms.push(r);
+/// The XObject names `before` draws with `Do` that `after` no longer does.
+pub(crate) fn retired_names(before: &[u8], after: &[u8]) -> Vec<Vec<u8>> {
+    let is = names_in(after);
+    names_in(before).into_iter().filter(|n| !is.contains(n)).collect()
+}
+
+/// The XObject names the pages still draw: in their own content, and inside the forms those
+/// content streams still draw (each followed with the resources of the scope that drew it, so a
+/// form without its own /Resources is counted with what it inherits). Forms no page draws any
+/// more do not count: only the resources entries keep them reachable, and those are exactly what
+/// retirement is cleaning. `None` when a page or a drawn form can't be read in full: it could be
+/// drawing any name, so nothing may then be retired from the page tree.
+fn names_still_drawn(doc: &Document) -> Option<HashSet<Vec<u8>>> {
+    let mut out = HashSet::new();
+    for (pi, p) in pdfcraft_model::pages(doc).iter().enumerate() {
+        let (_, data) = crate::page_streams(doc, &p.dict, pi).ok()?;
+        let joined = data.join(&b'\n');
+        let top = names_in(&joined);
+        out.extend(top.iter().cloned());
+        let res = p.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
+        let xobjects = res.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
+        let mut seen = HashSet::new();
+        for name in &top {
+            let Some(entry) = xobjects.get(name) else { continue };
+            let Object::Stream(s) = &*doc.resolve(entry) else { continue };
+            if s.dict.name(b"Subtype") != Some(b"Form") {
+                continue;
+            }
+            if !entry.as_ref().is_some_and(|r| seen.insert(r)) {
+                continue;
+            }
+            if seen.len() > MAX_FORMS {
+                return None;
+            }
+            names_below(doc, s, &res, &mut out, &mut seen, 1)?;
         }
     }
-    if !forms.is_empty() {
-        res.set(b"XObject".to_vec(), Object::Dict(xo));
-        doc.update_dict(page, |d| d.set(b"Resources".to_vec(), Object::Dict(res)))?;
+    Some(out)
+}
+
+/// The `Do` names drawn by the form `s` and by the forms it draws (`parent`: the resources of the
+/// scope that drew `s`, which the forms below without their own /Resources draw with); `None`
+/// when they nest too deep or one can't be read in full (it could draw anything).
+fn names_below(doc: &Document, s: &Stream, parent: &Dict, out: &mut HashSet<Vec<u8>>, seen: &mut HashSet<ObjRef>, depth: usize) -> Option<()> {
+    if depth > MAX_DEPTH {
+        return None;
     }
+    let data = s.decoded_strict_within(crate::limits::MAX_STREAM).ok()?;
+    let top = names_in(&data);
+    out.extend(top.iter().cloned());
+    let own = s.dict.get(b"Resources").and_then(|x| doc.resolve(x).as_dict().cloned());
+    let res = own.unwrap_or_else(|| parent.clone());
+    let xobjects = res.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
+    for name in &top {
+        let Some(entry) = xobjects.get(name) else { continue };
+        let Object::Stream(inner) = &*doc.resolve(entry) else { continue };
+        if inner.dict.name(b"Subtype") != Some(b"Form") {
+            continue;
+        }
+        if !entry.as_ref().is_some_and(|r| seen.insert(r)) {
+            continue;
+        }
+        if seen.len() > MAX_FORMS {
+            return None;
+        }
+        names_below(doc, inner, &res, out, seen, depth + 1)?;
+    }
+    Some(())
+}
+
+/// The XObjects the page drew before but no longer draws by one of the `gone` names (from the
+/// content before and after, plus what rewritten forms retired against resources they
+/// inherited): they leave the page's /Resources, and they leave every page-tree node above that
+/// owns an entry of the same name — that is where an inherited entry lives, and while the node
+/// maps the name the original object stays reachable and a full save keeps it. A node's entry is
+/// only removed when no page still draws the name, so a sibling that inherits and draws it keeps
+/// the entry, and the original with it. The retired XObjects are returned.
+pub(crate) fn retire_forms(doc: &mut Document, page: ObjRef, gone: &[Vec<u8>]) -> Result<Vec<ObjRef>, RedactError> {
+    let mut forms = Vec::new();
+    if gone.is_empty() {
+        return Ok(forms);
+    }
+    // The page's own resources first.
+    if let Some(mut res) = doc.get(page).as_dict().and_then(|d| d.get(b"Resources").and_then(|r| doc.dict(r)))
+        && let Some(mut xo) = res.get(b"XObject").and_then(|x| doc.dict(x))
+    {
+        for n in gone {
+            if let Some(r) = xo.remove(n).and_then(|o| o.as_ref()) {
+                forms.push(r);
+            }
+        }
+        if !forms.is_empty() {
+            res.set(b"XObject".to_vec(), Object::Dict(xo));
+            doc.update_dict(page, |d| d.set(b"Resources".to_vec(), Object::Dict(res)))?;
+        }
+    }
+    // Then the nodes the page inherited entries from.
+    retire_inherited(doc, page, gone)?;
     Ok(forms)
+}
+
+/// Strip the `gone` names from the /XObject of every page-tree node above `page` that owns one,
+/// so far as no page still draws them. A shared (indirect) resources dictionary is written back
+/// as the object it is: everyone it reaches loses exactly the names no page draws any more.
+fn retire_inherited(doc: &mut Document, page: ObjRef, gone: &[Vec<u8>]) -> Result<(), RedactError> {
+    let mut seen = HashSet::new();
+    let mut drawn: Option<Option<HashSet<Vec<u8>>>> = None;
+    let mut cur = page;
+    for _ in 0..MAX_DEPTH {
+        let Some(parent) = doc.get(cur).as_dict().and_then(|d| d.get(b"Parent")).and_then(Object::as_ref) else { break };
+        if !seen.insert(parent) {
+            break;
+        }
+        cur = parent;
+        let Some(res_v) = doc.get(parent).as_dict().and_then(|d| d.get(b"Resources").cloned()) else { continue };
+        let indirect = res_v.as_ref();
+        let Some(mut res) = doc.dict(&res_v) else { continue };
+        let Some(mut xo) = res.get(b"XObject").and_then(|x| doc.dict(x)) else { continue };
+        if !gone.iter().any(|n| xo.contains(n)) {
+            continue;
+        }
+        let Some(drawn) = drawn.get_or_insert_with(|| names_still_drawn(doc)) else { break };
+        let mut removed = false;
+        for n in gone {
+            if drawn.contains(n) {
+                continue;
+            }
+            removed |= xo.remove(n).is_some();
+        }
+        if !removed {
+            continue;
+        }
+        res.set(b"XObject".to_vec(), Object::Dict(xo));
+        match indirect {
+            Some(r) => doc.set(r, Object::Dict(res)),
+            None => doc.update_dict(parent, |d| d.set(b"Resources".to_vec(), Object::Dict(res)))?,
+        }
+    }
+    Ok(())
 }
 
 /// Clean the elements owning `changed` marked content on `page`, and marked content kept in the
@@ -467,7 +617,10 @@ pub(crate) fn clean(
     if changed.is_empty() && rewritten.is_empty() {
         return Ok(0);
     }
-    let forms = forms_below(doc, rewritten)?;
+    // A rewritten form without its own /Resources drew with the page's effective resources: the
+    // forms below it are followed with those.
+    let inherited = effective_resources(doc, page);
+    let forms = forms_below(doc, rewritten, &inherited)?;
     let tree_keys = forms.iter().filter_map(|f| doc.get(*f).as_dict().and_then(|d| d.int(b"StructParents"))).collect();
     scrub(doc, &Spec { page: Some(page), changed: changed.clone(), empty: empty.clone(), forms, objs: &[], tree_keys })
 }

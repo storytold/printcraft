@@ -104,6 +104,10 @@ pub(crate) struct Output {
     /// Property lists (resource name, list) that held alternate text of removed content, with
     /// that text taken out; the caller puts them into the scope's `/Properties` resources.
     pub properties: Vec<(Vec<u8>, Dict)>,
+    /// Names retired against resources this scope INHERITED (a form without its own /Resources
+    /// drew them with the resources of the scope that drew the form): they must leave the page's
+    /// own resources and the page-tree nodes above, or the originals stay reachable (apply mode).
+    pub inherited_gone: Vec<Vec<u8>>,
 }
 
 /// A font's metrics plus whether glyph positions computed from them can be trusted.
@@ -1268,17 +1272,38 @@ fn form_xobject(
     }
     let mut dict = s.dict.clone();
     dict.remove(b"Length");
-    // Forms the content drew by a name and now draws under another (or not at all) leave
-    // the form's own resources, so the original content isn't kept there.
-    let gone = match (&new_data, before.first()) {
-        (Some(after), Some(was)) if own.is_some() => tags::retired_names(was, after),
+    // Names the form's old content drew and the new one doesn't: they leave the form's resources
+    // (its own, or the copy this rewrite freezes out of the resources it inherited), so the
+    // original content is not kept there. Names a nested form retired against resources it
+    // inherited from this form leave the frozen copy too.
+    let mut gone = match (&new_data, before.first()) {
+        (Some(after), Some(was)) => tags::retired_names(was, after),
         _ => Vec::new(),
     };
+    gone.extend(inner.inherited_gone.iter().cloned());
+    if !gone.is_empty() {
+        gone.sort_unstable();
+        gone.dedup();
+    }
+    // A form without its own /Resources drew with the resources of the scope that drew it: its
+    // retired names must leave those (the page's copy and the page-tree nodes above), not only
+    // this rewritten form.
+    if own.is_none() {
+        out.inherited_gone.extend(gone.iter().cloned());
+    }
     if !inner.xobjects.is_empty() || !gone.is_empty() || !inner.properties.is_empty() {
         let mut res = res;
         let mut xo = res_dict(doc, &res, b"XObject");
         for n in &gone {
             xo.remove(n);
+        }
+        if own.is_none() {
+            // The frozen copy must not keep drawing this very form: the scope that drew it did
+            // so by a name that sits in these resources.
+            let self_drawn: Vec<Vec<u8>> = xo.iter().filter(|(_, v)| v.as_ref() == Some(r)).map(|(k, _)| k.clone()).collect();
+            for n in &self_drawn {
+                xo.remove(n);
+            }
         }
         for (n, r) in &inner.xobjects {
             xo.set(n.clone(), Object::Ref(*r));

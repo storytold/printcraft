@@ -327,6 +327,149 @@ fn a_second_draw_of_the_scan_does_not_keep_the_original_alive() {
     assert!(!saved.windows(orig_raw.len()).any(|w| w == orig_raw.as_slice()), "the original image object is not");
 }
 
+// The same class again, inherited: /Resources is inheritable (ISO 32000-2, 7.8.3, Table 30), so
+// a scan may sit in a page-tree node while only the page below it draws it. The reads follow the
+// tree (pdfcraft_model::pages resolves inherited entries into the page's dictionary); these pin
+// that retirement reaches the node that OWNS the entry, so a full save drops the original with
+// it, and that a page-own entry shadows an inherited one of the same name.
+
+/// The page-tree root's /Resources /XObject dictionary.
+fn root_xobjects(doc: &Document) -> Dict {
+    let cat = doc.get(doc.root().unwrap()).as_dict().cloned().unwrap();
+    let pages = cat.get(b"Pages").and_then(|p| doc.resolve(p).as_dict().cloned()).unwrap();
+    let res = pages.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap();
+    res.get(b"XObject").and_then(|x| doc.resolve(x).as_dict().cloned()).unwrap_or_default()
+}
+
+/// Two pages that carry no /Resources of their own: both inherit `/Resources` from the page-tree
+/// root, whose /XObject holds `root_xo` (mapping names to the objects in `extra`, which follow
+/// the pages' content streams, so the first extra object is 7).
+fn inherited_pages(root_xo: &str, page1: &[u8], page2: &[u8], extra: Vec<Vec<u8>>) -> Document {
+    let mut objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        format!("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 300 300] /Resources << /XObject << {root_xo} >> >> >>").into_bytes(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>".to_vec(),
+        stream("", page1),
+        stream("", page2),
+    ];
+    objs.extend(extra);
+    pdf(objs)
+}
+
+#[test]
+fn an_inherited_scan_image_is_gone_from_the_saved_file() {
+    // The scan lives in the page-tree root's /XObject and only page 2 draws it. Covering it must
+    // retire /Im0 from the root too — the node that owns the entry — or the full save keeps the
+    // original image reachable through the tree.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let mut doc = inherited_pages("/Im0 7 0 R", b"0 g", b"q 8 0 0 8 10 10 cm /Im0 Do Q", vec![img]);
+    mark(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared), (1, 0), "{r:?}");
+    assert!(!content(&doc, 1).contains("/Im0"), "{}", content(&doc, 1));
+    assert!(!root_xobjects(&doc).contains(b"Im0"), "the root's own /XObject lost the retired name");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(!saved.windows(4).any(|w| w == b"/Im0"), "the name is not in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the scan's bytes are not in the saved file");
+}
+
+#[test]
+fn an_inherited_flate_scan_is_cleared_and_the_original_is_gone() {
+    // Partly covered inherited scan: the page draws a cleared copy under a fresh name, and the
+    // original — reachable only through the root's /XObject — leaves the saved file with its name.
+    let scan = [0x5Au8, 0x6B, 0x7C, 0x8D, 0x9E, 0xAF, 0xC0, 0xD1];
+    let (img, orig_raw) = flate_scan(&scan);
+    let mut doc = inherited_pages("/Im0 7 0 R", b"0 g", b"q 8 0 0 8 10 10 cm /Im0 Do Q", vec![img]);
+    mark(&mut doc, 1, &[[5.0, 5.0, 15.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared), (0, 1), "{r:?}");
+    let c = content(&doc, 1);
+    assert!(!c.contains("/Im0") && c.contains("/PCRedacted1 Do"), "{c}");
+    let xo = xobjects_of(&doc, 1);
+    assert!(!xo.contains(b"Im0") && xo.iter().any(|(k, _)| k.starts_with(b"PCRedacted")), "the copy replaced the name on the page");
+    assert!(!root_xobjects(&doc).contains(b"Im0"), "the root's own /XObject lost the retired name");
+    let copy = xo.iter().find(|(k, _)| k.starts_with(b"PCRedacted")).map(|(_, v)| v.clone()).expect("the cleared copy");
+    let Object::Stream(s) = &*doc.resolve(&copy) else { panic!() };
+    assert_eq!(s.decoded().unwrap(), [0, 0, 0, 0, 0, scan[5], scan[6], scan[7]], "pixels 0–4 cleared");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(s.raw.len()).any(|w| w == s.raw.as_ref()), "the cleared copy is in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the original scan's samples are not");
+    assert!(!saved.windows(orig_raw.len()).any(|w| w == orig_raw.as_slice()), "the original image object is not");
+}
+
+#[test]
+fn a_form_that_inherits_the_pages_resources_redacts_what_it_draws() {
+    // A form XObject without /Resources of its own draws the inherited scan. Rewriting the form
+    // must retire both names — the form's and the scan's — from the node that owns them, so the
+    // form and the image leave the saved file together.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let form = stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300]", b"q 8 0 0 8 10 10 cm /Im0 Do Q");
+    let mut doc = inherited_pages("/Fm 7 0 R /Im0 8 0 R", b"/Fm Do", b"0 g", vec![form, img]);
+    mark(&mut doc, 0, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.forms_rewritten), (1, 1), "{r:?}");
+    let c = content(&doc, 0);
+    assert!(!c.contains("/Fm") && c.contains("/PCRedacted1 Do"), "{c}");
+    assert!(!root_xobjects(&doc).contains(b"Fm") && !root_xobjects(&doc).contains(b"Im0"), "the root lost both retired names");
+    assert_eq!(under(&mut doc, 0, &[[5.0, 5.0, 25.0, 25.0]]), 0);
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(!saved.windows(4).any(|w| w == b"/Im0"), "the scan's name is not in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the scan's bytes are not in the saved file");
+}
+
+#[test]
+fn a_page_own_resource_shadows_the_inherited_name() {
+    // Page 1 maps /Im0 in its own /Resources (the tiny image); the root's /Im0 (the scan) is what
+    // page 2 inherits and draws. Page-own wins per name: the tiny image is the one processed, and
+    // the sibling's scan keeps both its root entry and its place in the file.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let tiny = [0xDEu8, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+    let img = |samples: &[u8]| stream("/Type /XObject /Subtype /Image /Width 8 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", samples);
+    let mut doc = pdf(vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 300 300] /Resources << /XObject << /Im0 8 0 R >> >> >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 5 0 R /Resources << /XObject << /Im0 7 0 R >> >> >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>".to_vec(),
+        stream("", b"q 10 0 0 10 10 10 cm /Im0 Do Q"),
+        stream("", b"q 8 0 0 8 10 10 cm /Im0 Do Q"),
+        img(&tiny),
+        img(&scan),
+    ]);
+    // The mark covers the drawn tiny image's left half: the pixel centres from 10.625 to 14.375
+    // go, the ones from 15.625 on stay.
+    mark(&mut doc, 0, &[[5.0, 5.0, 15.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.images_cleared, 1, "only the page-own image is processed: {r:?}");
+    let xo = xobjects_of(&doc, 0);
+    assert!(!xo.contains(b"Im0"));
+    let copy = xo.iter().find(|(k, _)| k.starts_with(b"PCRedacted")).map(|(_, v)| v.clone()).expect("the cleared copy");
+    let Object::Stream(s) = &*doc.resolve(&copy) else { panic!() };
+    assert_eq!(s.decoded().unwrap(), [0, 0, 0, 0, tiny[4], tiny[5], tiny[6], tiny[7]], "the cleared copy comes from the page-own image");
+    assert!(!content(&doc, 0).contains("/Im0") && content(&doc, 1).contains("/Im0"), "the sibling still draws the root's /Im0");
+    assert!(root_xobjects(&doc).contains(b"Im0"), "the root's entry stays while a page still draws it");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the sibling's scan stays in the file");
+    assert!(!saved.windows(tiny.len()).any(|w| w == tiny.as_slice()), "the retired page-own image does not");
+}
+
+#[test]
+fn the_proof_does_not_pass_while_an_inherited_scan_still_draws() {
+    // The proof side reads the tree the same way: while the inherited scan still paints under a
+    // region (nothing was applied), the geometry check fails the region — it never passes silently.
+    // 8×8 with full sample data, so the proof's own image check can inspect every pixel.
+    let scan: Vec<u8> = (0..64u32).map(|i| (0x41u32 + i * 7 % 120) as u8).collect();
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let mut doc = inherited_pages("/Im0 7 0 R", b"0 g", b"q 8 0 0 8 10 10 cm /Im0 Do Q", vec![img]);
+    mark(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let snapshot = Snapshot::capture(&doc, None).unwrap();
+    let proof = snapshot.prove(&doc, &ProofOptions::default());
+    assert!(!proof.passed());
+    assert!(proof.entries.iter().any(|e| e.status == crate::verify::Status::Failed && e.detail.contains("image")), "{}", proof.to_text());
+}
+
 #[test]
 fn vectors_are_removed_or_clipped_and_inline_images_go() {
     let src = b"0 g 10 10 20 20 re f 0 0 300 300 re f q 10 0 0 10 50 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \x80 EI Q 1 0 0 RG 150 150 m 160 160 l S";

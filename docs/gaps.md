@@ -22,7 +22,7 @@ update the numbers.
 | 1 | Encrypted files we write don't open in Acrobat | file format | 8–15 | [file-format-parity.md](file-format-parity.md) |
 | 2 | Rendering is borrowed and its fidelity unmeasured | feature, spec | 110–190 | [pdf-spec-parity.md](pdf-spec-parity.md) |
 | 3 | Editing existing text is fragile on real files | feature | 100–180 | [target-app-parity.md](target-app-parity.md) |
-| 4 | No printing on Windows or the web | feature, platform | 15–30 | [hardware-parity.md](hardware-parity.md) |
+| 4 | No printing on the web | feature, platform | 15–30 | [hardware-parity.md](hardware-parity.md) |
 | 5 | Chinese UI shows missing-glyph boxes in releases | localization | 6–12 | [localization-parity.md](localization-parity.md) |
 | 6 | Open-issue backlog of wrong results in shipped features | stability | 45–80 | this file |
 | 7 | OCR reads only unaccented Latin | feature | 40–75 | [file-format-parity.md](file-format-parity.md) |
@@ -97,12 +97,14 @@ update the numbers.
   how a document looks.
 - **Estimate:** 100–180 h (the longest feature pole, M7). **Doc:** [target-app-parity.md](target-app-parity.md).
 
-### 4. No printing on Windows or the web
+### 4. No printing on the web
 
-- **Missing:** a Windows spooler (and printer properties), browser printing.
-- **Evidence:** [#756](https://github.com/storytold/pdfcraft/issues/756): on Windows 11 the Print
-  dialog only saves a PDF. `crates/print/README.md`: "Not yet: Windows and web spoolers".
-- **Impact:** Windows is most of Acrobat's market. Printing is a P0 workflow.
+- **Missing:** browser printing.
+- **Evidence:** the web build has no spooler: off Windows and unix, `spool::submit` reports that
+  printing to a printer isn't available and only the print-ready PDF can be saved.
+  `crates/print/README.md`: "Not yet: the web spooler".
+- **Impact:** the web build cannot send a job to a printer; printing is a P0 workflow. Printing on
+  Windows shipped with [#756](https://github.com/storytold/pdfcraft/issues/756).
 - **Estimate:** 15–30 h. **Doc:** [hardware-parity.md](hardware-parity.md).
 
 ### 5. Chinese UI shows missing-glyph boxes in releases

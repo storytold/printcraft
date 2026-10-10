@@ -32,11 +32,15 @@ Each source page becomes a Form XObject (its content wrapped in q/Q, plus the pr
 annotations); sheets place them with a clip. The result is a fresh, unencrypted,
 garbage-collected file (callers check the print permission).
 
-`spool` talks to CUPS: printers come from `lpstat -p -d` (the queues) and `lpstat -e` (driverless
-destinations no queue exists for; CUPS builds a temporary one when the job arrives), jobs go to
-`lp` with copies, collation, duplex and monochrome options. The job is piped to `lp` on stdin and
-never written to a temp file, where another local user could read or swap it. Other platforms
-report that printing to a printer isn't available yet; the print-ready PDF can always be saved.
+`spool` talks to CUPS on macOS and Linux: printers come from `lpstat -p -d` (the queues) and
+`lpstat -e` (driverless destinations no queue exists for; CUPS builds a temporary one when the
+job arrives), jobs go to `lp` with copies, collation, duplex and monochrome options. The job is
+piped to `lp` on stdin and never written to a temp file, where another local user could read or
+swap it. On Windows the printers come from `Win32_Printer` and jobs are rendered by the in-box
+`Windows.Data.Pdf` and spooled by `System.Drawing.Printing` with the driver's own settings (both
+through `powershell`, so no Win32 API is called here); that job file exists for the seconds the
+spooler reads it, under a fresh unpredictable name. Other platforms report that printing to a
+printer isn't available yet; the print-ready PDF can always be saved.
 
-Not yet: Windows and web spoolers, print as image, poster labels, PostScript output, colour
-conversion for grayscale.
+Not yet: the web spooler, print as image, poster labels, PostScript output, colour conversion for
+grayscale.

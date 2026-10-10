@@ -7867,8 +7867,8 @@ milestone = "M10"
 status = "shipped"
 commands = ["print.dialog"]
 tools = ["printers", "printer_options", "doc_print"]
-evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list", "crates/print/src/tests.rs::driverless_printers_join_the_list_without_a_queue", "crates/print/src/tests.rs::printer_options_come_from_the_ppd", "crates/print/src/tests.rs::printer_option_defaults_and_job_arguments", "crates/ui-egui/tests/print.rs::print_dialog_shows_the_printer_driver_options"]
-notes = "CUPS queues via lpstat -p -d and driverless destinations without a queue via lpstat -e; Save as PDF; Windows spooler pending. Properties…: on CUPS the driver's own PPD job options (tray, paper type, finishing …, not installable options or what the dialog sets) for this job, sent as lp -o; on Windows the driver's Printing Preferences window (printui), saved as that printer's per-user defaults rather than per job"
+evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list", "crates/print/src/tests.rs::driverless_printers_join_the_list_without_a_queue", "crates/print/src/tests.rs::windows_printers_carry_one_default_and_keep_their_names", "crates/print/src/tests.rs::windows_lists_the_printers_the_system_knows", "crates/print/src/tests.rs::a_print_job_reaches_the_windows_spooler", "crates/print/src/tests.rs::printer_options_come_from_the_ppd", "crates/print/src/tests.rs::printer_option_defaults_and_job_arguments", "crates/ui-egui/tests/print.rs::print_dialog_shows_the_printer_driver_options"]
+notes = "CUPS queues via lpstat -p -d and driverless destinations without a queue via lpstat -e; on Windows the queues and the default come from Win32_Printer (PowerShell CIM) and jobs are rendered with Windows.Data.Pdf and spooled with the driver's own settings; Save as PDF on every platform. Properties…: on CUPS the driver's own PPD job options (tray, paper type, finishing …, not installable options or what the dialog sets) for this job, sent as lp -o; on Windows the driver's Printing Preferences window (printui), saved as that printer's per-user defaults rather than per job"
 
 [[feature]]
 id = "print.copies-collate"
@@ -7879,8 +7879,8 @@ milestone = "M10"
 status = "shipped"
 commands = ["print.dialog"]
 tools = ["doc_print"]
-evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list"]
-notes = "lp -n, collate option"
+evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list", "crates/print/src/tests.rs::the_windows_job_is_the_environment_of_the_print_script", "crates/print/src/tests.rs::a_print_job_reaches_the_windows_spooler"]
+notes = "lp -n, collate option; on Windows the driver's Copies and Collate settings, as the job's"
 
 [[feature]]
 id = "print.page-range"
@@ -7939,8 +7939,8 @@ milestone = "M10"
 status = "shipped"
 commands = ["print.dialog"]
 tools = ["doc_print"]
-evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list"]
-notes = "long/short edge via the spooler"
+evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list", "crates/print/src/tests.rs::the_windows_job_is_the_environment_of_the_print_script", "crates/print/src/tests.rs::a_print_job_reaches_the_windows_spooler"]
+notes = "long/short edge via the spooler: lp -o sides=…, and the Windows driver's Duplex setting"
 
 [[feature]]
 id = "print.n-up"
@@ -8035,8 +8035,8 @@ milestone = "M10"
 status = "partial"
 commands = ["print.dialog"]
 tools = ["doc_print"]
-evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list"]
-notes = "asks the printer for monochrome; the PDF itself stays in colour"
+evidence = ["crates/print/src/tests.rs::spooler_arguments_and_printer_list", "crates/print/src/tests.rs::the_windows_job_is_the_environment_of_the_print_script"]
+notes = "asks the printer for monochrome (lp -o, and the Windows page settings as the job's); the PDF itself stays in colour"
 
 [[feature]]
 id = "print.print-as-image"

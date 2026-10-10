@@ -31,7 +31,7 @@ printing are counted in their feature areas). **Platforms ≈ 70% ready, 15–30
 | Platform | Acrobat | PdfCraft | Packaging | Gaps |
 |---|---|---|---|---|
 | macOS | yes | yes | signed and notarized DMG | — |
-| Windows (x64, x86, ARM64) | yes (x64, ARM64) | yes | signed installers | printing (#756) |
+| Windows (x64, x86, ARM64) | yes (x64, ARM64) | yes | signed installers | — |
 | Linux | no | yes | AppImage, deb, rpm, Flatpak, tarball | Chinese faces in Flatpak (#689) |
 | FreeBSD | no | yes | package | — |
 | Web | Acrobat online (cloud) | yes (WASM, offline in the browser) | static site | printing, OCR, crash recovery, PKCS #12 signing, hosted deployment |
@@ -41,3 +41,4 @@ printing are counted in their feature areas). **Platforms ≈ 70% ready, 15–30
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created from the code, `vendor/README.md`, `.github/workflows/release.yml`, the print crate's README and user issues |
+| 2026-10-10 | minor | Windows printing shipped (#756): the Windows row's gap is closed; the web row keeps "printing" |

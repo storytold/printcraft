@@ -1241,6 +1241,21 @@ impl DocView {
         // bounded few under a page whose current tiles are still missing (OLD_TILES).
         self.tiles.retain(|key, _| tiles.contains(key) || !tile_tags.contains(&key.1));
         queue.extend(grid);
+        // Opening (or turning to) a page queues its pixels alongside thumbnails and
+        // text extraction. The workers would otherwise spend the first seconds on
+        // thumbnails and search text while the visible page stays blank: hold those
+        // until no visible main-page raster is still missing. Errored pages never
+        // block: they are never re-requested.
+        let visible_mains_pending = queue.iter().any(|r| {
+            r.kind == RequestKind::Pixels
+                && r.tag & (GRID_TAG | PRINT_TAG | THUMB_TAG | TEXT_TAG) == 0
+                && self.frame_visible.contains(&r.page)
+                && !self.errors.contains_key(&r.page)
+        });
+        if visible_mains_pending {
+            // Caches are kept; demand is re-evaluated next frame once pixels arrive.
+            return queue;
+        }
         let thumbs = self.thumbnail_requests(info, ppp);
         let mut thumb_bytes = 0usize;
         let mut admitted = HashSet::new();
@@ -3946,6 +3961,48 @@ trailer << /Root 1 0 R >>
         v.frame_visible = [0].into();
         v.frame_queue = vec![req(0)];
         assert!(v.prepare_render_queue(&info, 1.0).is_empty());
+    }
+
+    #[test]
+    fn visible_pages_render_before_thumbnails_and_text() {
+        let ctx = egui::Context::default();
+        let info = thumbnail_info(4);
+        let mut v = DocView::new(DocId(1), &info, ViewDefaults::default());
+        let main = RenderRequest { page: 0, scale: 1.0, tag: 1000, ..Default::default() };
+        let text = RenderRequest { page: 0, kind: RequestKind::Text, scale: 1.0, tag: TEXT_TAG, ..Default::default() };
+        // Opening page 0 queues its pixels and text alongside Pages-panel thumbnails.
+        v.begin_render_frame();
+        v.frame_visible = [0].into();
+        v.frame_queue = vec![main, text];
+        for p in 1..4 {
+            v.need_thumbnail(p, true);
+        }
+        let queue = v.prepare_render_queue(&info, 1.0);
+        assert_eq!(queue, vec![main], "visible pixels first: no thumbnails or text yet");
+        // Once the visible raster arrives, background work is admitted.
+        v.last_queue = queue;
+        assert!(v.receive_result(&ctx, solid_result(main, 100, 130)) > 0);
+        v.begin_render_frame();
+        v.frame_visible = [0].into();
+        v.frame_queue = vec![text];
+        for p in 1..4 {
+            v.need_thumbnail(p, true);
+        }
+        let queue = v.prepare_render_queue(&info, 1.0);
+        assert!(queue.iter().any(|r| r.kind == RequestKind::Text), "text admitted after pixels");
+        assert!(queue.iter().any(|r| r.tag & THUMB_TAG != 0), "thumbnails admitted after pixels");
+        assert!(!queue.iter().any(|r| r.kind == RequestKind::Pixels && r.tag & THUMB_TAG == 0), "no main pixels re-requested");
+        // An errored visible page never holds background work back.
+        v.errors.insert(0, "gone".to_string());
+        v.begin_render_frame();
+        v.frame_visible = [0].into();
+        v.frame_queue = vec![main, text];
+        for p in 1..4 {
+            v.need_thumbnail(p, true);
+        }
+        let queue = v.prepare_render_queue(&info, 1.0);
+        assert!(queue.iter().any(|r| r.kind == RequestKind::Text), "text admitted despite the error");
+        assert!(queue.iter().any(|r| r.tag & THUMB_TAG != 0), "thumbnails still admitted");
     }
 
     #[test]

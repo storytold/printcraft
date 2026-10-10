@@ -380,3 +380,28 @@ fn the_builtin_roots_only_anchor_when_switched_on() {
     let both = TrustStore { certs: vec![first.clone()], builtin_roots: true, ..TrustStore::default() };
     assert_eq!(both.source_of(first), Some(pdfcraft_sign::TrustSource::User));
 }
+
+#[test]
+fn the_cca_india_roots_only_anchor_when_switched_on() {
+    use pdfcraft_sign::TrustSource;
+    use pdfcraft_sign::trust::{builtin_roots, cca_india_roots};
+    let cca = cca_india_roots();
+    assert_eq!(cca.len(), 3);
+    let off = TrustStore::default();
+    assert!(!off.cca_india);
+    assert!(cca.iter().all(|r| off.source_of(r).is_none()));
+    let on = TrustStore { cca_india: true, ..TrustStore::default() };
+    assert!(cca.iter().all(|r| on.source_of(r) == Some(TrustSource::CcaIndia)));
+    // The two embedded sets are apart: each switch trusts only its own roots.
+    assert!(builtin_roots().iter().all(|r| on.source_of(r).is_none()));
+    let builtin = TrustStore { builtin_roots: true, ..TrustStore::default() };
+    assert!(cca.iter().all(|r| builtin.source_of(r).is_none()));
+    // The user's own list wins when both apply.
+    let both = TrustStore { certs: vec![cca[0].clone()], cca_india: true, ..TrustStore::default() };
+    assert_eq!(both.source_of(&cca[0]), Some(TrustSource::User));
+    // A synthetic signer is not vouched for by the real roots.
+    let r = root();
+    let i = ca("Issuing CA", &r, None);
+    let (status, details) = verdict_with(end_entity("Signer", &i), vec![i.cert.clone()], &on);
+    assert_eq!(status, Status::Unknown, "{details:?}");
+}

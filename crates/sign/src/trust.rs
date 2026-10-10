@@ -1,12 +1,15 @@
 //! Optional trust sets, kept apart from the certificates the user trusts themselves.
 //!
 //! Nothing here is trusted unless the user switches it on (`TrustStore::builtin_roots`,
-//! `TrustStore::lists`): which authorities a PDF reader vouches for is the user's decision, not
+//! `TrustStore::cca_india`, `TrustStore::lists`): which authorities a PDF reader vouches for is the user's decision, not
 //! ours. Chain building ([`crate::x509::build_chain`]) still applies to them: a root only vouches
 //! for what a chain of CA certificates under it leads to.
 //!
 //! - [`builtin_roots`]: roots of commercial CAs, embedded (`data/builtin-roots.der`, about 23 KB),
 //!   each pinned in `data/builtin-roots.toml`.
+//! - [`cca_india_roots`]: the roots of India's PKI (Controller of Certifying Authorities), which
+//!   UIDAI's e-Aadhaar signatures and India's other licensed CAs chain to, embedded
+//!   (`data/cca-india-roots.der`, about 3.5 KB), each pinned in `data/cca-india-roots.toml`.
 //! - [`TrustList`]: a list loaded from a file at run time, like the EU Trusted Lists' qualified
 //!   CA services (`cargo xtask trust-lists` makes the file). Nothing of the sort is embedded.
 //!
@@ -20,6 +23,10 @@ use crate::der::Tlv;
 use crate::x509::Certificate;
 
 static ROOTS: &[u8] = include_bytes!("../data/builtin-roots.der");
+static CCA_INDIA_ROOTS: &[u8] = include_bytes!("../data/cca-india-roots.der");
+
+/// What the CCA India set is called in the signature details and in `sign_trust`'s answer.
+pub const CCA_INDIA: &str = "CCA India";
 
 /// The embedded roots (`data/builtin-roots.der`, certificates one after the other): the commercial
 /// CAs behind most non-qualified PDF signatures. `data/builtin-roots.toml` lists each with its
@@ -33,6 +40,21 @@ pub fn builtin_roots() -> &'static [Certificate] {
 /// Whether `c` is one of [`builtin_roots`].
 pub fn is_builtin_root(c: &Certificate) -> bool {
     builtin_roots().iter().any(|t| t.raw == c.raw)
+}
+
+/// The embedded roots of India's PKI (`data/cca-india-roots.der`): CCA India 2022, CCA India 2022
+/// SPL and the expired CCA India 2014, which still vouches for what was signed while it was valid.
+/// `data/cca-india-roots.toml` lists each with the URL on cca.gov.in and its pinned SHA-256;
+/// `cargo xtask trust-roots cca-india-roots` rebuilds the file from it. Off unless
+/// `TrustStore::cca_india` is set.
+pub fn cca_india_roots() -> &'static [Certificate] {
+    static PARSED: OnceLock<Vec<Certificate>> = OnceLock::new();
+    PARSED.get_or_init(|| parse_concatenated(CCA_INDIA_ROOTS))
+}
+
+/// Whether `c` is one of [`cca_india_roots`].
+pub fn is_cca_india_root(c: &Certificate) -> bool {
+    cca_india_roots().iter().any(|t| t.raw == c.raw)
 }
 
 /// Certificates as DER one after the other. Entries that don't parse are skipped.
@@ -79,6 +101,35 @@ impl TrustList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cca_india_roots_match_their_manifest() {
+        let roots = parse_concatenated(CCA_INDIA_ROOTS);
+        let manifest = include_str!("../data/cca-india-roots.toml");
+        let pins: Vec<&str> = manifest.lines().filter_map(|l| l.strip_prefix("sha256 = \"")).filter_map(|l| l.strip_suffix('"')).collect();
+        assert_eq!(pins.len(), roots.len());
+        assert_eq!(roots.len(), 3);
+        // In manifest order, each the certificate its pin names.
+        for (r, pin) in roots.iter().zip(&pins) {
+            let sum: String = crate::DigestAlg::Sha256.digest(&[&r.raw]).iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(&sum, pin, "{}", r.display_name());
+            assert!(r.is_self_signed(), "{}: a root, its own key verifies it", r.display_name());
+            assert!(r.may_issue(), "{}: a CA", r.display_name());
+            assert!(roots.iter().filter(|o| o.raw == r.raw).count() == 1, "{}: once", r.display_name());
+            assert!(!is_builtin_root(r), "{}: kept apart from the commercial roots", r.display_name());
+        }
+        let names: Vec<String> = roots.iter().map(|r| r.display_name()).collect();
+        assert_eq!(names, ["CCA India 2022", "CCA India 2022 SPL", "CCA India 2014"]);
+        assert!(cca_india_roots().iter().zip(&roots).all(|(a, b)| a.raw == b.raw) && roots.iter().all(is_cca_india_root));
+        // The fingerprints cca.gov.in's files hash to (also in PR #760 and Microsoft's root store).
+        let fp: Vec<String> = roots.iter().map(Certificate::fingerprint).collect();
+        assert_eq!(fp[0], "9A 3F D3 17 67 98 E8 42 DD CB 12 C2 62 F1 1C FA CC A7 0A 8B 84 C6 EA 6F DA 30 84 2A 95 A9 4C D8");
+        assert_eq!(fp[1], "B7 24 68 9B 79 B2 EF 94 21 EF 8F 5C C7 33 EB 09 38 51 B1 70 EE 71 51 77 00 5A 09 F2 26 D8 C9 1A");
+        assert_eq!(fp[2], "60 10 9B C6 C3 83 28 59 8A 11 2C 7A 25 E3 8B 0F 23 E5 A7 51 1C B8 15 FB 64 E0 C4 FF 05 DB 7D F7");
+        // Validity as CCA publishes it: the 2014 root expired on 05.03.2024.
+        assert_eq!((roots[0].not_before.year, roots[0].not_after.year), (2022, 2042));
+        assert_eq!((roots[2].not_before.year, roots[2].not_after.year), (2014, 2024));
+    }
 
     #[test]
     fn the_builtin_roots_match_their_manifest() {

@@ -44,7 +44,7 @@ const COMMANDS: &[(&str, &str, Command)] = &[
     ),
     (
         "trust-roots",
-        "Rebuild crates/sign/data/builtin-roots.der from builtin-roots.toml: fetch each root from its CA and check its pinned SHA-256 (needs network and curl)",
+        "Rebuild the embedded root sets in crates/sign/data (builtin-roots, cca-india-roots; or name one) from their .toml manifests: fetch each root from its CA and check its pinned SHA-256 (needs network and curl)",
         trust_roots::run,
     ),
     ("demo-pdf", "Build dist/demo/pdfcraft-showcase.pdf (needs Google Chrome or Chromium)", demo_pdf::run),

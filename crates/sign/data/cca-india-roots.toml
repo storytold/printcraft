@@ -1,0 +1,44 @@
+# The root certificates of India's PKI (the Controller of Certifying Authorities, CCA), a trust set
+# PdfCraft trusts only when the user switches it on (crates/sign/src/trust.rs, `sign_trust
+# cca_india`; off by default). Every licensed CA in India chains to one of them, among them the CAs
+# behind UIDAI's e-Aadhaar signatures. Each is fetched from CCA's own site, never from Adobe
+# (AGENTS.md 1.1), and pinned by the SHA-256 of its DER encoding: `cargo xtask trust-roots`
+# refetches them, fails on any difference and rewrites cca-india-roots.der. Source page:
+# https://cca.gov.in/root_certificate.html ("Existing" and "Expired" root certificates).
+# `checked_against` names the independent source the pin was compared with:
+#   microsoft-roots  Microsoft's Trusted Root Program, downloaded by SHA-1 thumbprint from
+#                    ctldl.windowsupdate.com/msdownload/update/v3/static/trustedr/en/<sha1>.crt
+#                    (byte for byte the same file)
+# Adding a root is a trust decision: say why in the commit.
+#
+# Left out, on purpose:
+# - CCA India 2015 SPL (29.01.2015 to 29.01.2025, expired; sha256 c34c5df5…5265c04f): its own key
+#   does not verify its self-signature, in CCA's file and in Microsoft's alike, so it is not a
+#   root PdfCraft can recognise as one; its special-purpose hierarchy is not e-Aadhaar's.
+# - CCA India 2011, 2007 and the 2002 root: expired before 2016, listed by CCA as expired.
+
+# The current root (02.02.2022 to 02.02.2042). Recent e-Aadhaar signatures chain to it. The pin
+# is the one in PR #760 and in danted4/eaadhaar-pdf-signature-verifier (CCAIndia2022.cer).
+[[root]]
+name = "CCA India 2022"
+url = "https://cca.gov.in/cca/sites/default/files/files/CCAIndia2022.cer"
+sha256 = "9a3fd3176798e842ddcb12c262f11cfacca70a8b84c6ea6fda30842a95a94cd8"
+checked_against = "microsoft-roots"
+
+# The current special-purpose root (20.09.2022 to 20.09.2042). CCA's file is PEM with a blank line
+# before the end marker; the certificate in it is complete (1,344 bytes) and self-signed.
+[[root]]
+name = "CCA India 2022 SPL"
+url = "https://cca.gov.in/cca/sites/default/files/files/CCAIndia2022SPL.cer"
+sha256 = "b724689b79b2ef9421ef8f5cc733eb093851b170ee715177005a09f226d8c91a"
+checked_against = "microsoft-roots"
+
+# The previous root (05.03.2014 to 05.03.2024), expired and listed by CCA as such. Kept for
+# documents signed while it was valid, such as e-Aadhaars downloaded before the 2022 hierarchy: a
+# chain is judged at the signing time, so it vouches only for signatures made before 05.03.2024.
+# CCA's file is bare base64 (no PEM markers).
+[[root]]
+name = "CCA India 2014"
+url = "https://cca.gov.in/cca/sites/default/files/files/CCAIndia2014.cer"
+sha256 = "60109bc6c38328598a112c7a25e38b0f23e5a7511cb815fb64e0c4ff05db7df7"
+checked_against = "microsoft-roots"

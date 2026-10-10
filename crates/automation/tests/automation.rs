@@ -2815,6 +2815,14 @@ fn trust_sets_are_off_until_switched_on_through_sign_trust() {
     assert_eq!(ok(&mut a, "sign_trust", json!({ "builtin_roots": true }))["builtin_roots"], true);
     assert_eq!(status(&mut a), "unknown", "the built-in roots do not include Ada's certificate");
     assert_eq!(ok(&mut a, "sign_trust", json!({ "builtin_roots": false }))["builtin_roots"], false);
+    // The CCA India roots (e-Aadhaar): off by default, kept apart from the commercial roots.
+    assert_eq!(t["cca_india"], false);
+    let t = ok(&mut a, "sign_trust", json!({ "cca_india": true }));
+    assert_eq!((t["cca_india"].clone(), t["builtin_roots"].clone(), t["trusted"].as_array().map(Vec::len)), (json!(true), json!(false), Some(0)));
+    assert_eq!(status(&mut a), "unknown", "the CCA India roots do not include Ada's certificate");
+    assert!(matches!(a.call("sign_trust", &json!({ "cca_india": "yes" })), Err(ToolError::InvalidArgs(_))));
+    assert_eq!(ok(&mut a, "sign_trust", json!({}))["cca_india"], true, "a bad argument changes nothing");
+    assert_eq!(ok(&mut a, "sign_trust", json!({ "cca_india": false }))["cca_india"], false);
 
     // A trust list file (the certificate as DER), loaded by path.
     let ada = pdfcraft_engine::sign::pkcs12::open(&std::fs::read(dir.join("ada.p12")).unwrap(), "secret1").unwrap();

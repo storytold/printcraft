@@ -1582,6 +1582,12 @@ fn several_trust_changes_revalidate_the_open_documents_once() {
     });
     assert_eq!(s.revalidations, 3);
     assert!(!s.builtin_roots());
+    // The CCA India roots are a set of their own, off by default.
+    assert!(!s.cca_india());
+    s.set_cca_india(true);
+    assert!(s.cca_india() && !s.builtin_roots());
+    assert_eq!(s.revalidations, 4);
+    s.set_cca_india(false);
     assert_eq!((s.trusted_certificates().len(), s.trust_lists().len()), (2, 1));
     // Replacing a list by name, and removing it.
     s.set_trust_list("Test list", None);

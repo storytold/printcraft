@@ -189,12 +189,15 @@ impl DigestCache {
 }
 
 /// Certificates trusted for signing (Acrobat: Trusted Certificates). Only `certs`, the user's own
-/// list, is trusted by default; the other two are sets the user has to switch on.
+/// list, is trusted by default; the others are sets the user has to switch on.
 #[derive(Clone, Debug, Default)]
 pub struct TrustStore {
     pub certs: Vec<Certificate>,
     /// Also trust the embedded roots of commercial CAs ([`crate::trust::builtin_roots`]).
     pub builtin_roots: bool,
+    /// Also trust the embedded roots of India's PKI ([`crate::trust::cca_india_roots`]), behind
+    /// e-Aadhaar and India's other licensed CAs.
+    pub cca_india: bool,
     /// Also trust these lists the user loaded (e.g. the EU Trusted Lists' qualified CAs).
     pub lists: Vec<crate::trust::TrustList>,
 }
@@ -206,6 +209,8 @@ pub enum TrustSource {
     User,
     /// A root embedded in PdfCraft ([`crate::trust::builtin_roots`]).
     BuiltinRoots,
+    /// A root of India's PKI embedded in PdfCraft ([`crate::trust::cca_india_roots`]).
+    CcaIndia,
     /// The named list the user loaded.
     List(String),
 }
@@ -220,7 +225,8 @@ impl TrustStore {
     /// Every certificate that is a trust anchor right now: the user's, then the sets switched on.
     fn anchors(&self) -> impl Iterator<Item = &Certificate> + Clone {
         let builtin: &[Certificate] = if self.builtin_roots { crate::trust::builtin_roots() } else { &[] };
-        self.certs.iter().chain(builtin).chain(self.lists.iter().flat_map(|l| l.certs.iter()))
+        let cca: &[Certificate] = if self.cca_india { crate::trust::cca_india_roots() } else { &[] };
+        self.certs.iter().chain(builtin).chain(cca).chain(self.lists.iter().flat_map(|l| l.certs.iter()))
     }
 
     /// What makes `c` trusted, if anything. The user's own list wins over the sets.
@@ -229,6 +235,8 @@ impl TrustStore {
             Some(TrustSource::User)
         } else if self.builtin_roots && crate::trust::is_builtin_root(c) {
             Some(TrustSource::BuiltinRoots)
+        } else if self.cca_india && crate::trust::is_cca_india_root(c) {
+            Some(TrustSource::CcaIndia)
         } else {
             self.lists.iter().find(|l| l.certs.iter().any(|t| t.raw == c.raw)).map(|l| TrustSource::List(l.name.clone()))
         }
@@ -764,6 +772,10 @@ fn finish_validation(
             Some((root, TrustSource::BuiltinRoots)) => {
                 info.details.push(format!("Its certificate chains to a root built into PdfCraft that you switched on ({root})."))
             }
+            Some((root, TrustSource::CcaIndia)) => info.details.push(format!(
+                "Its certificate chains to {root}, a root of India's PKI in the {} trust set that you switched on.",
+                crate::trust::CCA_INDIA
+            )),
             Some((root, TrustSource::List(list))) => info.details.push(format!("Its certificate chains to {root} in the trust list \"{list}\".")),
             _ => {}
         }

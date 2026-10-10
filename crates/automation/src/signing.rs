@@ -229,6 +229,7 @@ impl Automation {
         }
         // The optional trust sets, both off until asked for. `None`: not mentioned, left alone.
         let builtin_roots = a.opt_bool("builtin_roots")?;
+        let cca_india = a.opt_bool("cca_india")?;
         let eu_list = match a.get("eu_trusted_list") {
             None => None,
             Some(Value::Bool(false) | Value::Null) => Some(None),
@@ -244,13 +245,16 @@ impl Automation {
             }
             Some(_) => return Err(bad("eu_trusted_list must be the path of a trust list file, or false")),
         };
-        if certs_changed || builtin_roots.is_some() || eu_list.is_some() {
+        if certs_changed || builtin_roots.is_some() || cca_india.is_some() || eu_list.is_some() {
             self.session.update_trust(|trust| {
                 if certs_changed {
                     trust.certs = certs;
                 }
                 if let Some(on) = builtin_roots {
                     trust.builtin_roots = on;
+                }
+                if let Some(on) = cca_india {
+                    trust.cca_india = on;
                 }
                 if let Some(list) = eu_list {
                     trust.set_list(EU_LIST, list);
@@ -260,6 +264,7 @@ impl Automation {
         Ok(json!({
             "trusted": self.session.trusted_certificates().iter().map(cert_json).collect::<Vec<_>>(),
             "builtin_roots": self.session.builtin_roots(),
+            "cca_india": self.session.cca_india(),
             "trust_lists": self.session.trust_lists().iter().map(|l| json!({ "name": l.name, "certificates": l.certs.len() })).collect::<Vec<_>>(),
         }))
     }

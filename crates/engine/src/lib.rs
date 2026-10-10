@@ -3026,6 +3026,18 @@ impl Session {
         self.update_trust(|trust| trust.builtin_roots = on);
     }
 
+    /// Whether the roots of India's PKI embedded in PdfCraft ([`pdfcraft_sign::trust::cca_india_roots`],
+    /// behind e-Aadhaar signatures) are trusted too. Off until the user switches it on; they are not
+    /// part of [`Session::trusted_certificates`].
+    pub fn cca_india(&self) -> bool {
+        self.trust.cca_india
+    }
+
+    /// Trust (or stop trusting) the CCA India roots and revalidate every open document.
+    pub fn set_cca_india(&mut self, on: bool) {
+        self.update_trust(|trust| trust.cca_india = on);
+    }
+
     /// The trust lists the user loaded (e.g. the EU Trusted Lists' qualified CAs), none by default.
     pub fn trust_lists(&self) -> &[pdfcraft_sign::trust::TrustList] {
         &self.trust.lists

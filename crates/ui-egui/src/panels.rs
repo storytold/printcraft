@@ -103,7 +103,14 @@ fn tool_row(ui: &mut egui::Ui, t: &Tokens, g: &ToolGroup) -> egui::Response {
         }
         _ => 8.0,
     };
-    let clipped = row_label(ui, tl!(g.label), theme::regular(13.5), t.text, rect.left_center() + vec2(36.0, 0.0), rect.width() - 36.0 - right_reserved);
+    let clipped = row_label(
+        ui,
+        tl!(g.label),
+        theme::regular(13.5),
+        t.text,
+        rect.left_center() + vec2(36.0, 0.0),
+        rect.width() - 36.0 - right_reserved,
+    );
     match (g.badge, g.availability) {
         (Some(b), _) => {
             let font = theme::semibold(9.5);

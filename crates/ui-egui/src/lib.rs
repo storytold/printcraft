@@ -443,6 +443,9 @@ pub struct PdfCraftApp {
     pub toast: Option<(String, f64)>,
     /// Whether the macOS title bar is drawn by us (traffic lights over our tab strip).
     pub integrated_titlebar: bool,
+    /// Linux/BSD: the window has no system frame; the tab strip draws minimize, maximize and
+    /// close, and the window resizes from its edges (`chrome::window_frame`).
+    pub window_controls: bool,
     pub password_prompt: Option<PasswordPrompt>,
     pub full_screen: bool,
     /// Files delivered asynchronously (web drag-and-drop, web file picker).
@@ -735,6 +738,7 @@ impl PdfCraftApp {
             pinned: Default::default(),
             toast: None,
             integrated_titlebar: false,
+            window_controls: false,
             password_prompt: None,
             full_screen: false,
             inbox: Default::default(),
@@ -2075,6 +2079,7 @@ impl eframe::App for PdfCraftApp {
         dialogs::show(self, &ctx);
         self.show_progress(&ctx);
         widgets::toast(self, &ctx);
+        chrome::window_frame(self, &ctx);
         self.finish_render_frame(&ctx);
     }
 }

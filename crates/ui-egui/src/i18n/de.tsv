@@ -29,7 +29,7 @@
 	Create PDF from images…	PDF aus Bildern erstellen…
 	Create PDF from multiple files…	PDF aus mehreren Dateien erstellen…
 	Create PDF from clipboard	PDF aus Zwischenablage erstellen
-	Combine files…	Dateien kombinieren…
+	Combine files…	Dateien zusammenführen…
 	Save	Speichern
 	Save as…	Speichern unter…
 	Close file	Datei schließen
@@ -54,7 +54,7 @@
 	Comments panel	Kommentarbereich
 	Form fields panel	Formularfeldbereich
 	Clear form	Formular zurücksetzen
-	Find tools and commands…	Tools und Befehle suchen…
+	Find tools and commands…	Werkzeuge und Befehle suchen…
 	Zoom	Zoom
 	Actual size	Originalgröße
 	Zoom to page level	Ganze Seite
@@ -90,7 +90,7 @@
 	Print ({key})	Drucken ({key})
 	Save (M4)	Speichern (M4)
 	Document properties ({key})	Dokumenteigenschaften ({key})
-	Find tools and commands	Tools und Befehle suchen
+	Find tools and commands	Werkzeuge und Befehle suchen
 	Fit to height	Seitenhöhe
 	Zoom in	Vergrößern
 	Zoom out	Verkleinern
@@ -216,14 +216,14 @@
 	Certify (invisible signature)	Zertifizieren (unsichtbare Signatur)
 	Validate all signatures	Alle Signaturen validieren
 	Signatures panel	Signaturbereich
-	Fill & Sign: add text	Ausfüllen und unterschreiben: Text hinzufügen
-	Fill & Sign: checkmark	Ausfüllen und unterschreiben: Häkchen
-	Fill & Sign: cross	Ausfüllen und unterschreiben: Kreuz
-	Fill & Sign: dot	Ausfüllen und unterschreiben: Punkt
-	Fill & Sign: line	Ausfüllen und unterschreiben: Linie
-	Fill & Sign: date	Ausfüllen und unterschreiben: Datum
-	Fill & Sign: sign	Ausfüllen und unterschreiben: Unterschreiben
-	Fill & Sign: initials	Ausfüllen und unterschreiben: Initialen
+	Fill & Sign: add text	Ausfüllen und Signieren: Text hinzufügen
+	Fill & Sign: checkmark	Ausfüllen und Signieren: Häkchen
+	Fill & Sign: cross	Ausfüllen und Signieren: Kreuz
+	Fill & Sign: dot	Ausfüllen und Signieren: Punkt
+	Fill & Sign: line	Ausfüllen und Signieren: Linie
+	Fill & Sign: date	Ausfüllen und Signieren: Datum
+	Fill & Sign: sign	Ausfüllen und Signieren: Unterschreiben
+	Fill & Sign: initials	Ausfüllen und Signieren: Initialen
 	Export to image…	Als Bild exportieren…
 	Reduce file size…	Dateigröße reduzieren…
 	Optimize PDF…	PDF optimieren…
@@ -286,7 +286,7 @@
 	Rich Text Format (.rtf)	Rich Text Format (.rtf)
 	Text (plain)	Text (unformatiert)
 	PostScript / EPS	PostScript / EPS
-	Fill & Sign	Ausfüllen und unterschreiben
+	Fill & Sign	Ausfüllen und Signieren
 	Fill	Ausfüllen
 	Checkmark	Häkchen
 	Cross	Kreuz
@@ -316,9 +316,9 @@
 	Images	Bilder
 	Clipboard	Zwischenablage
 	Blank page	Leere Seite
-	Combine files	Dateien kombinieren
-	Combine	Kombinieren
-	Add files to combine	Dateien zum Kombinieren hinzufügen
+	Combine files	Dateien zusammenführen
+	Combine	Zusammenführen
+	Add files to combine	Dateien zum Zusammenführen hinzufügen
 	Page options	Seitenoptionen
 	Page grid	Seitenraster
 	Rotate	Drehen
@@ -331,7 +331,7 @@
 	Set page boxes	Seitenrahmen festlegen
 	Page labels	Seitenbeschriftungen
 	Page transitions	Seitenübergänge
-	Add comments	Kommentieren
+	Add comments	Kommentare hinzufügen
 	Markup	Markierungen
 	Sticky note	Notiz
 	Underline	Unterstreichen
@@ -411,7 +411,7 @@
 	Prepare for distribution	Für Weitergabe vorbereiten
 	Optimize scanned documents	Gescannte Dokumente optimieren
 	Archive documents	Dokumente archivieren
-	Prepare for accessibility	Für Barrierefreiheit vorbereiten
+	Prepare for accessibility	Barrierefreiheit vorbereiten
 	Accessibility	Barrierefreiheit
 	Automatically tag PDF	PDF automatisch taggen
 	Change reading options	Leseoptionen ändern
@@ -1850,10 +1850,10 @@
 	Save as PDF/A-1b	Als PDF/A-1b speichern
 	Save as PDF/A-2b	Als PDF/A-2b speichern
 	Save as PDF/A-3b	Als PDF/A-3b speichern
-	Fill & Sign: change signature	Ausfüllen und unterschreiben: Unterschrift ändern
-	Fill & Sign: change initials	Ausfüllen und unterschreiben: Initialen ändern
-	Fill & Sign: remove saved signature	Ausfüllen und unterschreiben: Gespeicherte Unterschrift entfernen
-	Fill & Sign: remove saved initials	Ausfüllen und unterschreiben: Gespeicherte Initialen entfernen
+	Fill & Sign: change signature	Ausfüllen und Signieren: Unterschrift ändern
+	Fill & Sign: change initials	Ausfüllen und Signieren: Initialen ändern
+	Fill & Sign: remove saved signature	Ausfüllen und Signieren: Gespeicherte Unterschrift entfernen
+	Fill & Sign: remove saved initials	Ausfüllen und Signieren: Gespeicherte Initialen entfernen
 	Change signature	Unterschrift ändern
 	Change initials	Initialen ändern
 	Measure distance	Abstand messen

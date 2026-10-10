@@ -232,9 +232,12 @@ impl Extensions {
             }
             // ExtendedKeyUsage: a SEQUENCE OF OID.
             "2.5.29.37" => {
-                if let Ok(eku) = Tlv::parse_all(value.value) {
-                    self.extended_key_usage = eku.children().ok().map(|c| c.into_iter().filter_map(|t| t.oid().ok()).collect::<Vec<_>>());
-                }
+                // Present means restricted, even when it doesn't parse: an unreadable one allows no
+                // purpose at all, never every purpose (as for keyUsage). An entry that isn't an OID
+                // grants nothing.
+                self.extended_key_usage = Some(Vec::new());
+                let Ok(eku) = Tlv::parse_all(value.value) else { return };
+                self.extended_key_usage = Some(eku.children().unwrap_or_default().into_iter().filter_map(|t| t.oid().ok()).collect());
             }
             // Authority Information Access: OCSP and CA-issuer locations.
             "1.3.6.1.5.5.7.1.1" => {

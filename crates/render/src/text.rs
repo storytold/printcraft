@@ -37,7 +37,7 @@ pub struct TextGlyph {
 /// combining dot (two characters) and leaves `ı` alone, so neither `İSTANBUL` nor `IRMAK` could
 /// be found by typing `istanbul` or `ırmak`. Search can't know the document's language, so the
 /// four are treated as one letter; this only adds matches where an `ı` or `İ` is involved.
-fn fold_case(s: &str) -> String {
+pub fn fold_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

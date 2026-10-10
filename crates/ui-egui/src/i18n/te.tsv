@@ -1541,6 +1541,8 @@ action wizard	Start	ప్రారంభించు
 	Fixed what could be fixed; {n} problems remain	సరిచేయగలిగినవన్నీ సరిచేయబడ్డాయి; {n} సమస్యలు మిగిలి ఉన్నాయి
 	Custom stamps arrive on the web with file pickers for images	అనుకూల స్టాంప్‌లు, చిత్రాల కోసం ఫైల్ పికర్‌లతో పాటు వెబ్‌లో వస్తాయి
 	{file} is too large for a stamp (at most {n} MB)	స్టాంప్‌కు {file} చాలా పెద్దది (గరిష్ఠంగా {n} MB)
+	Sending sheet {s} of {n} to {printer}…	{printer}కు {n}లో {s}వ షీట్ పంపుతోంది…
+	Sending to {printer}…	{printer}కు పంపుతోంది…
 	Sent to {printer}	{printer}కు పంపబడింది
 	Sent to {printer}: {msg}	{printer}కు పంపబడింది: {msg}
 	Choose a folder for the searchable files	వెతకగలిగే ఫైల్‌ల కోసం ఒక ఫోల్డర్‌ను ఎంచుకోండి

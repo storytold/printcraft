@@ -165,10 +165,180 @@ impl PrintDraft {
     }
 }
 
+/// The system's printers, read off the UI thread. Listing them runs the spooler's own tools
+/// (`lpstat`; PowerShell on Windows, which takes a second or two), so the list is read when the
+/// app starts and again each time the Print dialog opens, and the dialog shows the last one read.
+#[derive(Default)]
+pub(crate) struct Printers {
+    known: Option<Vec<spool::Printer>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    reading: Option<std::sync::mpsc::Receiver<Vec<spool::Printer>>>,
+    /// Jobs on their way to the spooler, oldest first.
+    #[cfg(not(target_arch = "wasm32"))]
+    jobs: Vec<PrintJob>,
+    /// The progress card is showing a job (it is shared with other long jobs).
+    #[cfg(not(target_arch = "wasm32"))]
+    showing_progress: bool,
+}
+
+/// A job being sent: its printer, the sheets sent so far of how many, and its worker's news.
+#[cfg(not(target_arch = "wasm32"))]
+struct PrintJob {
+    printer: String,
+    sheets: Option<(usize, usize)>,
+    news: std::sync::mpsc::Receiver<JobNews>,
+    over: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum JobNews {
+    Sent(usize, usize),
+    Done(Result<String, String>),
+}
+
 impl PdfCraftApp {
+    /// Start reading the printer list, unless a read is already running.
+    fn read_printers(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.printers.reading.is_some() {
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = self.ctx.clone();
+            let work = move || {
+                // The receiver may be gone (the app quit): nothing to report to then.
+                let _ = tx.send(spool::printers());
+                if let Some(ctx) = ctx {
+                    ctx.request_repaint();
+                }
+            };
+            match std::thread::Builder::new().name("pdfcraft-printers".into()).spawn(work) {
+                Ok(_) => self.printers.reading = Some(rx),
+                Err(_) => self.printers.known = Some(spool::printers()),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.printers.known = Some(spool::printers());
+        }
+    }
+
+    /// Pick up a finished printer list and finished print jobs (each frame). The first call
+    /// starts reading the list, so it is ready by the time Print is chosen.
+    pub(crate) fn poll_printers(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.printers.known.is_none() && self.printers.reading.is_none() {
+                self.read_printers();
+            }
+            if let Some(rx) = &self.printers.reading {
+                match rx.try_recv() {
+                    Ok(list) => self.take_printers(list),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => self.printers.reading = None,
+                }
+            }
+            let mut finished = Vec::new();
+            for job in &mut self.printers.jobs {
+                loop {
+                    match job.news.try_recv() {
+                        Ok(JobNews::Sent(sent, sheets)) => job.sheets = Some((sent, sheets)),
+                        Ok(JobNews::Done(result)) => {
+                            finished.push((job.printer.clone(), result));
+                            job.over = true;
+                            break;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            finished.push((job.printer.clone(), Err("the print job stopped unexpectedly".to_string())));
+                            job.over = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            self.printers.jobs.retain(|j| !j.over);
+            self.show_print_progress();
+            for (printer, result) in finished {
+                self.notify_sent(&printer, result);
+            }
+        }
+    }
+
+    /// The oldest running job on the progress card, while no other long job holds it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn show_print_progress(&mut self) {
+        let Some(job) = self.printers.jobs.first() else {
+            if std::mem::take(&mut self.printers.showing_progress) {
+                self.progress_notice = None;
+            }
+            return;
+        };
+        if self.progress_notice.is_some() && !self.printers.showing_progress {
+            return;
+        }
+        let printer = job.printer.as_str();
+        let (label, fraction) = match job.sheets {
+            Some((sent, sheets)) if sheets > 0 => {
+                let sheet = (sent + 1).min(sheets).to_string();
+                let label = crate::i18n::fmt(
+                    tl!("Sending sheet {s} of {n} to {printer}…"),
+                    &[("s", &sheet), ("n", &sheets.to_string()), ("printer", printer)],
+                );
+                (label, sent as f32 / sheets as f32)
+            }
+            _ => (crate::i18n::fmt(tl!("Sending to {printer}…"), &[("printer", printer)]), 0.0),
+        };
+        self.progress_notice = Some(crate::widgets::ProgressNotice { label, fraction, cancellable: false });
+        self.printers.showing_progress = true;
+        if let Some(ctx) = &self.ctx {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// A list read in the background: remembered for the next Print, and shown at once by an
+    /// open dialog. The printer picked in the dialog stays picked.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_printers(&mut self, list: Vec<spool::Printer>) {
+        self.printers.reading = None;
+        if self.dialog == Some(crate::Dialog::Print) {
+            self.print_draft.printers = list.clone();
+        }
+        self.printers.known = Some(list);
+    }
+
+    /// The printer list for a Print dialog opening now: the last one read, or, when none has
+    /// arrived yet (Print chosen just after starting), the one being read.
+    fn printer_list(&mut self) -> Vec<spool::Printer> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.printers.known.is_none()
+            && let Some(rx) = self.printers.reading.take()
+        {
+            self.printers.known = Some(rx.recv().unwrap_or_default());
+            return self.printers.known.clone().unwrap_or_default();
+        }
+        let list = match self.printers.known.clone() {
+            Some(list) => list,
+            None => spool::printers(),
+        };
+        // Printers added or removed since: the open dialog picks the change up when it arrives.
+        self.read_printers();
+        list
+    }
+
+    /// Report a job the spooler took or refused.
+    fn notify_sent(&mut self, printer: &str, result: Result<String, String>) {
+        match result {
+            Ok(msg) if msg.is_empty() => self.notify(crate::i18n::fmt(tl!("Sent to {printer}"), &[("printer", printer)])),
+            Ok(msg) => self.notify(crate::i18n::fmt(tl!("Sent to {printer}: {msg}"), &[("printer", printer), ("msg", &msg)])),
+            Err(e) => self.notify_error(e),
+        }
+    }
+
     pub fn open_print(&mut self) {
         let Some((i, _)) = self.active_ids() else { return };
-        let printers = spool::printers();
+        let printers = self.printer_list();
         let default = printers.iter().find(|p| p.default).or(printers.first()).map(|p| p.name.clone());
         let current = self.views[i].current;
         let selected: Vec<usize> = self.views[i].selected.iter().copied().collect();
@@ -211,22 +381,48 @@ impl PdfCraftApp {
             }
         };
         match self.print_draft.printer.clone() {
-            Some(printer) => match spool::submit(&bytes, &self.print_draft.job(&name)) {
-                Ok(msg) => {
-                    self.notify(if msg.is_empty() {
-                        crate::i18n::fmt(tl!("Sent to {printer}"), &[("printer", &printer)])
-                    } else {
-                        crate::i18n::fmt(tl!("Sent to {printer}: {msg}"), &[("printer", &printer), ("msg", &msg)])
-                    });
-                    true
-                }
-                Err(e) => {
-                    self.notify_error(e);
-                    false
-                }
-            },
+            Some(printer) => self.send_to_printer(printer, bytes, self.print_draft.job(&name)),
             None => self.save_print_pdf(&name, bytes),
         }
+    }
+
+    /// Hand the print-ready PDF to the spooler on a thread of its own: on Windows that renders
+    /// every sheet first, which takes seconds the window must not freeze for. Returns `true` once
+    /// the job is on its way; the progress card follows it, and how it ended is reported when it
+    /// does.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_to_printer(&mut self, printer: String, bytes: Vec<u8>, job: spool::Job) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let work = move || {
+            let repaint = || {
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+            };
+            // The receiver may be gone (the app quit): nothing to report to then.
+            let result = spool::submit_with_progress(&bytes, &job, &mut |sent, sheets| {
+                let _ = tx.send(JobNews::Sent(sent, sheets));
+                repaint();
+            });
+            let _ = tx.send(JobNews::Done(result.map_err(|e| e.to_string())));
+            repaint();
+        };
+        if let Err(e) = std::thread::Builder::new().name("pdfcraft-print".into()).spawn(work) {
+            self.notify_error(e);
+            return false;
+        }
+        self.printers.jobs.push(PrintJob { printer, sheets: None, news: rx, over: false });
+        self.show_print_progress();
+        true
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn send_to_printer(&mut self, printer: String, bytes: Vec<u8>, job: spool::Job) -> bool {
+        let result = spool::submit(&bytes, &job).map_err(|e| e.to_string());
+        let sent = result.is_ok();
+        self.notify_sent(&printer, result);
+        sent
     }
 
     /// Print ▸ Save as PDF on the desktop: write to `save_override` (tests and automation), or

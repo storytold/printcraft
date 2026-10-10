@@ -578,6 +578,8 @@ pub struct PdfCraftApp {
     pub redact_search: RedactSearchDraft,
     pub hidden_draft: HiddenDraft,
     pub print_draft: PrintDraft,
+    /// The system's printers and the jobs on their way to them.
+    printers: print_ui::Printers,
     pub link_draft: Option<LinkDraft>,
     /// The style new text gets (Edit a PDF ▸ Format text).
     pub text_style: pdfcraft_engine::AddedText,
@@ -785,6 +787,7 @@ impl PdfCraftApp {
             redact_search: RedactSearchDraft::default(),
             hidden_draft: HiddenDraft::default(),
             print_draft: PrintDraft::default(),
+            printers: Default::default(),
             link_draft: None,
             text_style: content_ui::default_style(),
             replace_draft: None,
@@ -1901,6 +1904,7 @@ impl eframe::App for PdfCraftApp {
             }
         }
         self.poll_export();
+        self.poll_printers();
         self.poll_ocr();
         self.poll_optimize();
         self.poll_action();

@@ -1474,6 +1474,8 @@
 	Fixed what could be fixed; {n} problems remain	已修復能修復的問題；還剩{n}個問題
 	Custom stamps arrive on the web with file pickers for images	Web 端自定義戳記將使用圖片檔案選擇器
 	{file} is too large for a stamp (at most {n} MB)	{file} 對於戳記來說太大了（最大 {n} MB）
+	Sending sheet {s} of {n} to {printer}…	正在將第 {s} 張（共 {n} 張）傳送到{printer}…
+	Sending to {printer}…	正在傳送到{printer}…
 	Sent to {printer}	已傳送到{printer}
 	Sent to {printer}: {msg}	已傳送到{printer}：{msg}
 	Choose a folder for the searchable files	選擇可搜尋檔案的資料夾

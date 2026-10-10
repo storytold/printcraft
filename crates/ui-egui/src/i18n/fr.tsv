@@ -1545,6 +1545,8 @@
 	Fixed what could be fixed; {n} problems remain	Ce qui pouvait l'être a été corrigé ; il reste {n} problèmes
 	Custom stamps arrive on the web with file pickers for images	Les tampons personnalisés arriveront sur le web avec les sélecteurs de fichiers d'images
 	{file} is too large for a stamp (at most {n} MB)	{file} est trop volumineux pour un tampon ({n} Mo au plus)
+	Sending sheet {s} of {n} to {printer}…	Envoi de la feuille {s} sur {n} à {printer}…
+	Sending to {printer}…	Envoi à {printer}…
 	Sent to {printer}	Envoyé à {printer}
 	Sent to {printer}: {msg}	Envoyé à {printer} : {msg}
 	Choose a folder for the searchable files	Choisissez un dossier pour les fichiers recherchables

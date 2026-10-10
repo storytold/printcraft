@@ -1561,6 +1561,8 @@
 	Fixed what could be fixed; {n} problems remain	Corretto il correggibile; rimangono {n} problemi
 	Custom stamps arrive on the web with file pickers for images	Sul web, i timbri personalizzati arriveranno con i selettori di file per immagini
 	{file} is too large for a stamp (at most {n} MB)	{file} è troppo grande per un timbro (massimo {n} MB)
+	Sending sheet {s} of {n} to {printer}…	Invio del foglio {s} di {n} a {printer}…
+	Sending to {printer}…	Invio a {printer}…
 	Sent to {printer}	Inviato a {printer}
 	Sent to {printer}: {msg}	Inviato a {printer}: {msg}
 	Choose a folder for the searchable files	Scegli una cartella per i file ricercabili

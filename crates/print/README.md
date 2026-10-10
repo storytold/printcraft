@@ -36,7 +36,7 @@ garbage-collected file (callers check the print permission).
 `lpstat -e` (driverless destinations no queue exists for; CUPS builds a temporary one when the
 job arrives), jobs go to `lp` with copies, collation, duplex and monochrome options. The job is
 piped to `lp` on stdin and never written to a temp file, where another local user could read or
-swap it. On Windows the printers come from `Win32_Printer` and jobs are rendered by the in-box
+swap it. On Windows the printers come from .NET's `PrinterSettings` and jobs are rendered by the in-box
 `Windows.Data.Pdf` and spooled by `System.Drawing.Printing` with the driver's own settings (both
 through `powershell`, so no Win32 API is called here); that job file exists for the seconds the
 spooler reads it, under a fresh unpredictable name. Other platforms report that printing to a

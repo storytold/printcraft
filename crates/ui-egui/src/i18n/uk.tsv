@@ -1555,6 +1555,8 @@
 	Fixed what could be fixed; {n} problems remain	Усе можливе виправлено; залишилося проблем: {n}
 	Custom stamps arrive on the web with file pickers for images	Власні штампи з’являться у вебверсії разом із вибором файлів зображень
 	{file} is too large for a stamp (at most {n} MB)	{file} завеликий для штампа (не більше {n} МБ)
+	Sending sheet {s} of {n} to {printer}…	Надсилання аркуша {s} із {n} на {printer}…
+	Sending to {printer}…	Надсилання на {printer}…
 	Sent to {printer}	Надіслано на {printer}
 	Sent to {printer}: {msg}	Надіслано на {printer}: {msg}
 	Choose a folder for the searchable files	Виберіть теку для файлів із пошуком

@@ -1518,6 +1518,8 @@
 	Fixed what could be fixed; {n} problems remain	Поправено е всичко възможно; остават {n} проблема
 	Custom stamps arrive on the web with file pickers for images	Потребителските печати в уеб версията ще станат достъпни с инструментите за избор на файлове с изображения
 	{file} is too large for a stamp (at most {n} MB)	{file} е твърде голям за печат (най-много {n} MB)
+	Sending sheet {s} of {n} to {printer}…	Изпращане на лист {s} от {n} до {printer}…
+	Sending to {printer}…	Изпращане до {printer}…
 	Sent to {printer}	Изпратено до {printer}
 	Sent to {printer}: {msg}	Изпратено до {printer}: {msg}
 	Choose a folder for the searchable files	Изберете папка за файловете с възможност за търсене

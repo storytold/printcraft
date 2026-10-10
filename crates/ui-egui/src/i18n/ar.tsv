@@ -1557,6 +1557,8 @@
 	Fixed what could be fixed; {n} problems remain	أُصلح ما أمكن إصلاحه؛ بقيت {n} مشكلات
 	Custom stamps arrive on the web with file pickers for images	الأختام المخصصة ستتوفر على الويب مع منتقيات ملفات الصور
 	{file} is too large for a stamp (at most {n} MB)	{file} أكبر من أن يكون ختمًا ({n} ميغابايت على الأكثر)
+	Sending sheet {s} of {n} to {printer}…	جارٍ إرسال الورقة {s} من {n} إلى {printer}…
+	Sending to {printer}…	جارٍ الإرسال إلى {printer}…
 	Sent to {printer}	أُرسل إلى {printer}
 	Sent to {printer}: {msg}	أُرسل إلى {printer}: {msg}
 	Choose a folder for the searchable files	اختر مجلدًا للملفات القابلة للبحث

@@ -1450,6 +1450,8 @@
 	Fixed what could be fixed; {n} problems remain	Corrigido o que pôde ser corrigido; restaram {n} problemas
 	Custom stamps arrive on the web with file pickers for images	Carimbos personalizados chegarão à Web com seletores de arquivo para imagens
 	{file} is too large for a stamp (at most {n} MB)	{file} é muito grande para um carimbo (no máximo {n} MB)
+	Sending sheet {s} of {n} to {printer}…	Enviando a folha {s} de {n} para {printer}…
+	Sending to {printer}…	Enviando para {printer}…
 	Sent to {printer}	Enviado para {printer}
 	Sent to {printer}: {msg}	Enviado para {printer}: {msg}
 	Choose a folder for the searchable files	Escolha uma pasta para os arquivos pesquisáveis

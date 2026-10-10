@@ -1525,6 +1525,8 @@
 	Fixed what could be fixed; {n} problems remain	已修复能修复的问题；还剩{n}个问题
 	Custom stamps arrive on the web with file pickers for images	Web 端自定义图章将使用图像文件选择器
 	{file} is too large for a stamp (at most {n} MB)	{file} 对于图章来说太大了（最大 {n} MB）
+	Sending sheet {s} of {n} to {printer}…	正在将第 {s} 张（共 {n} 张）发送到{printer}…
+	Sending to {printer}…	正在发送到{printer}…
 	Sent to {printer}	已发送到{printer}
 	Sent to {printer}: {msg}	已发送到{printer}：{msg}
 	Choose a folder for the searchable files	选择可搜索文件的文件夹

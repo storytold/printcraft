@@ -42,8 +42,10 @@ function AwaitAct($action) {
 }
 
 # One page rendered the size it will be drawn (`$drawW` × `$drawH`, hundredths of an inch), at
-# `$dpi` dots per inch, aspect-fitted. The caller disposes the bitmap.
-function Render-Sheet($page, $drawW, $drawH, $dpi) {
+# `$dpi` dots per inch, aspect-fitted, and handed to `$use` while it lives. GDI+ reads an image
+# lazily from its stream, so the stream outlives the use rather than the image being copied
+# out of it: a sheet at 600 dpi is tens of megapixels, and the copy cost a quarter second.
+function Render-Sheet($page, $drawW, $drawH, $dpi, [scriptblock] $use) {
     $w = $page.Size.Width
     $h = $page.Size.Height
     $scale = [Math]::Min($drawW / 100.0 * 96.0 / $w, $drawH / 100.0 * 96.0 / $h)
@@ -55,10 +57,8 @@ function Render-Sheet($page, $drawW, $drawH, $dpi) {
         $random = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($stream)
         AwaitAct ($page.RenderToStreamAsync($random, $options))
         $stream.Position = 0
-        # Copy out of the stream: GDI+ reads an Image lazily and needs its stream alive, so the
-        # render below releases the stream with the function.
-        $png = [System.Drawing.Image]::FromStream($stream)
-        try { return [System.Drawing.Bitmap]::new($png) } finally { $png.Dispose() }
+        $image = [System.Drawing.Image]::FromStream($stream)
+        try { & $use $image } finally { $image.Dispose() }
     } finally {
         $stream.Dispose()
     }
@@ -75,8 +75,8 @@ if ($env:PDFCRAFT_PRINT_DRYRUN -eq '1') {
     for ($i = 0; $i -lt $document.PageCount; $i++) {
         $page = $document.GetPage($i)
         try {
-            $bitmap = Render-Sheet $page 750 1000 150
-            try { $bitmap.Save((Join-Path $folder "sheet-$i.png"), [System.Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+            $file = Join-Path $folder "sheet-$i.png"
+            Render-Sheet $page 750 1000 150 { param($image) $image.Save($file, [System.Drawing.Imaging.ImageFormat]::Png) }
         } finally {
             $page.Dispose()
         }
@@ -104,6 +104,47 @@ $settings.Duplex = switch ($env:PDFCRAFT_PRINT_DUPLEX) {
 }
 if ($env:PDFCRAFT_PRINT_GRAYSCALE -eq '1') { $printer.DefaultPageSettings.Color = $false }
 
+# The printer's papers, asked of the driver once: every read of PaperSizes asks it again.
+$papers = @($settings.PaperSizes)
+
+# The printer's paper the size of a sheet (hundredths of an inch, either way round), within a
+# millimetre or so; $null when the printer has none, and the sheet is fitted to its paper.
+function Find-Paper($wide, $high) {
+    foreach ($paper in $papers) {
+        foreach ($pair in @(@($paper.Width, $paper.Height), @($paper.Height, $paper.Width))) {
+            if ([Math]::Abs($pair[0] - $wide) -le 5 -and [Math]::Abs($pair[1] - $high) -le 5) { return $paper }
+        }
+    }
+    $null
+}
+
+# Each sheet on the paper it was laid out for, turned to its orientation: the sheets are already
+# the size they print at (the dialog's paper), so the printer's default paper must not stand in.
+$script:query = 0
+$printer.add_QueryPageSettings({
+    param($sender, $e)
+    if ($script:query -ge $document.PageCount) { return }
+    $page = $document.GetPage($script:query)
+    try {
+        $wide = $page.Size.Width / 96.0 * 100.0
+        $high = $page.Size.Height / 96.0 * 100.0
+        $paper = Find-Paper $wide $high
+        if ($paper) { $e.PageSettings.PaperSize = $paper }
+        $e.PageSettings.Landscape = ($wide -gt $high)
+    } finally {
+        $page.Dispose()
+    }
+    $script:query++
+})
+
+# `progress SENT SHEETS` on a line of its own, at once: PdfCraft shows how far the job has got
+# while the script still runs. Straight to the console, since output from inside the driver's
+# callbacks would otherwise wait for the script to end.
+function Send-Progress($sent) {
+    [Console]::Out.WriteLine('progress ' + $sent + ' ' + $document.PageCount)
+    [Console]::Out.Flush()
+}
+
 # One sheet at a time: its page is rendered when the driver asks for it, so a long document
 # holds only one page's bitmap in memory.
 $script:sheets = 0
@@ -111,26 +152,36 @@ $printer.add_PrintPage({
     param($sender, $e)
     if ($script:sheets -ge $document.PageCount) { $e.HasMorePages = $false; return }
     $page = $document.GetPage($script:sheets)
-    $bitmap = $null
     try {
-        # The driver's page area is in hundredths of an inch; Render-Sheet fits the page into
-        # it, so this is the same scale, turned back into hundredths for the draw rectangle.
-        $area = $e.MarginBounds
+        # The whole sheet of paper, in hundredths of an inch. Drawing starts at the printable
+        # area's corner, so the paper's own corner is the hard margin back from it. Not
+        # MarginBounds: those are the inch-wide margins of a document laid out by the printer,
+        # and the sheet carries its own.
+        $area = $e.PageBounds
+        $left = -$e.PageSettings.HardMarginX
+        $top = -$e.PageSettings.HardMarginY
         $w = $page.Size.Width
         $h = $page.Size.Height
+        # 1 when the paper matched the sheet: the sheet prints at its own size.
         $scale = [Math]::Min($area.Width / 100.0 * 96.0 / $w, $area.Height / 100.0 * 96.0 / $h)
         $dpi = [Math]::Min(600, [Math]::Max(72, $e.Graphics.DpiX))
-        $bitmap = Render-Sheet $page $area.Width $area.Height $dpi
         $drawW = $w * $scale / 96.0 * 100.0
         $drawH = $h * $scale / 96.0 * 100.0
-        $box = [System.Drawing.RectangleF]::new($area.Left + ($area.Width - $drawW) / 2.0, $area.Top + ($area.Height - $drawH) / 2.0, $drawW, $drawH)
-        $e.Graphics.DrawImage($bitmap, $box)
+        $box = [System.Drawing.RectangleF]::new($left + ($area.Width - $drawW) / 2.0, $top + ($area.Height - $drawH) / 2.0, $drawW, $drawH)
+        # The sheet is rendered at the printer's own resolution (up to 600 dpi), a printer dot
+        # per pixel: copied as it is, not resampled again.
+        $g = $e.Graphics
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
+        $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
+        $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+        Render-Sheet $page $area.Width $area.Height $dpi { param($image) $g.DrawImage($image, $box) }
     } finally {
-        if ($bitmap) { $bitmap.Dispose() }
         $page.Dispose()
     }
     $script:sheets++
+    Send-Progress $script:sheets
     $e.HasMorePages = ($script:sheets -lt $document.PageCount)
 })
+Send-Progress 0
 $printer.Print()
 Write-Output ('spooled ' + $document.PageCount + ' sheet(s)')

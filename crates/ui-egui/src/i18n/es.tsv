@@ -1560,6 +1560,8 @@
 	Fixed what could be fixed; {n} problems remain	Se ha corregido lo que se podía corregir; quedan {n} problemas
 	Custom stamps arrive on the web with file pickers for images	Los sellos personalizados llegarán a la versión web con los selectores de archivos de imagen
 	{file} is too large for a stamp (at most {n} MB)	{file} es demasiado grande para un sello (como máximo {n} MB)
+	Sending sheet {s} of {n} to {printer}…	Enviando la hoja {s} de {n} a {printer}…
+	Sending to {printer}…	Enviando a {printer}…
 	Sent to {printer}	Enviado a {printer}
 	Sent to {printer}: {msg}	Enviado a {printer}: {msg}
 	Choose a folder for the searchable files	Elige una carpeta para los archivos con búsqueda

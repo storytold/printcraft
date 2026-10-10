@@ -1,7 +1,7 @@
 //! The system print spooler. On macOS and Linux this is CUPS: printers come from `lpstat` — its
 //! queues, and the driverless destinations it can print to without one — and jobs are piped to
 //! `lp` with the job options (copies, collation, duplex, colour). On Windows the printers come
-//! from `Win32_Printer` and jobs are rendered with the in-box `Windows.Data.Pdf` and spooled
+//! from .NET's `PrinterSettings` and jobs are rendered with the in-box `Windows.Data.Pdf` and spooled
 //! with the driver's own settings — both through `powershell`, so no Win32 API is called here.
 //! Other platforms report that printing isn't available yet; the print-ready PDF can still be
 //! saved.
@@ -314,10 +314,10 @@ pub fn printers() -> Vec<Printer> {
     }
     #[cfg(windows)]
     {
-        // Win32_Printer through CIM: `wmic` was removed from Windows 11 (24H2) and
-        // `Get-CimInstance` is on every desktop install. A machine whose PowerShell is locked
-        // down lists no printers and the dialog offers only Save as PDF, as with CUPS that
-        // isn't running.
+        // The spooler's printers through .NET's `PrinterSettings`, the API the print script
+        // spools with, so every name listed is one it can print to (and several times quicker
+        // than a CIM query). A machine whose PowerShell is locked down lists no printers and
+        // the dialog offers only Save as PDF, as with CUPS that isn't running.
         match powershell_command(POWERSHELL_PRINTERS).output() {
             Ok(o) if o.status.success() => parse_windows_printers(&String::from_utf8_lossy(&o.stdout)),
             _ => Vec::new(),
@@ -356,11 +356,10 @@ fn powershell_command(script: &str) -> std::process::Command {
     c
 }
 
-/// The Windows printer list: one line per printer, `*` on the system default. UTF-8, through
-/// the output encoding the script sets first. Only the two properties the list needs are
-/// pulled, so a machine with many printers doesn't wait for the rest of each record.
+/// The Windows printer list: one line per printer, `*` on the system default (the printer a
+/// fresh `PrinterSettings` names). UTF-8, through the output encoding the script sets first.
 #[cfg(windows)]
-const POWERSHELL_PRINTERS: &str = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); Get-CimInstance Win32_Printer -Property Name, Default | ForEach-Object { if ($_.Default) { '*' + $_.Name } else { $_.Name } }";
+const POWERSHELL_PRINTERS: &str = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); Add-Type -AssemblyName System.Drawing; $d = (New-Object System.Drawing.Printing.PrinterSettings).PrinterName; foreach ($n in [System.Drawing.Printing.PrinterSettings]::InstalledPrinters) { if ($n -eq $d) { '*' + $n } else { $n } }";
 
 /// The Print dialog's printers from the Windows printer list: one per line, `*` before the
 /// system default (a Windows queue name may not contain `*`). The first `*` wins when a broken
@@ -387,19 +386,36 @@ pub fn parse_windows_printers(out: &str) -> Vec<Printer> {
 
 /// Send a print-ready PDF to the spooler. Returns the spooler's message (the job id).
 pub fn submit(pdf: &[u8], job: &Job) -> Result<String, PrintError> {
+    submit_with_progress(pdf, job, &mut |_, _| {})
+}
+
+/// [`submit`], told how far the job has got: `progress(sent, sheets)` after each sheet reaches
+/// the spooler. Windows renders every sheet before the spooler has it, which takes seconds, so it
+/// reports each one; CUPS takes the whole PDF at once and reports nothing.
+pub fn submit_with_progress(pdf: &[u8], job: &Job, progress: &mut dyn FnMut(usize, usize)) -> Result<String, PrintError> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
+        let _ = progress;
         submit_via(std::process::Command::new("lp"), pdf, job)
     }
     #[cfg(windows)]
     {
-        windows_submit(pdf, job, &[])
+        windows_submit(pdf, job, &[], progress)
     }
     #[cfg(not(any(windows, all(unix, not(target_arch = "wasm32")))))]
     {
-        let _ = (pdf, job);
+        let _ = (pdf, job, progress);
         Err(PrintError::Spool("printing to a printer isn't available on this platform yet; save the print-ready PDF instead".into()))
     }
+}
+
+/// A progress line from the print script: `progress SENT SHEETS`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn parse_progress(line: &str) -> Option<(usize, usize)> {
+    let mut parts = line.trim().strip_prefix("progress ")?.split_whitespace();
+    let sent = parts.next()?.parse().ok()?;
+    let sheets = parts.next()?.parse().ok()?;
+    (parts.next().is_none() && sent <= sheets).then_some((sent, sheets))
 }
 
 /// [`submit`] on Windows: the print-ready PDF goes to a job file of its own (WinRT reads from
@@ -407,23 +423,76 @@ pub fn submit(pdf: &[u8], job: &Job) -> Result<String, PrintError> {
 /// the job ended. `extra_envs` reaches the script too — the tests use it for
 /// `PDFCRAFT_PRINT_DRYRUN`, which renders without a printer.
 #[cfg(windows)]
-pub(crate) fn windows_submit(pdf: &[u8], job: &Job, extra_envs: &[(&str, &str)]) -> Result<String, PrintError> {
+pub(crate) fn windows_submit(
+    pdf: &[u8],
+    job: &Job,
+    extra_envs: &[(&str, &str)],
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<String, PrintError> {
     let path = windows_job_file(pdf)?;
-    let mut ps = powershell_command(WINDOWS_PRINT_SCRIPT);
-    for (key, value) in windows_env_vars(&path, job).into_iter().chain(extra_envs.iter().map(|(k, v)| (k.to_string(), v.to_string()))) {
-        ps.env(key, value);
-    }
-    let out = ps.output();
+    let ran = run_print_script(&path, job, extra_envs, progress);
     // Remove the job file before reporting: a spooler that refused the job must not leave the
     // document behind.
     let _ = std::fs::remove_file(&path);
-    let out = out.map_err(|e| PrintError::Spool(format!("the print spooler is not available: {e}")))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let err = if err.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { err };
+    ran
+}
+
+/// Run [`WINDOWS_PRINT_SCRIPT`] on a job file, passing its progress lines on as they come and
+/// returning the rest of what it said.
+#[cfg(windows)]
+fn run_print_script(
+    path: &std::path::Path,
+    job: &Job,
+    extra_envs: &[(&str, &str)],
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<String, PrintError> {
+    use std::io::{BufRead as _, Read as _};
+    use std::process::Stdio;
+    let mut ps = powershell_command(WINDOWS_PRINT_SCRIPT);
+    for (key, value) in windows_env_vars(path, job).into_iter().chain(extra_envs.iter().map(|(k, v)| (k.to_string(), v.to_string()))) {
+        ps.env(key, value);
+    }
+    let mut child = ps
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| PrintError::Spool(format!("the print spooler is not available: {e}")))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (said, errors) = std::thread::scope(|s| {
+        // Errors are read on a thread of their own, so a script that writes many can't stall
+        // behind a full pipe while its progress is read here.
+        let errors = std::thread::Builder::new().name("print errors".into()).spawn_scoped(s, move || {
+            let mut buf = Vec::new();
+            if let Some(mut e) = stderr {
+                let _ = e.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let mut said = Vec::new();
+        if let Some(out) = stdout {
+            // Bytes, not `lines()`: a line that isn't UTF-8 must not stop the reading, or the
+            // script would block on a pipe no one empties.
+            for line in std::io::BufReader::new(out).split(b'\n') {
+                let Ok(line) = line else { break };
+                let line = String::from_utf8_lossy(&line).trim_end().to_string();
+                match parse_progress(&line) {
+                    Some((sent, sheets)) => progress(sent, sheets),
+                    None => said.push(line),
+                }
+            }
+        }
+        let errors = errors.ok().and_then(|t| t.join().ok()).unwrap_or_default();
+        (said.join("\n").trim().to_string(), errors)
+    });
+    let status = child.wait().map_err(|e| PrintError::Spool(format!("the print spooler is not available: {e}")))?;
+    if !status.success() {
+        let err = String::from_utf8_lossy(&errors).trim().to_string();
+        let err = if err.is_empty() { said } else { err };
         return Err(PrintError::Spool(if err.is_empty() { "the print job was refused".into() } else { err }));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(said)
 }
 
 /// The job file [`windows_submit`] hands to `powershell`, in this user's own temporary folder:

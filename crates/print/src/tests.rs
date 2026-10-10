@@ -404,6 +404,17 @@ fn windows_printers_carry_one_default_and_keep_their_names() {
     assert_eq!(parse_windows_printers("\r\n"), Vec::new());
 }
 
+/// The print script's progress lines, and only those, are read as progress: anything else it
+/// says is the spooler's message.
+#[test]
+fn the_print_scripts_progress_lines_are_read_and_nothing_else() {
+    assert_eq!(spool::parse_progress("progress 0 3"), Some((0, 3)));
+    assert_eq!(spool::parse_progress("progress 3 3\r"), Some((3, 3)));
+    for other in ["spooled 3 sheet(s)", "progress", "progress 1", "progress 4 3", "progress 1 3 x", "progress a 3", "Progress 1 3", ""] {
+        assert_eq!(spool::parse_progress(other), None, "{other:?}");
+    }
+}
+
 #[test]
 fn the_windows_job_is_the_environment_of_the_print_script() {
     let path = std::path::Path::new("C:\\Users\\me\\AppData\\Local\\Temp\\pdfcraft-print-42.pdf");
@@ -484,7 +495,7 @@ fn the_print_script_renders_the_job_and_reaches_the_spooler() {
     let pdf = impose(&fixture(2), &settings(vec![0, 1], Layout::Size(SizeMode::Fit))).unwrap();
     // The printer name is deliberately wrong: the dry run stops before the driver is touched.
     let job = Job { printer: Some("no such printer".into()), title: "test.pdf".into(), ..Job::default() };
-    let dry = spool::windows_submit(&pdf, &job, &[("PDFCRAFT_PRINT_DRYRUN", "1")]);
+    let dry = spool::windows_submit(&pdf, &job, &[("PDFCRAFT_PRINT_DRYRUN", "1")], &mut |_, _| {});
     assert_eq!(dry.as_deref(), Ok("rendered 2 sheet(s)"), "{dry:?}");
 
     const NAME: &str = "PdfCraft Test Print";
@@ -499,13 +510,15 @@ fn the_print_script_renders_the_job_and_reaches_the_spooler() {
         return;
     }
     let job = Job { printer: Some(NAME.into()), title: "test.pdf".into(), ..Job::default() };
-    let sent = spool::submit(&pdf, &job);
+    let mut reported = Vec::new();
+    let sent = spool::submit_with_progress(&pdf, &job, &mut |sent, sheets| reported.push((sent, sheets)));
     let queued = windows_powershell(
         "if (Get-PrintJob -Name 'PdfCraft Test Print') { (Get-PrintJob -Name 'PdfCraft Test Print' | Measure-Object).Count } else { 0 }",
         &[],
     );
     let cleaned = windows_powershell("Get-PrintJob -Name 'PdfCraft Test Print' | Remove-PrintJob; Remove-Printer -Name 'PdfCraft Test Print'", &[]);
     assert!(sent.is_ok(), "{sent:?}");
+    assert_eq!(reported, [(0, 2), (1, 2), (2, 2)], "each sheet is reported as it reaches the spooler");
     assert_eq!(queued.as_deref().map(str::trim), Ok("1"), "the job is in the paused printer's queue: {queued:?}");
     assert!(cleaned.is_ok(), "the test printer is removed again: {cleaned:?}");
 }

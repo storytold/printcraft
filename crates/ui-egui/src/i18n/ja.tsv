@@ -1566,6 +1566,8 @@
 	Fixed what could be fixed; {n} problems remain	修正可能な項目を修正しました。問題が {n} 件残っています
 	Custom stamps arrive on the web with file pickers for images	Web 版のカスタムスタンプは画像ファイル選択に対応した際に利用可能になります
 	{file} is too large for a stamp (at most {n} MB)	{file} はスタンプの上限（{n} MB）を超えています
+	Sending sheet {s} of {n} to {printer}…	{printer} に用紙 {s} / {n} を送信しています…
+	Sending to {printer}…	{printer} に送信しています…
 	Sent to {printer}	{printer} に送信しました
 	Sent to {printer}: {msg}	{printer} に送信しました: {msg}
 	Choose a folder for the searchable files	検索可能なファイルの保存先フォルダーを選択

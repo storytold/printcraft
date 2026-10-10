@@ -1535,6 +1535,8 @@
 	Fixed what could be fixed; {n} problems remain	Minden javíthatót javítottunk; {n} probléma maradt
 	Custom stamps arrive on the web with file pickers for images	Az egyéni bélyegzők a webes változatban a képválasztóval együtt érkeznek
 	{file} is too large for a stamp (at most {n} MB)	{file} túl nagy bélyegzőnek (legfeljebb {n} MB)
+	Sending sheet {s} of {n} to {printer}…	{s}. lap / {n} küldése ide: {printer}…
+	Sending to {printer}…	Küldés ide: {printer}…
 	Sent to {printer}	Elküldve ide: {printer}
 	Sent to {printer}: {msg}	Elküldve ide: {printer}: {msg}
 	Choose a folder for the searchable files	Válassz mappát a kereshető fájloknak

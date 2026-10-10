@@ -1546,6 +1546,8 @@
 	Fixed what could be fixed; {n} problems remain	Alles Behebbare wurde behoben; {n} Probleme bleiben bestehen
 	Custom stamps arrive on the web with file pickers for images	Eigene Stempel kommen im Web zusammen mit der Bildauswahl
 	{file} is too large for a stamp (at most {n} MB)	{file} ist zu groß für einen Stempel (höchstens {n} MB)
+	Sending sheet {s} of {n} to {printer}…	Blatt {s} von {n} wird an {printer} gesendet…
+	Sending to {printer}…	Wird an {printer} gesendet…
 	Sent to {printer}	An {printer} gesendet
 	Sent to {printer}: {msg}	An {printer} gesendet: {msg}
 	Choose a folder for the searchable files	Wähle einen Ordner für die durchsuchbaren Dateien

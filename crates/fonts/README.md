@@ -41,6 +41,16 @@ set). Without that variable `CRAFT_FONTS` is empty and everything below copes:
   editor can use the first one that has all of the replacement's glyphs (the faces differ in
   coverage, e.g. of Cyrillic).
 - `SHIPPORI_MINCHO`: Shippori Mincho's bytes, or `None`.
+- `japanese_type3_plan` / `build_type3` (`type3.rs`): the Type 3 fallback font for text written into
+  generated appearances (FreeText, Fill & Sign). The plan picks one face as the editor does (the first
+  document face with a glyph for every character, else the first) and sorts the characters into the
+  ones it can draw and the ones it can't; the fonts and the widths come only from that plan, so
+  what is measured is what is drawn. Codes 1–240 per font, at most four fonts (960 characters);
+  the rest are reported as missing. `build_type3` hands the glyph streams (Flate), the ToUnicode
+  stream and the font descriptor to a callback, which returns the object to store: `doc.add` for
+  an indirect object, or the object itself when the caller makes it indirect later (annot does).
+  Greek and Cyrillic letters are respaced to their ink width, as in the editor. Without craft-fonts
+  `japanese_type3_plan` returns `None` and callers keep writing `?`.
 
 Generated Japanese Type 3 fonts record the fallback face's family and style in an indirect
 `FontDescriptor`. `pdf::Metrics::base_font` uses its `FontName` when the Type 3 dictionary has

@@ -783,7 +783,7 @@ status = "shipped"
 commands = []
 tools = []
 evidence = ["crates/render/src/raster.rs::widget_appearance_states", "crates/render/src/raster.rs::highlights_without_an_appearance_are_drawn", "crates/engine/src/tests.rs::comments_without_appearances_are_drawn_but_not_saved"]
-notes = "comments without /AP (FreeText, Ink, notes, stamps, shapes, markup) are drawn from their dictionaries in the page view, page_render and page images, never saved (a read-only document still gets the renderer's Highlight fallback only); Link borders without /AP and printing are not covered yet"
+notes = "comments without /AP (FreeText, Ink, notes, stamps, shapes, markup) are drawn from their dictionaries in the page view, page_render and page images, never saved (a read-only document still gets the renderer's Highlight fallback only); FreeText text outside WinAnsi is drawn with craft-fonts glyphs instead of ?; Link borders without /AP and printing are not covered yet"
 
 [[feature]]
 id = "view.render-error-isolation"
@@ -3602,8 +3602,8 @@ milestone = "M5"
 status = "shipped"
 commands = ["sign.fill.text"]
 tools = ["fill_sign_add"]
-evidence = ["crates/annot/src/tests.rs::fill_and_sign_items_are_drawn", "crates/ui-egui/tests/fill_sign.rs::text_marks_and_date"]
-notes = ""
+evidence = ["crates/annot/src/tests.rs::fill_and_sign_items_are_drawn", "crates/ui-egui/tests/fill_sign.rs::text_marks_and_date", "crates/annot/src/tests.rs::non_winansi_text_is_drawn_with_type3_fonts_and_reads_back"]
+notes = "text outside WinAnsi is drawn with craft-fonts Type 3 glyphs (stays ? without craft-fonts)"
 
 [[feature]]
 id = "comment.text-box"
@@ -3614,8 +3614,8 @@ milestone = "M5"
 status = "partial"
 commands = ["comment.freetext"]
 tools = ["comment_add"]
-evidence = ["crates/ui-egui/tests/comments.rs::sticky_note_composer_posts_and_returns_to_select", "crates/annot/src/tests.rs::text_box_text_and_colour_changes_are_drawn"]
-notes = "Helvetica text with colour, size and alignment; /RC (XHTML) and /DS are written and kept in step with edits; per-run formatting (bold/italic spans) is not yet"
+evidence = ["crates/ui-egui/tests/comments.rs::sticky_note_composer_posts_and_returns_to_select", "crates/annot/src/tests.rs::text_box_text_and_colour_changes_are_drawn", "crates/annot/src/tests.rs::non_winansi_text_is_drawn_with_type3_fonts_and_reads_back", "crates/annot/src/tests.rs::a_japanese_text_box_keeps_every_line_inside_its_rectangle"]
+notes = "Helvetica text with colour, size and alignment (letters outside WinAnsi are drawn with craft-fonts Type 3 glyphs and a ToUnicode map, and the box is sized to match; they stay ? without craft-fonts); /RC (XHTML) and /DS are written and kept in step with edits; per-run formatting (bold/italic spans) is not yet"
 
 [[feature]]
 id = "comment.callout"
@@ -5214,8 +5214,8 @@ milestone = "M5"
 status = "shipped"
 commands = ["sign.fill.text"]
 tools = ["fill_sign_add"]
-evidence = ["crates/ui-egui/tests/fill_sign.rs::text_marks_and_date", "crates/annot/src/tests.rs::fill_and_sign_items_are_drawn", "crates/automation/tests/automation.rs::fill_and_sign_through_tools"]
-notes = "typewriter FreeText, 10 pt Helvetica"
+evidence = ["crates/ui-egui/tests/fill_sign.rs::text_marks_and_date", "crates/annot/src/tests.rs::fill_and_sign_items_are_drawn", "crates/automation/tests/automation.rs::fill_and_sign_through_tools", "crates/automation/tests/automation.rs::fill_sign_text_outside_winansi_survives_saving_and_flattening"]
+notes = "typewriter FreeText, 10 pt Helvetica; letters outside WinAnsi (Japanese, Czech, Greek, ...) are drawn with Type 3 glyphs from craft-fonts and keep a ToUnicode map, so they save, flatten and extract as typed (without craft-fonts, or for a character no face has, they stay ?)"
 
 [[feature]]
 id = "form.fill-sign-marks"

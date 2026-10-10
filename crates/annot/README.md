@@ -10,7 +10,12 @@ Comments (annotations), ISO 32000-2 §12.5. Layer L3, depends on `pdfcraft-cos`,
 - **Appearance streams** (`appearance::build`) generated from the annotation dictionary, so new
   and restyled comments look the same in every viewer. Highlights multiply (`/BM /Multiply`).
   Note icons are PdfCraft's own drawings. Text boxes use standard Helvetica (WinAnsi), with
-  line breaking by approximate Helvetica proportions (no font program is bundled).
+  line breaking by approximate Helvetica proportions (no font program is bundled). Text WinAnsi
+  can't write (Japanese, Czech, Greek, ...) is split into runs: WinAnsi runs stay in Helvetica and
+  the rest uses Type 3 fonts (`/PCJp0`...) of craft-fonts glyphs with a ToUnicode map, nothing
+  embedded; without craft-fonts those characters stay `?`. `appearance::text_measure` and
+  `text_wrap` measure text the way it is drawn, so boxes are sized with them. `set_appearance`
+  makes the fonts' streams and descriptors indirect objects.
 - **Edits:** reply (`/IRT`), set review status (a `/State` reply, as Acrobat's "Set status"
   does), change text, move, resize, restyle, delete (with pop-up and replies).
 

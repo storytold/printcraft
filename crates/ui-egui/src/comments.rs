@@ -1235,11 +1235,11 @@ pub(crate) fn composer(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, 
 
 /// A text box sized to its text (at most 300 pt wide), hanging from its top-left corner.
 pub fn text_box_rect(at: [f64; 2], text: &str, size: f64) -> [f64; 4] {
-    use pdfcraft_engine::annot_text::{text_width, wrap};
+    use pdfcraft_engine::annot_text::{text_measure, text_wrap};
     let pad = 2.0;
-    let longest = text.lines().map(|l| text_width(l, size)).fold(0.0, f64::max);
+    let longest = text_measure(text, size);
     let w = (longest + 2.0 * pad + 4.0).clamp(40.0, 300.0);
-    let lines = wrap(text, size, w - 2.0 * pad).len().max(1);
+    let lines = text_wrap(text, size, w - 2.0 * pad).len().max(1);
     let h = lines as f64 * size * 1.2 + 2.0 * pad + 2.0;
     [at[0], at[1] - h, at[0] + w, at[1]]
 }
@@ -1543,5 +1543,25 @@ mod tests {
         let long = text_box_rect([0.0, 500.0], &"word ".repeat(80), 12.0);
         assert_eq!(long[2], 300.0);
         assert!(long[3] - long[1] > 50.0);
+    }
+
+    /// A box fitted to Japanese text uses the advances the text is drawn with (#506); Helvetica's
+    /// estimate is about half of a full-width character's advance and would make it too small.
+    #[test]
+    fn text_boxes_fit_text_outside_winansi_with_its_real_advances() {
+        use pdfcraft_engine::annot_text::{text_measure, text_width, text_wrap};
+        if pdfcraft_fonts::document_japanese_font().is_none() {
+            eprintln!("skipping text_boxes_fit_text_outside_winansi_with_its_real_advances: built without craft-fonts");
+            return;
+        }
+        let long = "これは日本語".repeat(10);
+        let r = text_box_rect([0.0, 500.0], &long, 12.0);
+        let lines = text_wrap(&long, 12.0, 300.0 - 4.0).len();
+        assert!(lines > pdfcraft_engine::annot_text::wrap(&long, 12.0, 296.0).len(), "more lines than Helvetica's estimate gives");
+        assert!((r[3] - r[1] - (lines as f64 * 12.0 * 1.2 + 6.0)).abs() < 1e-9, "height {}", r[3] - r[1]);
+        let short = "日本語";
+        let r = text_box_rect([0.0, 500.0], short, 12.0);
+        assert!((r[2] - r[0] - (text_measure(short, 12.0) + 8.0)).abs() < 1e-9, "width {}", r[2] - r[0]);
+        assert!(r[2] - r[0] > text_width(short, 12.0) + 8.0 + 1.0 && r[2] - r[0] > 40.0);
     }
 }

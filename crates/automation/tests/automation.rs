@@ -3917,3 +3917,27 @@ fn text_extract_with_a_rect_takes_one_column() {
         assert!(matches!(e, ToolError::InvalidArgs(_)), "{bad}: {e}");
     }
 }
+
+/// Fill & Sign text outside WinAnsi (#506) is drawn with fallback glyphs and still reads back
+/// as the typed text, in the saved file and after flattening.
+#[test]
+fn fill_sign_text_outside_winansi_survives_saving_and_flattening() {
+    if pdfcraft_fonts::document_japanese_font().is_none() {
+        eprintln!("skipping fill_sign_text_outside_winansi_survives_saving_and_flattening: built without craft-fonts");
+        return;
+    }
+    let dir = workdir("fill-sign-cjk");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    let typed = "日本語 Dvořák Ελληνικά";
+    ok(&mut a, "fill_sign_add", json!({ "doc": doc, "page": 1, "type": "text", "at": [40.0, 80.0], "text": typed }));
+    for (name, flatten) in [("kept.pdf", false), ("flat.pdf", true)] {
+        ok(&mut a, "doc_save", json!({ "doc": doc, "path": name, "flatten_fill_sign": flatten }));
+        let saved = ok(&mut a, "doc_open", json!({ "path": name }))["doc"].as_u64().unwrap();
+        let comments = ok(&mut a, "comment_list", json!({ "doc": saved }))["comments"].as_array().unwrap().clone();
+        assert_eq!(comments.iter().any(|c| c["contents"] == typed), !flatten, "{name}: the typewriter stays unless flattened");
+        let page = page_text(&mut a, saved).remove(0);
+        assert!(page.contains(typed), "{name}: the typed text reads back, got {page:?}");
+        assert!(!page.contains('?'), "{name}: no question marks, got {page:?}");
+    }
+}

@@ -188,14 +188,15 @@ fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Re
                 d.set(b"Resources".to_vec(), Object::Dict(res));
             })?;
             // The forms that were rewritten leave the resources with their old content — and the
-            // page-tree nodes above with the names the forms retired against inherited resources.
+            // page-tree nodes above with the names the forms retired, whether against the form's
+            // own resources or the ones it inherited.
             let after = doc.get(page.obj).as_dict().cloned().unwrap_or_default();
             let (_, now) = page_streams(doc, &after, pi)?;
             let mut gone = crate::tags::retired_names(&data.join(&b'\n'), &now.join(&b'\n'));
             gone.extend(out.inherited_gone.iter().cloned());
             gone.sort_unstable();
             gone.dedup();
-            crate::tags::retire_forms(doc, page.obj, &gone)?;
+            crate::tags::retire_forms(doc, page.obj, pi, &gone)?;
         }
     }
     Ok(total)

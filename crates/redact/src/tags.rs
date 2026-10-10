@@ -8,17 +8,20 @@
 //! that was rewritten (`/Stm`), and for object references (`/OBJR`) to removed annotations or
 //! forms. The parent tree forgets what no longer exists.
 //!
-//! Retirement owns names where they live. A name whose `Do` disappeared leaves the page's own
-//! /Resources — and every page-tree node above whose own /Resources still maps it: `/Resources`
-//! is an inheritable entry (ISO 32000-2, 7.8.3, Table 30), so an inherited entry is owned by the
-//! ancestor, and as long as the node maps the name the original object stays reachable and a
-//! full save keeps it. A node's entry only goes when no page still draws the name — in its own
-//! content, or through a form without its own /Resources (a form draws with the resources of the
-//! scope that drew it) — so a sibling that inherits and draws it keeps the entry and the object
-//! with it. When a page or such a form can't be read in full, nothing is retired from the tree:
-//! it could be drawing any name. Reads use the same model: a page-own /Resources shadows an
-//! inherited one whole (per entry, not per name), which `pdfcraft_model::pages` resolves into
-//! every page's dictionary.
+//! Retirement owns names where they live. A name whose `Do` disappeared — from a page's content,
+//! or from a rewritten form, whether that form drew with its own /Resources or with the resources
+//! it inherited — leaves the page's own /Resources and every page-tree node above whose own
+//! /Resources still maps it: `/Resources` is an inheritable entry (ISO 32000-2, 7.8.3, Table 30),
+//! so an inherited entry is owned by the ancestor, and as long as the node maps the name the
+//! original object stays reachable and a full save keeps it. An entry only goes when its owner's
+//! render no longer draws the name: for a node, when no page still draws it (in its own content,
+//! or inside a form the page draws, each followed with the resources that form draws with), so a
+//! sibling that still draws it keeps the entry and the object with it; for the page's own
+//! resources, when that page's render no longer draws it, so a name a rewritten form retired does
+//! not strip an entry the page still draws by another route. When a page or such a form can't be
+//! read in full, nothing is retired at that owner: it could be drawing any name. Reads use the
+//! same model: a page-own /Resources shadows an inherited one whole (per entry, not per name),
+//! which `pdfcraft_model::pages` resolves into every page's dictionary.
 
 use std::collections::{HashMap, HashSet};
 
@@ -479,27 +482,36 @@ pub(crate) fn retired_names(before: &[u8], after: &[u8]) -> Vec<Vec<u8>> {
 fn names_still_drawn(doc: &Document) -> Option<HashSet<Vec<u8>>> {
     let mut out = HashSet::new();
     for (pi, p) in pdfcraft_model::pages(doc).iter().enumerate() {
-        let (_, data) = crate::page_streams(doc, &p.dict, pi).ok()?;
-        let joined = data.join(&b'\n');
-        let top = names_in(&joined);
-        out.extend(top.iter().cloned());
-        let res = p.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
-        let xobjects = res.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
-        let mut seen = HashSet::new();
-        for name in &top {
-            let Some(entry) = xobjects.get(name) else { continue };
-            let Object::Stream(s) = &*doc.resolve(entry) else { continue };
-            if s.dict.name(b"Subtype") != Some(b"Form") {
-                continue;
-            }
-            if !entry.as_ref().is_some_and(|r| seen.insert(r)) {
-                continue;
-            }
-            if seen.len() > MAX_FORMS {
-                return None;
-            }
-            names_below(doc, s, &res, &mut out, &mut seen, 1)?;
+        out.extend(names_drawn_on_page(doc, pi, p)?);
+    }
+    Some(out)
+}
+
+/// The XObject names one page still draws: in its own content, and inside the forms it draws
+/// (each followed with the resources that form draws with — its own, or the enclosing scope's).
+/// `None` when the page or a drawn form can't be read in full: it could be drawing any name.
+fn names_drawn_on_page(doc: &Document, pi: usize, p: &pdfcraft_model::Page) -> Option<HashSet<Vec<u8>>> {
+    let mut out = HashSet::new();
+    let (_, data) = crate::page_streams(doc, &p.dict, pi).ok()?;
+    let joined = data.join(&b'\n');
+    let top = names_in(&joined);
+    out.extend(top.iter().cloned());
+    let res = p.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
+    let xobjects = res.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
+    let mut seen = HashSet::new();
+    for name in &top {
+        let Some(entry) = xobjects.get(name) else { continue };
+        let Object::Stream(s) = &*doc.resolve(entry) else { continue };
+        if s.dict.name(b"Subtype") != Some(b"Form") {
+            continue;
         }
+        if !entry.as_ref().is_some_and(|r| seen.insert(r)) {
+            continue;
+        }
+        if seen.len() > MAX_FORMS {
+            return None;
+        }
+        names_below(doc, s, &res, &mut out, &mut seen, 1)?;
     }
     Some(out)
 }
@@ -534,23 +546,39 @@ fn names_below(doc: &Document, s: &Stream, parent: &Dict, out: &mut HashSet<Vec<
     Some(())
 }
 
-/// The XObjects the page drew before but no longer draws by one of the `gone` names (from the
-/// content before and after, plus what rewritten forms retired against resources they
-/// inherited): they leave the page's /Resources, and they leave every page-tree node above that
-/// owns an entry of the same name — that is where an inherited entry lives, and while the node
-/// maps the name the original object stays reachable and a full save keeps it. A node's entry is
-/// only removed when no page still draws the name, so a sibling that inherits and draws it keeps
-/// the entry, and the original with it. The retired XObjects are returned.
-pub(crate) fn retire_forms(doc: &mut Document, page: ObjRef, gone: &[Vec<u8>]) -> Result<Vec<ObjRef>, RedactError> {
+/// The XObjects the page no longer draws by one of the `gone` names (from the content before and
+/// after, plus what rewritten forms retired — against the form's own resources or the resources
+/// it inherited): they leave the page's /Resources, and they leave every page-tree node above
+/// that owns an entry of the same name — that is where an inherited entry lives, and while the
+/// node maps the name the original object stays reachable and a full save keeps it. An entry only
+/// goes when its owner's render no longer draws the name — for a node, no page; for the page's
+/// own resources, the page itself — so a sibling that still draws the name keeps the entry, and
+/// the original with it. The retired XObjects are returned.
+pub(crate) fn retire_forms(doc: &mut Document, page: ObjRef, pi: usize, gone: &[Vec<u8>]) -> Result<Vec<ObjRef>, RedactError> {
     let mut forms = Vec::new();
     if gone.is_empty() {
         return Ok(forms);
     }
-    // The page's own resources first.
+    // The page's own resources first. An entry only goes when this page's render — its own
+    // content, and the forms it still draws, each followed with the resources it draws with —
+    // no longer draws the name: a rewritten form may retire a name the page still draws by
+    // another route, and that entry keeps the original the page still shows. A sibling's
+    // same-named entry elsewhere does not keep this page's entry: page-own shadows an inherited
+    // one per entry. When the page or a drawn form can't be read in full, nothing goes: it
+    // could be drawing any name.
+    let mut drawn: Option<Option<HashSet<Vec<u8>>>> = None;
     if let Some(mut res) = doc.get(page).as_dict().and_then(|d| d.get(b"Resources").and_then(|r| doc.dict(r)))
         && let Some(mut xo) = res.get(b"XObject").and_then(|x| doc.dict(x))
     {
         for n in gone {
+            if !xo.contains(n) {
+                continue;
+            }
+            let drawn = drawn.get_or_insert_with(|| pdfcraft_model::pages(doc).get(pi).and_then(|p| names_drawn_on_page(doc, pi, p)));
+            let Some(drawn) = drawn else { break };
+            if drawn.contains(n) {
+                continue;
+            }
             if let Some(r) = xo.remove(n).and_then(|o| o.as_ref()) {
                 forms.push(r);
             }

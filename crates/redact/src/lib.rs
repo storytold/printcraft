@@ -21,9 +21,11 @@
 //! one, and a name that resolves nowhere is left alone (as any unknown name is). Writes go the
 //! other way: everything a run adds (cleared copies, rewritten forms) is written into the page's
 //! own dictionary, which then carries a private copy of the effective resources, and retirement
-//! (`tags::retire_forms`) removes superseded names both from the page's copy and from every node
-//! above that owns one — while a node's entry stays as long as any page still draws that name,
-//! so a sibling that inherits it keeps what it shows.
+//! (`tags::retire_forms`) removes superseded names — whatever resources the form that retired
+//! them drew with, its own or inherited — both from the page's copy and from every node above
+//! that owns one. An entry stays as long as its owner's render still draws the name: a node's
+//! while any page does, the page's own while the page does, so a sibling that inherits a name
+//! keeps what it shows, and a name the page still draws by another route keeps its entry.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -736,12 +738,13 @@ fn redact_content(doc: &mut Document, page: &pdfcraft_model::Page, pi: usize, re
     let (before, now) = (data.join(&b'\n'), new_data.join(&b'\n'));
     let (changed_ids, empty_ids) = tags::touched(&before, &now);
     let mut gone = tags::retired_names(&before, &now);
-    // Names rewritten forms retired against resources they inherited from this page: the
-    // originals leave the page's resources — and the tree nodes above — with them.
+    // Names rewritten forms retired — against the form's own resources or the resources it
+    // inherited from this page: the originals leave the page's resources — and the tree nodes
+    // above — with them (each entry only where its owner no longer draws the name).
     gone.extend(out.inherited_gone.iter().cloned());
     gone.sort_unstable();
     gone.dedup();
-    let rewritten = tags::retire_forms(doc, page.obj, &gone)?;
+    let rewritten = tags::retire_forms(doc, page.obj, pi, &gone)?;
     report.tags += tags::clean(doc, page.obj, &changed_ids, &empty_ids, &rewritten)?;
     Ok(())
 }

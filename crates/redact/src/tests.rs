@@ -470,6 +470,181 @@ fn the_proof_does_not_pass_while_an_inherited_scan_still_draws() {
     assert!(proof.entries.iter().any(|e| e.status == crate::verify::Status::Failed && e.detail.contains("image")), "{}", proof.to_text());
 }
 
+// FF-1b (critical, found by the adversarial audit): a form XObject WITH its own /Resources that
+// gets rewritten strips the retired names from its own frozen copy of /Resources, but the
+// propagation of that retirement upward was gated on the form having no own resources. So the
+// page's own /XObject — or a page-tree node — kept mapping the original image name to the
+// original object: apply succeeded, the shipped proof passed, and the original image stayed in
+// every full save. The leak reproduces with and without page-tree inheritance: the boundary is
+// the root cause, not inheritance.
+
+/// Three pages inheriting /Resources from the page-tree root; `c3_dict`/`c3` build page 3's
+/// content stream (extra objects follow the three content streams, so the first extra is 9).
+fn hostile_three_pages(root_xo: &str, c1: &[u8], c2: &[u8], c3_dict: &str, c3: &[u8], extra: Vec<Vec<u8>>) -> Document {
+    let mut objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        format!("<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 300 300] /Resources << /XObject << {root_xo} >> >> >>")
+            .into_bytes(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 7 0 R >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 8 0 R >>".to_vec(),
+        stream("", c1),
+        stream("", c2),
+        stream(c3_dict, c3),
+    ];
+    objs.extend(extra);
+    pdf(objs)
+}
+
+#[test]
+fn ff1b_an_own_resources_form_retires_the_scan_from_its_owners_above() {
+    // The outer form's OWN /Resources map both /InnerFm and /Im0 (the scan), so the inner form's
+    // draw resolves; the page-tree root also owns an /Im0 entry for the same object. Rewriting
+    // the outer form strips /Im0 from its frozen copy — and must report the retirement up, so
+    // the entry nothing draws any more leaves the root and the original leaves the saved file.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let outer = stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /InnerFm 11 0 R /Im0 10 0 R >> >>",
+        b"q 8 0 0 8 0 0 cm /InnerFm Do Q",
+    );
+    let inner = stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300]", b"q 8 0 0 8 0 0 cm /Im0 Do Q");
+    let mut doc = hostile_three_pages("/Fm 9 0 R /Im0 10 0 R", b"0 g", b"q 8 0 0 8 10 10 cm /Fm Do Q", "", b"0 g", vec![outer, img, inner]);
+    mark(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.forms_rewritten), (1, 2), "{r:?}");
+    let c = content(&doc, 1);
+    assert!(!c.contains("/Im0") && c.contains("/PCRedacted"), "{c}");
+    assert!(!xobjects_of(&doc, 1).contains(b"Im0"), "the page's copy lost the retired name");
+    assert!(!root_xobjects(&doc).contains(b"Im0"), "the root's entry — which nothing draws any more — went with it");
+    assert_eq!(under(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]]), 0);
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(!saved.windows(4).any(|w| w == b"/Im0"), "the scan's name is not in the saved file");
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the scan's bytes are not in the saved file");
+}
+
+#[test]
+fn ff1b_the_own_resources_boundary_leaks_without_inheritance_too() {
+    // The same construction entirely in the page's OWN resources — no page-tree inheritance
+    // anywhere. The rewritten outer form froze a clean copy of its own resources, but the
+    // page's own /XObject kept mapping /Im0 to the original scan: the leak is the
+    // own-resources boundary itself.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let outer = stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /InnerFm 9 0 R /Im0 8 0 R >> >>",
+        b"q 8 0 0 8 0 0 cm /InnerFm Do Q",
+    );
+    let inner = stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300]", b"q 8 0 0 8 0 0 cm /Im0 Do Q");
+    let mut doc = one_page(b"q 8 0 0 8 10 10 cm /Fm Do Q", "/XObject << /Fm 7 0 R /Im0 8 0 R >>", vec![outer, img, inner]);
+    mark(&mut doc, 0, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.forms_rewritten), (1, 2), "{r:?}");
+    assert!(!xobjects_of(&doc, 0).contains(b"Im0"), "the page's own /XObject lost the retired name");
+    assert_eq!(under(&mut doc, 0, &[[5.0, 5.0, 25.0, 25.0]]), 0);
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(!saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the scan's bytes are not in the saved file");
+}
+
+#[test]
+fn ff1b_a_scan_an_own_resources_form_never_drew_is_not_retired() {
+    // The audit's literal construction: the outer form's own /Resources map only /InnerFm, so
+    // the inner form's /Im0 resolves against nothing — the scan is never drawn and never
+    // processed. Nothing may be retired then: no `Do` disappeared, and the root's unsuperseded
+    // entry keeps the object in the file.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let outer = stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /InnerFm 11 0 R >> >>",
+        b"q 8 0 0 8 0 0 cm /InnerFm Do Q",
+    );
+    let inner = stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300]", b"q 8 0 0 8 0 0 cm /Im0 Do Q");
+    let mut doc = hostile_three_pages("/Fm 9 0 R /Im0 10 0 R", b"0 g", b"q 8 0 0 8 10 10 cm /Fm Do Q", "", b"0 g", vec![outer, img, inner]);
+    mark(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.images_cleared, r.forms_rewritten), (0, 0, 0), "{r:?}");
+    assert!(root_xobjects(&doc).contains(b"Im0"), "the root's entry was never superseded");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the scan was never redacted, so it stays");
+}
+
+#[test]
+fn ff1c_an_unreadable_sibling_page_fails_apply_closed() {
+    // Page 2 draws the inherited scan and is redacted; page 3's content stream is unreadable.
+    // The proof cannot verify such a page (it could be drawing anything), so apply refuses
+    // rather than ship a file it cannot vouch for — it must not succeed with a half-done job.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let mut doc = hostile_three_pages(
+        "/Im0 9 0 R",
+        b"0 g",
+        b"q 8 0 0 8 10 10 cm /Im0 Do Q",
+        "/Filter /DCTDecode",
+        b"\xff\xd8\xff\xe0 not-really-jpeg \x00\x01\xff",
+        vec![img],
+    );
+    mark(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]], "");
+    assert!(apply(&mut doc, None).is_err(), "apply must refuse what the proof cannot verify");
+}
+
+#[test]
+fn ff1c_an_unreadable_form_on_an_untouched_page_fails_apply_closed() {
+    // The same fail-closed path through content apply may tolerate: page 3 is readable but
+    // draws a corrupt (undecodable) form. A form that can't be read in full could be drawing
+    // anything, so the run still refuses.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    // A form whose raw Flate data is garbage: /Length 8 raw bytes that do not inflate.
+    let bad_form = {
+        let mut v = b"<< /Type /XObject /Subtype /Form /BBox [0 0 300 300] /Filter /FlateDecode /Length 8 >>\nstream\n".to_vec();
+        v.extend_from_slice(b"\x00\x01\x02\x03\x04\x05\x06\x07");
+        v.extend_from_slice(b"\nendstream");
+        v
+    };
+    let mut doc = hostile_three_pages("/Im0 9 0 R /Fm3 10 0 R", b"0 g", b"q 8 0 0 8 10 10 cm /Im0 Do Q", "/Fm3 Do", b"", vec![img, bad_form]);
+    mark(&mut doc, 1, &[[5.0, 5.0, 25.0, 25.0]], "");
+    assert!(apply(&mut doc, None).is_err(), "apply must refuse what the proof cannot verify");
+}
+
+#[test]
+fn a_name_a_form_retires_but_the_page_still_draws_keeps_its_entry() {
+    // The page draws /Im0 out in the open and also through a form whose OWN /Resources map the
+    // same /Im0 to the same image; only the form's draw is covered. The rewrite retires /Im0
+    // inside the form and the name now propagates up — but the page's own entry must stay:
+    // the page still draws the name by another route, and stripping it would blank content
+    // nobody redacted and drop the image from the file.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let form = stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Im0 7 0 R >> >>", b"q 8 0 0 8 0 0 cm /Im0 Do Q");
+    let mut doc = one_page(b"q 8 0 0 8 100 100 cm /Im0 Do Q /Fm Do", "/XObject << /Im0 7 0 R /Fm 8 0 R >>", vec![img, form]);
+    mark(&mut doc, 0, &[[0.0, 0.0, 20.0, 20.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.forms_rewritten), (1, 1), "{r:?}");
+    assert!(xobjects_of(&doc, 0).contains(b"Im0"), "the page still draws /Im0: the entry stays");
+    assert!(content(&doc, 0).contains("/Im0 Do"), "the open draw is untouched");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the still-drawn image stays in the file");
+}
+
+#[test]
+fn a_resource_less_form_retiring_a_drawn_name_keeps_the_entry_too() {
+    // The same corner through a form WITHOUT own /Resources, which drew the page's /Im0. Its
+    // retired name always propagated up — but the page's own entry may still only go when the
+    // page itself no longer draws the name: the old unconditional strip blanked the open draw
+    // and dropped the still-drawn image from the saved file.
+    let scan = [0xCAu8, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+    let img = stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8", &scan);
+    let form = stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300]", b"q 8 0 0 8 0 0 cm /Im0 Do Q");
+    let mut doc = one_page(b"q 8 0 0 8 100 100 cm /Im0 Do Q /Fm Do", "/XObject << /Im0 7 0 R /Fm 8 0 R >>", vec![img, form]);
+    mark(&mut doc, 0, &[[0.0, 0.0, 20.0, 20.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.images_removed, r.forms_rewritten), (1, 1), "{r:?}");
+    assert!(xobjects_of(&doc, 0).contains(b"Im0"), "the page still draws /Im0: the entry stays");
+    assert!(content(&doc, 0).contains("/Im0 Do"), "the open draw is untouched");
+    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+    assert!(saved.windows(scan.len()).any(|w| w == scan.as_slice()), "the still-drawn image stays in the file");
+}
+
 #[test]
 fn vectors_are_removed_or_clipped_and_inline_images_go() {
     let src = b"0 g 10 10 20 20 re f 0 0 300 300 re f q 10 0 0 10 50 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \x80 EI Q 1 0 0 RG 150 150 m 160 160 l S";

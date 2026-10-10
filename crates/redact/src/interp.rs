@@ -104,9 +104,10 @@ pub(crate) struct Output {
     /// Property lists (resource name, list) that held alternate text of removed content, with
     /// that text taken out; the caller puts them into the scope's `/Properties` resources.
     pub properties: Vec<(Vec<u8>, Dict)>,
-    /// Names retired against resources this scope INHERITED (a form without its own /Resources
-    /// drew them with the resources of the scope that drew the form): they must leave the page's
-    /// own resources and the page-tree nodes above, or the originals stay reachable (apply mode).
+    /// Names this scope's rewritten forms retired (from the form's own resources or from the
+    /// resources it inherited): they must leave every map above that still holds them — the
+    /// page's own resources and the page-tree nodes — or the originals stay reachable (apply
+    /// mode).
     pub inherited_gone: Vec<Vec<u8>>,
 }
 
@@ -1285,12 +1286,12 @@ fn form_xobject(
         gone.sort_unstable();
         gone.dedup();
     }
-    // A form without its own /Resources drew with the resources of the scope that drew it: its
-    // retired names must leave those (the page's copy and the page-tree nodes above), not only
-    // this rewritten form.
-    if own.is_none() {
-        out.inherited_gone.extend(gone.iter().cloned());
-    }
+    // Every retired name is reported up, whatever resources the form drew with: with its own
+    // /Resources the rewrite froze a clean copy, but the page's own /XObject — or a page-tree
+    // node — may still map the same name to the very same object, and the original would stay
+    // reachable in every full save. The callers retire only what no page draws any more, so a
+    // sibling that still draws the name keeps it, and the object with it.
+    out.inherited_gone.extend(gone.iter().cloned());
     if !inner.xobjects.is_empty() || !gone.is_empty() || !inner.properties.is_empty() {
         let mut res = res;
         let mut xo = res_dict(doc, &res, b"XObject");

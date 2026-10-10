@@ -24,6 +24,24 @@ fn page_of(tok: &str, count: usize, labels: &[String]) -> Result<usize, PrintErr
     }
 }
 
+/// Split a range whose endpoint is a logical page label containing a hyphen, such
+/// as "A-1-A-3" or "A-2-". The plain range parser must not mistake the first
+/// hyphen inside the label for the delimiter between endpoints.
+fn hyphenated_label_range(part: &str, count: usize, labels: &[String]) -> Option<(usize, usize)> {
+    for (split, _) in part.match_indices('-') {
+        let (Some(first), Some(last)) = (part.get(..split), part.get(split + 1..)) else { continue };
+        let (first, last) = (first.trim(), last.trim());
+        // Avoid changing the meaning of ordinary numeric and open-ended ranges.
+        if !labels.iter().any(|l| l.contains('-') && (l == first || l == last)) {
+            continue;
+        }
+        let from = if first.is_empty() { 0 } else { page_of(first, count, labels).ok()? };
+        let to = if last.is_empty() { count.checked_sub(1)? } else { page_of(last, count, labels).ok()? };
+        return Some((from, to));
+    }
+    None
+}
+
 /// The pages to print (0-based, in print order). `range` is `None` for all pages; it may list
 /// numbers and labels with `-` ranges (open-ended allowed: `5-`, `-3`). The subset counts the
 /// selected pages (the first selected is "odd"), as Acrobat does.
@@ -33,6 +51,18 @@ pub fn select_pages(count: usize, range: Option<&str>, labels: &[String], subset
         None => pages.extend(0..count),
         Some(r) => {
             for part in r.split([',', ';']).map(str::trim).filter(|p| !p.is_empty()) {
+                // A complete label (e.g. "A-1") still wins over interpreting it as a range.
+                // A range of such labels (e.g. "A-1-A-3") needs a later '-' split.
+                if !labels.iter().any(|l| l == part)
+                    && let Some((from, to)) = hyphenated_label_range(part, count, labels)
+                {
+                    if from <= to {
+                        pages.extend(from..=to);
+                    } else {
+                        pages.extend((to..=from).rev());
+                    }
+                    continue;
+                }
                 match part.split_once('-') {
                     // A label may itself contain a dash ("A-1"): try the whole token first.
                     Some(_) if labels.iter().any(|l| l == part) => pages.push(page_of(part, count, labels)?),

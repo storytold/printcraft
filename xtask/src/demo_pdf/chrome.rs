@@ -94,6 +94,10 @@ pub fn print_to_pdf(chrome: &Path, html: &Path, pdf: &Path, log: &Path) -> Resul
 
     let started = Instant::now();
     let mut last_len = None;
+    // Chrome's Skia back-end writes the PDF incrementally, and every increment ends with its own
+    // `%%EOF`: a stable file that looks complete can still grow while later pages rasterise. Only
+    // treat the file as finished after the size has been quiet for several consecutive polls.
+    let mut quiet_polls = 0;
     loop {
         if let Some(status) = child.try_wait()? {
             if is_complete(pdf) {
@@ -102,10 +106,15 @@ pub fn print_to_pdf(chrome: &Path, html: &Path, pdf: &Path, log: &Path) -> Resul
             bail!("Chrome exited with {status} without writing {}; see {}", pdf.display(), log.display());
         }
         let len = fs::metadata(pdf).map(|m| m.len()).ok();
-        if len.is_some() && len == last_len && is_complete(pdf) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(());
+        if len == last_len && len.is_some() && is_complete(pdf) {
+            quiet_polls += 1;
+            if quiet_polls >= 10 {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(());
+            }
+        } else {
+            quiet_polls = 0;
         }
         last_len = len;
         if started.elapsed() > Duration::from_secs(120) {

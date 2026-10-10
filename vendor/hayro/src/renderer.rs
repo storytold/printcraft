@@ -114,17 +114,23 @@ fn resampling_scratch_byte_len(
 
 /// PdfCraft patch: validate output, crossed intermediate and filter-work bounds before planning.
 /// Source width × target height also bounds PicScale's smaller single-threaded four-row scratch.
+/// Nearest-neighbour (`!interpolate`) has none of those: it copies source pixels into the target,
+/// so only the source and target buffers are bounded.
 fn resampling_byte_len(
     source: (u32, u32),
     target: (u32, u32),
     channels: usize,
     data_len: usize,
     max_pixels: u64,
+    interpolate: bool,
 ) -> Option<usize> {
     if source_byte_len(source.0, source.1, channels, max_pixels)? != data_len {
         return None;
     }
     let target_len = image_byte_len(target.0, target.1, channels, max_pixels)?;
+    if !interpolate {
+        return Some(target_len);
+    }
     resampling_scratch_byte_len(source, target, channels, max_pixels)?;
     source_byte_len(source.0, target.1, channels, max_pixels)?;
     if source.0 > MAX_RESAMPLING_SOURCE_SIDE || source.1 > MAX_RESAMPLING_SOURCE_SIDE {
@@ -141,6 +147,7 @@ fn resampling_byte_len(
 /// PdfCraft patch: image dimensions selected before allocating resampling buffers.
 /// Exported for PdfCraft's small, metadata-only regression tests. `None` rejects invalid
 /// sources/scales or an over-budget target/intermediate; the caller may retain a valid source.
+/// `interpolate` selects the Catmull-Rom limits; nearest-neighbour (`false`) skips them.
 #[doc(hidden)]
 pub fn image_resampling_size(
     width: u32,
@@ -150,6 +157,7 @@ pub fn image_resampling_size(
     x_scale: f32,
     y_scale: f32,
     max_pixels: u64,
+    interpolate: bool,
 ) -> Option<(u32, u32)> {
     if !x_scale.is_finite() || !y_scale.is_finite() || x_scale <= 0.0 || y_scale <= 0.0 {
         return None;
@@ -165,7 +173,14 @@ pub fn image_resampling_size(
     } else {
         (width, height)
     };
-    resampling_byte_len((width, height), target, channels, data_len, max_pixels)?;
+    resampling_byte_len(
+        (width, height),
+        target,
+        channels,
+        data_len,
+        max_pixels,
+        interpolate,
+    )?;
     Some(target)
 }
 
@@ -173,6 +188,49 @@ pub fn image_resampling_size(
 fn image_buffer(len: usize) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve_exact(len).ok()?;
+    Some(out)
+}
+
+/// PdfCraft patch (#624): the source index that PicScale's nearest-neighbour plan copies for
+/// destination `index` of `dst` samples taken from `src`. It is the same fixed-point centre
+/// sampling as `ResampleNearestPlan`, so these are the samples a nearest resize would copy.
+fn nearest_source_index(src: u32, dst: u32, index: u32) -> usize {
+    let step = (u64::from(src) << 32) / u64::from(dst);
+    ((u64::from(index) * step + (step >> 1)) >> 32) as usize
+}
+
+/// PdfCraft patch (#624): nearest-resizes a colour image and its same-sized soft mask straight
+/// into premultiplied RGBA of `target` size. Colour and mask come from the same source pixel, so
+/// this equals a nearest resize of the expanded RGBA followed by premultiplying each pixel.
+fn nearest_premultiplied_rgba(
+    color: &ImageData,
+    alpha: &[u8],
+    source: (u32, u32),
+    target: (u32, u32),
+) -> Option<Vec<u8>> {
+    let (samples, channels) = match color {
+        ImageData::Luma(luma) => (luma.data.as_slice(), 1),
+        ImageData::Rgb(rgb) => (rgb.data.as_slice(), 3),
+    };
+    let mut out = image_buffer(image_byte_len(target.0, target.1, 4, MAX_IMAGE_PIXELS)?)?;
+    for ty in 0..target.1 {
+        let sy = nearest_source_index(source.1, target.1, ty);
+        for tx in 0..target.0 {
+            let si = sy * source.0 as usize + nearest_source_index(source.0, target.0, tx);
+            let [r, g, b] = match samples.get(si * channels..si * channels + channels)? {
+                [v] => [*v; 3],
+                [r, g, b] => [*r, *g, *b],
+                _ => return None,
+            };
+            let a = *alpha.get(si)?;
+            out.extend_from_slice(
+                &AlphaColor::from_rgba8(r, g, b, a)
+                    .premultiply()
+                    .to_rgba8()
+                    .to_u8_array(),
+            );
+        }
+    }
     Some(out)
 }
 
@@ -482,9 +540,19 @@ impl Renderer {
         new_width: u32,
         new_height: u32,
         pixel_format: ImagePixelFormat,
+        interpolate: bool,
     ) -> (Vec<u8>, u32, u32) {
+        // PdfCraft patch (#624): `/Interpolate` governs the pre-minification pass too. Using
+        // Catmull-Rom here for an image that did not request interpolation blends hard edges
+        // before ImageQuality::Low gets a chance to sample it. Keep the pre-resize (and its
+        // bounded memory/performance behaviour), but use nearest-neighbour when interpolation
+        // is disabled. PDF's default for `/Interpolate` is false.
+        let nearest = Scaler::new(ResamplingFunction::Nearest);
+        let scaler = if interpolate { &self.scaler } else { &nearest };
         let resized = match pixel_format {
             ImagePixelFormat::Luma => self.resize_image_data_impl::<1>(
+                scaler,
+                interpolate,
                 data,
                 src_width,
                 src_height,
@@ -495,6 +563,8 @@ impl Renderer {
                 },
             ),
             ImagePixelFormat::Rgb => self.resize_image_data_impl::<3>(
+                scaler,
+                interpolate,
                 data,
                 src_width,
                 src_height,
@@ -505,6 +575,8 @@ impl Renderer {
                 },
             ),
             ImagePixelFormat::Rgba => self.resize_image_data_impl::<4>(
+                scaler,
+                interpolate,
                 data,
                 src_width,
                 src_height,
@@ -528,6 +600,8 @@ impl Renderer {
 
     fn resize_image_data_impl<const N: usize>(
         &self,
+        scaler: &Scaler,
+        interpolate: bool,
         data: Vec<u8>,
         src_width: u32,
         src_height: u32,
@@ -548,19 +622,25 @@ impl Renderer {
                 N,
                 data.len(),
                 MAX_IMAGE_PIXELS,
+                interpolate,
             )?;
             let source_size = ImageSize::new(src_width as usize, src_height as usize);
             let target_size = ImageSize::new(new_width as usize, new_height as usize);
             let src = ImageStore::<u8, N>::from_slice(&data, source_size.width, source_size.height)
                 .ok()?;
-            let plan = plan(&self.scaler, source_size, target_size).ok()?;
+            let plan = plan(scaler, source_size, target_size).ok()?;
             let scratch_len = plan.scratch_size();
-            let scratch_bound = resampling_scratch_byte_len(
-                (src_width, src_height),
-                (new_width, new_height),
-                N,
-                MAX_IMAGE_PIXELS,
-            )?;
+            // Nearest-neighbour needs no scratch, so any scratch it reports is refused.
+            let scratch_bound = if interpolate {
+                resampling_scratch_byte_len(
+                    (src_width, src_height),
+                    (new_width, new_height),
+                    N,
+                    MAX_IMAGE_PIXELS,
+                )?
+            } else {
+                0
+            };
             if scratch_len > scratch_bound {
                 return None;
             }
@@ -642,6 +722,7 @@ impl Renderer {
             x_scale,
             y_scale,
             MAX_IMAGE_PIXELS,
+            interpolate,
         ) {
             Some(target) => target,
             None => {
@@ -657,17 +738,33 @@ impl Renderer {
                 (source_width, source_height)
             }
         };
-        if requested_resize && self.in_type3_glyph {
+        // PdfCraft patch (#624): High is bicubic and would blend the nearest pre-resize of an image
+        // that did not request interpolation, so only interpolated glyph images are promoted.
+        if requested_resize && self.in_type3_glyph && interpolate {
             quality = ImageQuality::High;
         }
         let needs_resize = (new_width, new_height) != (source_width, source_height);
 
+        // PdfCraft patch (#624): a minified image with a soft mask that is not interpolated is
+        // nearest-sampled straight into premultiplied target RGBA. That skips the full-resolution
+        // RGBA copy below and the premultiply pass after it.
+        let direct = match &alpha_data {
+            Some(alpha) if needs_resize && !interpolate => nearest_premultiplied_rgba(
+                &image_data,
+                &alpha.data,
+                (source_width, source_height),
+                (new_width, new_height),
+            ),
+            _ => None,
+        };
+        let premultiplied = direct.is_some();
         // Preserve the single-channel/RGB fast paths. With alpha, expand directly to RGBA;
         // every source and alpha length was validated before zipping or allocating.
-        let (data, format) = match (image_data, alpha_data) {
-            (ImageData::Luma(luma), None) => (luma.data, ImagePixelFormat::Luma),
-            (ImageData::Rgb(rgb), None) => (rgb.data, ImagePixelFormat::Rgb),
-            (image, Some(alpha)) => {
+        let (data, format) = match (direct, image_data, alpha_data) {
+            (Some(rgba), _, _) => (rgba, ImagePixelFormat::Rgba),
+            (None, ImageData::Luma(luma), None) => (luma.data, ImagePixelFormat::Luma),
+            (None, ImageData::Rgb(rgb), None) => (rgb.data, ImagePixelFormat::Rgb),
+            (None, image, Some(alpha)) => {
                 let Some(len) = source_byte_len(source_width, source_height, 4, MAX_IMAGE_PIXELS)
                 else {
                     return;
@@ -701,7 +798,9 @@ impl Renderer {
                 (rgba, ImagePixelFormat::Rgba)
             }
         };
-        let (data, mut img_width, mut img_height) = if needs_resize {
+        let (data, mut img_width, mut img_height) = if premultiplied {
+            (data, new_width, new_height)
+        } else if needs_resize {
             self.resize_image_data(
                 data,
                 source_width,
@@ -709,6 +808,7 @@ impl Renderer {
                 new_width,
                 new_height,
                 format,
+                interpolate,
             )
         } else {
             (data, source_width, source_height)
@@ -745,7 +845,7 @@ impl Renderer {
             }
             rgba
         };
-        if has_alpha {
+        if has_alpha && !premultiplied {
             let (chunks, _) = rgba_data.as_chunks_mut::<4>();
             for chunk in chunks {
                 let [r, g, b, a] = *chunk;

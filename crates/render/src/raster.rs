@@ -2099,48 +2099,59 @@ mod tests {
     // Metadata-only: the test budget is 128 pixels and no image buffer is allocated.
     #[test]
     fn image_resampling_rejects_anisotropic_target_growth() {
-        assert_eq!(hayro::image_resampling_size(16, 1, 1, 16, 0.5, 32.0, 128), None);
-        assert_eq!(hayro::image_resampling_size(16, 1, 3, 48, 0.5, 32.0, 128), None);
-        assert_eq!(hayro::image_resampling_size(16, 1, 4, 64, 0.5, 32.0, 128), None);
+        assert_eq!(hayro::image_resampling_size(16, 1, 1, 16, 0.5, 32.0, 128, true), None);
+        assert_eq!(hayro::image_resampling_size(16, 1, 3, 48, 0.5, 32.0, 128, true), None);
+        assert_eq!(hayro::image_resampling_size(16, 1, 4, 64, 0.5, 32.0, 128, true), None);
     }
 
     #[test]
     fn image_resampling_bounds_intermediate_before_planning() {
         // Source and destination are each 128 pixels, but their crossed dimensions are 256.
-        assert_eq!(hayro::image_resampling_size(16, 8, 4, 512, 0.5, 2.0, 128), None);
+        assert_eq!(hayro::image_resampling_size(16, 8, 4, 512, 0.5, 2.0, 128, true), None);
     }
 
     #[test]
     fn image_resampling_rejects_invalid_sources_and_scales() {
-        assert_eq!(hayro::image_resampling_size(4, 4, 3, 47, 0.5, 0.5, 128), None);
-        assert_eq!(hayro::image_resampling_size(4, 4, 3, 49, 0.5, 0.5, 128), None);
+        assert_eq!(hayro::image_resampling_size(4, 4, 3, 47, 0.5, 0.5, 128, true), None);
+        assert_eq!(hayro::image_resampling_size(4, 4, 3, 49, 0.5, 0.5, 128, true), None);
         for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 0.0] {
-            assert_eq!(hayro::image_resampling_size(4, 4, 3, 48, 0.5, scale, 128), None);
+            assert_eq!(hayro::image_resampling_size(4, 4, 3, 48, 0.5, scale, 128, true), None);
         }
     }
 
     #[test]
     fn image_resampling_keeps_valid_sizes_and_exact_limits() {
-        assert_eq!(hayro::image_resampling_size(16, 8, 1, 128, 0.5, 0.5, 128), Some((8, 4)));
-        assert_eq!(hayro::image_resampling_size(16, 1, 3, 48, 0.5, 8.0, 128), Some((8, 8)));
-        assert_eq!(hayro::image_resampling_size(16, 8, 4, 512, 1.0, 1.0, 128), Some((16, 8)));
-        assert_eq!(hayro::image_resampling_size(0, 8, 1, 0, 1.0, 1.0, 128), None);
-        assert_eq!(hayro::image_resampling_size(16, 9, 1, 144, 1.0, 1.0, 128), None);
-        assert_eq!(hayro::image_resampling_size(65_536, 1, 1, 65_536, 1.0, 1.0, u64::MAX), None);
+        assert_eq!(hayro::image_resampling_size(16, 8, 1, 128, 0.5, 0.5, 128, true), Some((8, 4)));
+        assert_eq!(hayro::image_resampling_size(16, 1, 3, 48, 0.5, 8.0, 128, true), Some((8, 8)));
+        assert_eq!(hayro::image_resampling_size(16, 8, 4, 512, 1.0, 1.0, 128, true), Some((16, 8)));
+        assert_eq!(hayro::image_resampling_size(0, 8, 1, 0, 1.0, 1.0, 128, true), None);
+        assert_eq!(hayro::image_resampling_size(16, 9, 1, 144, 1.0, 1.0, 128, true), None);
+        assert_eq!(hayro::image_resampling_size(65_536, 1, 1, 65_536, 1.0, 1.0, u64::MAX, true), None);
         for channels in [1, 3, 4] {
-            assert_eq!(hayro::image_resampling_size(65_536, 1, channels, 65_536 * channels, 1.0 / 4096.0, 1.0, 65_536), Some((16, 1)));
+            assert_eq!(hayro::image_resampling_size(65_536, 1, channels, 65_536 * channels, 1.0 / 4096.0, 1.0, 65_536, true), Some((16, 1)));
         }
-        assert_eq!(hayro::image_resampling_size(65_535, 1, 1, 65_535, 1.0, 1.0, 65_535), Some((65_535, 1)));
-        assert_eq!(hayro::image_resampling_size((1 << 20) + 1, 1, 1, (1 << 20) + 1, 1.0 / 4096.0, 1.0, 1 << 28), None);
+        assert_eq!(hayro::image_resampling_size(65_535, 1, 1, 65_535, 1.0, 1.0, 65_535, true), Some((65_535, 1)));
+        assert_eq!(hayro::image_resampling_size((1 << 20) + 1, 1, 1, (1 << 20) + 1, 1.0 / 4096.0, 1.0, 1 << 28, true), None);
     }
 
     #[test]
     fn image_resampling_padded_backend_dimensions_stay_checked() {
         // A Type 3 image's two-pixel frame may reach u16::MAX exactly, never wrap to zero.
-        assert_eq!(hayro::image_resampling_size(65_531 + 4, 1 + 4, 4, 65_535 * 5 * 4, 1.0, 1.0, 65_535 * 5), Some((65_535, 5)));
-        assert_eq!(hayro::image_resampling_size(65_531 + 4, 1 + 4, 4, 65_535 * 5 * 4, 1.0, 1.0, 65_535 * 5 - 1), None);
-        assert_eq!(hayro::image_resampling_size(65_532 + 4, 1 + 4, 4, 65_536 * 5 * 4, 1.0, 1.0, 1 << 28), None);
+        assert_eq!(hayro::image_resampling_size(65_531 + 4, 1 + 4, 4, 65_535 * 5 * 4, 1.0, 1.0, 65_535 * 5, true), Some((65_535, 5)));
+        assert_eq!(hayro::image_resampling_size(65_531 + 4, 1 + 4, 4, 65_535 * 5 * 4, 1.0, 1.0, 65_535 * 5 - 1, true), None);
+        assert_eq!(hayro::image_resampling_size(65_532 + 4, 1 + 4, 4, 65_536 * 5 * 4, 1.0, 1.0, 1 << 28, true), None);
     }
+
+    /// Nearest-neighbour copies source pixels and needs no filter tables, so a source wider than the
+    /// Catmull-Rom side cap still shrinks. The pixel budget applies to it all the same.
+    #[test]
+    fn image_resampling_nearest_accepts_wide_sources_the_filter_refuses() {
+        let wide: u32 = (1 << 20) + 1;
+        assert_eq!(hayro::image_resampling_size(wide, 1, 1, wide as usize, 1.0 / 4096.0, 1.0, 1 << 28, true), None);
+        assert_eq!(hayro::image_resampling_size(wide, 1, 1, wide as usize, 1.0 / 4096.0, 1.0, 1 << 28, false), Some((257, 1)));
+        assert_eq!(hayro::image_resampling_size(wide, 1, 1, wide as usize, 1.0 / 4096.0, 1.0, 256, false), None);
+    }
+
     fn strip_image_pdf(width: u32, body: &str, space: &str, encoded: &str, alpha: Option<&str>) -> Vec<u8> {
         let (mask_ref, mask_obj) = match alpha {
             Some(data) => (
@@ -2191,6 +2202,23 @@ mod tests {
         assert!(page.error.is_none(), "{:?}", page.error);
         assert_eq!((page.width, page.height), (20, 4));
         assert_eq!(&page.rgba[(20 + 3) * 4..][..4], &[255, 128, 128, 255]);
+    }
+
+    /// A source wider than the filter's 2^20-pixel side cap is shrunk by nearest-neighbour rather
+    /// than refused and skipped (the default, `/Interpolate` omitted, is nearest).
+    #[test]
+    fn wide_non_interpolated_sources_draw_after_shrinking() {
+        let data = "7f".repeat(1_100_000);
+        let pdf = strip_image_pdf(1_100_000, "q 16 0 0 1 2 2 cm /Im0 Do Q\n", "DeviceGray", &data, None);
+        let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+        let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, scale: 1.0, ..Default::default() });
+        assert!(page.error.is_none(), "{:?}", page.error);
+        assert_eq!((page.width, page.height), (20, 4));
+        let pixel = |x: usize| &page.rgba[(20 + x) * 4..][..4];
+        assert_eq!(pixel(1), &[255, 255, 255, 255]);
+        assert_eq!(pixel(3), &[127, 127, 127, 255], "source image was not dropped");
+        assert_eq!(pixel(17), &[127, 127, 127, 255]);
+        assert_eq!(pixel(19), &[255, 255, 255, 255]);
     }
 
     #[test]
@@ -4353,6 +4381,180 @@ trailer << /Root 1 0 R >>
         assert!(page.error.is_none(), "{:?}", page.error);
         // The rest of the page still draws: the red square at the bottom left (y-down: last rows).
         assert_eq!(&page.rgba[((38 * 40 + 1) * 4)..][..4], &[255, 0, 0, 255]);
+    }
+
+    /// Hex-encodes `bytes` for an `/ASCIIHexDecode` stream.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// An 8×4 source of 2×2 blocks: block column `x / 2` and row `y / 2` takes `levels[(y / 2) * 4 + x / 2]`.
+    fn block_source<T: Copy>(levels: [T; 8]) -> Vec<T> {
+        (0..32).map(|i| levels[(i / 16) * 4 + (i % 8) / 2]).collect()
+    }
+
+    /// Draws one `size` image of colour space `space` (`data` as raw samples, with an optional gray
+    /// `/SMask` of the same size) at 1:1 on a `device`-sized page, writing `/Interpolate` when given.
+    fn draw_minified_image(
+        space: &str,
+        size: (u32, u32),
+        interpolate: Option<bool>,
+        data: &[u8],
+        alpha: Option<&[u8]>,
+        device: (u32, u32),
+    ) -> RenderedPage {
+        let (width, height) = size;
+        let interp = interpolate.map_or_else(String::new, |value| format!("/Interpolate {value} "));
+        let (smask, mask) = match alpha {
+            Some(alpha) => (
+                "/SMask 6 0 R ",
+                format!(
+                    "6 0 obj << /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length {} >> stream\n{}>\nendstream endobj\n",
+                    hex(alpha).len() + 1,
+                    hex(alpha)
+                ),
+            ),
+            None => ("", String::new()),
+        };
+        let image = hex(data);
+        let content = format!("q {} 0 0 {} 0 0 cm /Im0 Do Q", device.0, device.1);
+        let pdf = format!(
+            "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+             5 0 obj << /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /{space} /BitsPerComponent 8 {interp}{smask}/Filter /ASCIIHexDecode /Length {} >> stream\n{image}>\nendstream endobj\n\
+             {mask}trailer << /Root 1 0 R >>\n%%EOF\n",
+            device.0,
+            device.1,
+            content.len(),
+            image.len() + 1
+        );
+        let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, scale: 1.0, ..Default::default() });
+        assert!(page.error.is_none(), "{:?}", page.error);
+        assert_eq!((page.width, page.height), device);
+        page
+    }
+
+    /// Issue #624: an image drawn below its source resolution was pre-resampled with Catmull-Rom
+    /// even when `/Interpolate` was false (or absent, whose PDF default is false). That blends
+    /// neighboring samples before the renderer's later non-interpolating image sampler sees them,
+    /// making scans, screenshots and rasterized text look soft.
+    #[test]
+    fn non_interpolated_images_are_not_smoothed_when_minified() {
+        // Top band K W R G, bottom band B Y M C. Nearest 8×4 → 4×2 sampling picks each block's
+        // pixel, so every device pixel is one palette colour; Catmull-Rom blends across blocks.
+        let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
+        let rgb: Vec<u8> = block_source(palette).concat();
+        let exact: Vec<[u8; 4]> = palette.iter().map(|c| [c[0], c[1], c[2], 255]).collect();
+        let pixels = |p: &RenderedPage| p.rgba.as_chunks::<4>().0.to_vec();
+
+        // `/Interpolate` defaults to false, and explicit false is equivalent.
+        let omitted = draw_minified_image("DeviceRGB", (8, 4), None, &rgb, None, (4, 2));
+        assert_eq!(pixels(&omitted), exact, "default interpolation");
+        let disabled = draw_minified_image("DeviceRGB", (8, 4), Some(false), &rgb, None, (4, 2));
+        assert_eq!(&omitted.rgba[..], &disabled.rgba[..], "/Interpolate false must match the default");
+
+        // The fix must not disable interpolation: the same source asking for it blends blocks.
+        let enabled = draw_minified_image("DeviceRGB", (8, 4), Some(true), &rgb, None, (4, 2));
+        assert_ne!(pixels(&enabled), exact, "/Interpolate true should still blend");
+        assert!(pixels(&enabled).iter().any(|px| px[..3].iter().any(|&c| (32..=223).contains(&c))), "/Interpolate true made no mid-tone");
+    }
+
+    #[test]
+    fn non_interpolated_gray_images_are_not_smoothed_when_minified() {
+        let levels = [0u8, 255, 85, 170, 40, 200, 120, 230];
+        let page = draw_minified_image("DeviceGray", (8, 4), None, &block_source(levels), None, (4, 2));
+        let expected: Vec<[u8; 4]> = levels.iter().map(|&v| [v, v, v, 255]).collect();
+        assert_eq!(page.rgba.as_chunks::<4>().0.to_vec(), expected);
+    }
+
+    #[test]
+    fn non_integer_minification_samples_the_same_columns() {
+        // Ten columns drawn six pixels wide: centre sampling reads columns 0, 2, 4, 5, 7 and 9.
+        let ramp = [10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let page = draw_minified_image("DeviceGray", (10, 1), None, &ramp, None, (6, 1));
+        let grays: Vec<u8> = page.rgba.as_chunks::<4>().0.iter().map(|px| px[0]).collect();
+        assert_eq!(grays, [10, 30, 50, 60, 80, 100]);
+    }
+
+    #[test]
+    fn non_integer_minification_samples_colour_and_mask_from_the_same_columns() {
+        // Ten gray columns with a soft mask, drawn six pixels wide: columns 0, 2, 4, 5, 7 and 9 are
+        // sampled, so the mask must pick the same columns as the colours.
+        let ramp = [10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let mask = [255u8, 0, 0, 0, 255, 255, 0, 0, 0, 255];
+        let page = draw_minified_image("DeviceGray", (10, 1), None, &ramp, Some(&mask), (6, 1));
+        // Opaque columns keep their gray; transparent columns show the white page.
+        assert_eq!(
+            page.rgba.as_chunks::<4>().0.to_vec(),
+            vec![[10, 10, 10, 255], [255, 255, 255, 255], [50, 50, 50, 255], [60, 60, 60, 255], [255, 255, 255, 255], [100, 100, 100, 255]]
+        );
+    }
+
+    #[test]
+    fn non_interpolated_alpha_images_keep_their_colours_and_mask_when_minified() {
+        let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
+        let rgb: Vec<u8> = block_source(palette).concat();
+        let alpha = block_source([255u8, 0, 128, 255, 0, 255, 64, 128]);
+        let page = draw_minified_image("DeviceRGB", (8, 4), None, &rgb, Some(&alpha), (4, 2));
+        // Premultiplied colours composited over the white page: alpha 0 shows the page.
+        let expected = vec![
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+            [255, 127, 127, 255],
+            [0, 255, 0, 255],
+            [255, 255, 255, 255],
+            [255, 255, 0, 255],
+            [255, 191, 255, 255],
+            [127, 255, 255, 255],
+        ];
+        assert_eq!(page.rgba.as_chunks::<4>().0.to_vec(), expected);
+    }
+
+    /// Type 3 glyph images used to be sampled bicubically (`ImageQuality::High`) whatever their
+    /// `/Interpolate`, which blends the nearest pre-resize back in. The glyph is 4.6 × 2.3 pixels
+    /// and its image pre-resizes to 5 × 3, so the final draw samples fractionally and bicubic
+    /// filtering would blend palette colours. Interior pixels must stay palette colours unless the
+    /// image asks for interpolation.
+    #[test]
+    fn non_interpolated_type3_glyph_images_are_not_smoothed_when_minified() {
+        let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
+        let data = hex(&block_source(palette).concat());
+        let render = |interp: &str| {
+            let content = "BT /F1 1 Tf 0 0.7 Td (A) Tj ET";
+            let glyph = "4.6 0 d0 q 4.6 0 0 2.3 0 0 cm /Im0 Do Q";
+            let pdf = format!(
+                "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+                 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+                 3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 5 3] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n\
+                 4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+                 5 0 obj << /Type /Font /Subtype /Type3 /FontBBox [0 0 10 10] /FontMatrix [1 0 0 1 0 0] /FirstChar 65 /LastChar 65 /Widths [5] /Encoding << /Differences [65 /a] >> /CharProcs << /a 6 0 R >> /Resources << /XObject << /Im0 7 0 R >> >> >> endobj\n\
+                 6 0 obj << /Length {} >> stream\n{glyph}\nendstream endobj\n\
+                 7 0 obj << /Type /XObject /Subtype /Image /Width 8 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 {interp}/Filter /ASCIIHexDecode /Length {} >> stream\n{data}>\nendstream endobj\n\
+                 trailer << /Root 1 0 R >>\n%%EOF\n",
+                content.len(),
+                glyph.len(),
+                data.len() + 1
+            );
+            let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+            let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, scale: 1.0, ..Default::default() });
+            assert!(page.error.is_none(), "{:?}", page.error);
+            assert_eq!((page.width, page.height), (5, 3));
+            page
+        };
+        // The glyph fully covers columns 0–3 and rows 0–1.
+        let interior = |p: &RenderedPage| -> Vec<[u8; 3]> {
+            (0..2).flat_map(|y| (0..4).map(move |x| (y * 5 + x) * 4)).map(|i| [p.rgba[i], p.rgba[i + 1], p.rgba[i + 2]]).collect()
+        };
+
+        let omitted = render("");
+        for px in interior(&omitted) {
+            assert!(palette.contains(&px), "non-interpolated glyph image was smoothed to {px:?}");
+        }
+        let enabled = render("/Interpolate true ");
+        assert!(interior(&enabled).iter().any(|px| !palette.contains(px)), "/Interpolate true glyph image should still be sampled bicubically");
     }
 
     /// From `cargo xtask fuzz`: a CID font whose /W range spans every u32 inserted billions of

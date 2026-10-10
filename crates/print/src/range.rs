@@ -35,9 +35,11 @@ fn hyphenated_label_range(part: &str, count: usize, labels: &[String]) -> Option
         if !labels.iter().any(|l| l.contains('-') && (l == first || l == last)) {
             continue;
         }
-        let from = if first.is_empty() { 0 } else { page_of(first, count, labels).ok()? };
-        let to = if last.is_empty() { count.checked_sub(1)? } else { page_of(last, count, labels).ok()? };
-        return Some((from, to));
+        let from = if first.is_empty() { Some(0) } else { page_of(first, count, labels).ok() };
+        let to = if last.is_empty() { count.checked_sub(1) } else { page_of(last, count, labels).ok() };
+        if let (Some(from), Some(to)) = (from, to) {
+            return Some((from, to));
+        }
     }
     None
 }

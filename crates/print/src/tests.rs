@@ -88,6 +88,10 @@ fn page_selection_handles_ranges_between_hyphenated_labels() {
     assert_eq!(pages("-A-2"), [0, 1], "an open-ended range ending at a hyphenated label");
     assert_eq!(pages("A-2-5"), [1, 2, 3, 4], "a label followed by a numeric endpoint");
     assert_eq!(pages("B-1-B-2"), [3, 4]);
+    // If an earlier dash yields one known label but an unknown endpoint, continue
+    // checking later dashes instead of rejecting the whole range.
+    let ambiguous: Vec<String> = ["A-1", "A-1-B", "C"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(select_pages(3, Some("A-1-B-C"), &ambiguous, Subset::All, false).unwrap(), [1, 2]);
 }
 
 #[test]

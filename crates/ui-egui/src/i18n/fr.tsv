@@ -44,6 +44,7 @@
 	Fit visible	Ajuster au contenu visible
 	Marquee zoom	Zoom par sélection
 	Take a snapshot	Prendre un instantané
+	Column select	Sélection de colonne
 	Full screen mode	Mode plein écran
 	Read mode	Mode lecture
 	Switch light / dark theme	Basculer entre les thèmes clair et sombre
@@ -2156,3 +2157,10 @@ key	Esc	Échap
 key	Home	Début
 key	End	Fin
 key	Space	Espace
+	Grid view	Vue en grille
+	List view	Vue en liste
+	Files are combined in the order shown. Drag them to change it.	Les fichiers sont combinés dans l'ordre affiché. Faites-les glisser pour le modifier.
+	Preview unavailable: {e}	Aperçu indisponible : {e}
+	Pages: {k} of {n}	Pages : {k} sur {n}
+	Check the pages	Vérifiez les pages
+	Switch to List view to change the pages it takes.	Passez à la vue en liste pour modifier les pages prises.

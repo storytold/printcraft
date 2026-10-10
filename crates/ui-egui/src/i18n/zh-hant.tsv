@@ -74,6 +74,7 @@
 	Rotate view clockwise	順時針旋轉檢視
 	Rotate view counterclockwise	逆時針旋轉檢視
 	Take a snapshot	擷取快照
+	Column select	欄選取
 	Full screen mode	全螢幕模式
 	Read mode	閱讀模式
 	Switch light / dark theme	切換淺色／深色主題
@@ -2042,3 +2043,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	空格
+	Grid view	格狀檢視
+	List view	清單檢視
+	Files are combined in the order shown. Drag them to change it.	檔案將按顯示的順序合併。拖曳可變更順序。
+	Preview unavailable: {e}	無法預覽：{e}
+	Pages: {k} of {n}	頁面：{k}/{n}
+	Check the pages	請檢查頁碼
+	Switch to List view to change the pages it takes.	切換到清單檢視以變更要使用的頁面。

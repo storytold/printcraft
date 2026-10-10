@@ -1453,8 +1453,14 @@ impl Automation {
             Some(_) => self.pages(a, "pages")?,
             None => (0..doc.info.pages.len()).collect(),
         };
+        // Column select (#740): only the text inside the rectangle, row by row.
+        let rect = a.nums::<4>("rect")?.map(|r| r.map(|v| v as f32));
         let texts = self.page_texts(id, &pages)?;
-        let out: Vec<Value> = pages.iter().zip(texts).map(|(p, t)| json!({ "page": p + 1, "text": t.plain_text() })).collect();
+        let text = |t: &PageText| match rect {
+            Some(r) => t.column_text(&t.glyphs_in(r)),
+            None => t.plain_text(),
+        };
+        let out: Vec<Value> = pages.iter().zip(texts).map(|(p, t)| json!({ "page": p + 1, "text": text(&t) })).collect();
         Ok(json!({ "pages": out }))
     }
 

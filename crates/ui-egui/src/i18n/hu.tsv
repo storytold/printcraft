@@ -44,6 +44,7 @@
 	Fit visible	Látható tartalomhoz igazítás
 	Marquee zoom	Kijelölő nagyítás
 	Take a snapshot	Pillanatkép
+	Column select	Oszlopkijelölés
 	Full screen mode	Teljes képernyő
 	Read mode	Olvasási mód
 	Switch light / dark theme	Világos / sötét téma váltása
@@ -2155,3 +2156,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	Szóköz
+	Grid view	Rácsnézet
+	List view	Listanézet
+	Files are combined in the order shown. Drag them to change it.	A fájlok a látható sorrendben egyesülnek. Húzd őket a sorrend módosításához.
+	Preview unavailable: {e}	Nincs előnézet: {e}
+	Pages: {k} of {n}	Oldalak: {k} / {n}
+	Check the pages	Ellenőrizd az oldalakat
+	Switch to List view to change the pages it takes.	Válts listanézetre, ha módosítanád, mely oldalak kerüljenek bele.

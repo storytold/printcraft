@@ -60,7 +60,7 @@ fn texture_bytes(tex: &TextureHandle) -> usize {
 
 /// Visible grid rows, plus one adjacent row in either direction. Work is independent of
 /// document length, including after a large scroll jump.
-fn thumbnail_rows(top: f32, bottom: f32, row_height: f32, rows: usize) -> Range<usize> {
+pub(crate) fn thumbnail_rows(top: f32, bottom: f32, row_height: f32, rows: usize) -> Range<usize> {
     let first = (top.max(0.0) / row_height).floor() as usize;
     let end = (bottom.max(0.0) / row_height).ceil() as usize;
     first.saturating_sub(1).min(rows)..end.saturating_add(1).min(rows)
@@ -196,17 +196,45 @@ pub struct Find {
     pub in_panel: bool,
 }
 
-/// A text selection on one page, in reading-order glyph indices.
+/// A text selection on one page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Selection {
     page: usize,
-    anchor: usize,
-    head: usize,
+    span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Span {
+    /// Reading order, between two glyph indices.
+    Run { anchor: usize, head: usize },
+    /// Column select (#740): the glyphs inside a rectangle in page view space, drawn from the
+    /// corner the drag started at (`rect[0..2]`) to the pointer (`rect[2..4]`).
+    Column { rect: [f32; 4] },
 }
 
 impl Selection {
-    fn range(&self) -> Range<usize> {
-        self.anchor.min(self.head)..self.anchor.max(self.head) + 1
+    fn run(page: usize, anchor: usize, head: usize) -> Self {
+        Self { page, span: Span::Run { anchor, head } }
+    }
+
+    fn range(anchor: usize, head: usize) -> Range<usize> {
+        anchor.min(head)..anchor.max(head).saturating_add(1)
+    }
+
+    /// One rectangle per selected piece of a line, in view space (highlighting, markup quads).
+    fn rects(&self, text: &PageText) -> Vec<[f32; 4]> {
+        match self.span {
+            Span::Run { anchor, head } => text.line_rects(Self::range(anchor, head)),
+            Span::Column { rect } => text.glyph_rects(&text.glyphs_in(rect)),
+        }
+    }
+
+    /// The selected text, as Copy puts it on the clipboard.
+    fn text(&self, text: &PageText) -> String {
+        match self.span {
+            Span::Run { anchor, head } => text.text_of(Self::range(anchor, head)),
+            Span::Column { rect } => text.column_text(&text.glyphs_in(rect)),
+        }
     }
 }
 
@@ -686,7 +714,7 @@ impl DocView {
         let s = self.selection?;
         let text = self.texts.get(&s.page)?;
         let page = info.pages.get(s.page)?;
-        let quads: Vec<[f64; 8]> = text.line_rects(s.range()).into_iter().map(|r| page.view_rect_to_quad(r)).collect();
+        let quads: Vec<[f64; 8]> = s.rects(text).into_iter().map(|r| page.view_rect_to_quad(r)).collect();
         (!quads.is_empty()).then_some((s.page, quads))
     }
 
@@ -711,7 +739,7 @@ impl DocView {
 
     /// Select text on `page` from glyph `from` to glyph `to` (tests and automation).
     pub fn select_text(&mut self, page: usize, from: usize, to: usize) {
-        self.selection = Some(Selection { page, anchor: from, head: to });
+        self.selection = Some(Selection::run(page, from, to));
     }
 
     /// Open the find bar (or focus it if already open).
@@ -802,7 +830,7 @@ impl DocView {
     pub fn selected_text(&self) -> Option<String> {
         let s = self.selection?;
         let t = self.texts.get(&s.page)?;
-        Some(t.text_of(s.range())).filter(|x| !x.is_empty())
+        Some(s.text(t)).filter(|x| !x.is_empty())
     }
 
     pub fn thumb(&self, page: usize) -> Option<&TextureHandle> {
@@ -952,7 +980,7 @@ impl DocView {
         if t.glyphs.is_empty() {
             return false;
         }
-        self.selection = Some(Selection { page, anchor: 0, head: t.glyphs.len() - 1 });
+        self.selection = Some(Selection::run(page, 0, t.glyphs.len() - 1));
         true
     }
 
@@ -1890,7 +1918,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let selects_text = match tool {
         QuickTool::Comment(t) => t.markup().is_some() || t == comments::CommentTool::ReplaceText,
         QuickTool::Select => !preparing,
-        QuickTool::Redact => true,
+        QuickTool::Redact | QuickTool::ColumnSelect => true,
         QuickTool::Hand
         | QuickTool::Measure(_)
         | QuickTool::Crop
@@ -2296,8 +2324,15 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     }
                 }
                 if let Some(sel) = view.selection.filter(|s| s.page == i) {
-                    for lr in text.line_rects(sel.range()) {
+                    for lr in sel.rects(&text) {
                         painter.rect_filled(to_screen(lr), CornerRadius::same(1), Color32::from_rgba_unmultiplied(0x3A, 0x7B, 0xF0, 70));
+                    }
+                    // The rectangle being drawn, as Acrobat shows it while column-selecting.
+                    if let Span::Column { rect } = sel.span
+                        && resp.dragged()
+                    {
+                        let outline = Stroke::new(1.0, Color32::from_rgb(0x3A, 0x7B, 0xF0));
+                        painter.rect_stroke(to_screen(rect), CornerRadius::ZERO, outline, egui::StrokeKind::Middle);
                     }
                 }
                 if selects_text
@@ -2307,20 +2342,44 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     let (vx, vy) = xf.screen_to_view(p);
                     let over_text = text.glyphs.iter().any(|g| vx >= g.rect[0] && vx <= g.rect[2] && vy >= g.rect[1] && vy <= g.rect[3]);
                     let over_link = info.links.iter().any(|l| l.page == i && xf.user_rect(info, i, l.rect).contains(p));
-                    if over_text && !over_link {
+                    // Column select (#740): the Column select tool, or Alt (Option on macOS) held
+                    // while a drag starts, as in Acrobat.
+                    let column = tool == QuickTool::ColumnSelect || ui.input(|inp| inp.modifiers.alt);
+                    if column && !over_link {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    } else if over_text && !over_link {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                     }
                     let press_here = ui.input(|inp| inp.pointer.press_origin()).is_some_and(|o| r.contains(o));
                     if resp.drag_started() && press_here && !over_link {
                         let origin = ui.input(|inp| inp.pointer.press_origin()).unwrap_or(p);
                         let (ox, oy) = xf.screen_to_view(origin);
-                        view.selection = text.nearest(ox, oy).map(|a| Selection { page: i, anchor: a, head: a });
+                        view.selection = if column {
+                            Some(Selection { page: i, span: Span::Column { rect: [ox, oy, vx, vy] } })
+                        } else {
+                            text.nearest(ox, oy).map(|a| Selection::run(i, a, a))
+                        };
                     }
                     if resp.dragged()
                         && let Some(sel) = view.selection.as_mut().filter(|s| s.page == i)
-                        && let Some(h) = text.nearest(vx, vy)
                     {
-                        sel.head = h;
+                        match &mut sel.span {
+                            Span::Run { head, .. } => {
+                                if let Some(h) = text.nearest(vx, vy) {
+                                    *head = h;
+                                }
+                            }
+                            Span::Column { rect } => {
+                                rect[2] = vx;
+                                rect[3] = vy;
+                            }
+                        }
+                    }
+                    // A rectangle around no text selects nothing.
+                    if resp.drag_stopped()
+                        && view.selection.is_some_and(|s| s.page == i && matches!(s.span, Span::Column { .. }) && s.text(&text).is_empty())
+                    {
+                        view.selection = None;
                     }
                     // Quick clicks widen the selection: two a word, three the line, four the page.
                     // egui counts up to three, so four come from the run kept here. The markup and
@@ -2343,15 +2402,16 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                             _ => text.glyphs.len().checked_sub(1).map(|last| (0, last)),
                         });
                         if let Some((first, last)) = span {
-                            view.selection = Some(Selection { page: i, anchor: first, head: last });
+                            view.selection = Some(Selection::run(i, first, last));
                         }
                     } else if resp.clicked() && !over_link {
                         // ⇧-click extends a selection on this page to the click, keeping its
-                        // anchor (#527). Otherwise (no shift, or no selection on this page; a
-                        // selection cannot yet span pages) a click clears the selection.
+                        // anchor (#527). Otherwise (no shift, no selection on this page, or a
+                        // column selection, which has no anchor glyph; a selection cannot yet
+                        // span pages) a click clears the selection.
                         let shift = ui.input(|inp| inp.modifiers.shift);
-                        match (view.selection.as_mut().filter(|s| shift && s.page == i), text.nearest(vx, vy)) {
-                            (Some(sel), Some(h)) => sel.head = h,
+                        match (view.selection.as_mut().filter(|s| shift && s.page == i).map(|s| &mut s.span), text.nearest(vx, vy)) {
+                            (Some(Span::Run { head, .. }), Some(h)) => *head = h,
                             _ => view.selection = None,
                         }
                     }
@@ -3352,7 +3412,7 @@ fn organize_toolbar(view: &mut DocView, info: &DocInfo, editable: bool, dirty: b
 /// Organize pages: a thumbnail grid (Acrobat's Organize Pages view). Click selects, ⌘-click
 /// toggles, ⇧-click extends; double-click opens the page.
 /// The gap (0 = before the first page, n = after the last) the pointer points at in the grid.
-fn drop_gap(cells: &[(usize, Rect)], p: Pos2) -> Option<usize> {
+pub(crate) fn drop_gap(cells: &[(usize, Rect)], p: Pos2) -> Option<usize> {
     let (i, r) = cells.iter().min_by(|(_, a), (_, b)| a.distance_sq_to_pos(p).total_cmp(&b.distance_sq_to_pos(p)))?;
     Some(if p.x < r.center().x { *i } else { i + 1 })
 }
@@ -3603,7 +3663,7 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
 
 /// A rendered raster as texture data. Its words are premultiplied RGBA bytes, exactly
 /// `Color32`s, so the renderer's buffer becomes the image without a copy on the UI thread.
-fn texture_image(size: [usize; 2], pixels: pdfcraft_render::Pixels) -> egui::ColorImage {
+pub(crate) fn texture_image(size: [usize; 2], pixels: pdfcraft_render::Pixels) -> egui::ColorImage {
     match bytemuck::allocation::try_cast_vec::<u32, Color32>(pixels.into_words()) {
         Ok(px) if px.len() == size[0].saturating_mul(size[1]) => egui::ColorImage::new(size, px),
         Ok(px) => egui::ColorImage::from_rgba_premultiplied(size, bytemuck::cast_slice(&px)),

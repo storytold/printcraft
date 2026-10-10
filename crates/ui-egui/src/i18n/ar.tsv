@@ -74,6 +74,7 @@
 	Fit visible	ملاءمة المرئي
 	Marquee zoom	تكبير بالتحديد
 	Take a snapshot	التقاط لقطة
+	Column select	تحديد عمود
 	Full screen mode	وضع ملء الشاشة
 	Read mode	وضع القراءة
 	Switch light / dark theme	التبديل بين السمة الفاتحة والداكنة
@@ -2179,3 +2180,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	مسافة
+	Grid view	عرض الشبكة
+	List view	عرض القائمة
+	Files are combined in the order shown. Drag them to change it.	تُدمج الملفات بالترتيب المعروض. اسحبها لتغيير الترتيب.
+	Preview unavailable: {e}	المعاينة غير متاحة: {e}
+	Pages: {k} of {n}	الصفحات: {k} من {n}
+	Check the pages	تحقق من الصفحات
+	Switch to List view to change the pages it takes.	انتقل إلى عرض القائمة لتغيير الصفحات التي يأخذها.

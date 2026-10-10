@@ -109,6 +109,7 @@
 	Rotate view clockwise	Завърти изгледа по часовниковата стрелка
 	Rotate view counterclockwise	Завърти изгледа обратно на часовниковата стрелка
 	Take a snapshot	Направи моментна снимка
+	Column select	Избор на колона
 	Full screen mode	Цял екран
 	Read mode	Режим на четене
 	Switch light / dark theme	Превключи светла / тъмна тема
@@ -2119,3 +2120,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	Интервал
+	Grid view	Изглед мрежа
+	List view	Изглед списък
+	Files are combined in the order shown. Drag them to change it.	Файловете се обединяват в показания ред. Плъзнете ги, за да го промените.
+	Preview unavailable: {e}	Няма преглед: {e}
+	Pages: {k} of {n}	Страници: {k} от {n}
+	Check the pages	Проверете страниците
+	Switch to List view to change the pages it takes.	Превключете към изглед списък, за да промените кои страници се вземат.

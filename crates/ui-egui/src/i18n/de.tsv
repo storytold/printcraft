@@ -44,6 +44,7 @@
 	Fit visible	Sichtbaren Inhalt einpassen
 	Marquee zoom	Auswahlrahmen-Zoom
 	Take a snapshot	Schnappschuss erstellen
+	Column select	Spaltenauswahl
 	Full screen mode	Vollbildmodus
 	Read mode	Lesemodus
 	Switch light / dark theme	Helles / dunkles Design umschalten
@@ -2157,3 +2158,10 @@ key	Esc	Esc
 key	Home	Pos1
 key	End	Ende
 key	Space	Leertaste
+	Grid view	Rasteransicht
+	List view	Listenansicht
+	Files are combined in the order shown. Drag them to change it.	Dateien werden in der gezeigten Reihenfolge kombiniert. Zieh sie, um sie zu ändern.
+	Preview unavailable: {e}	Keine Vorschau: {e}
+	Pages: {k} of {n}	Seiten: {k} von {n}
+	Check the pages	Prüfe die Seiten
+	Switch to List view to change the pages it takes.	Wechsle zur Listenansicht, um die übernommenen Seiten zu ändern.

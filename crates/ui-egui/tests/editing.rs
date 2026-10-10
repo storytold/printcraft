@@ -661,6 +661,7 @@ fn combining_files_opens_a_new_unsaved_tab() {
 #[test]
 fn combine_files_takes_chosen_pages_in_the_order_listed() {
     let mut h = harness(1, |app| {
+        app.set_option("combine-view", "list").unwrap();
         app.use_files(pdfcraft_ui_egui::FilePurpose::Combine, vec![("one.pdf".into(), fixture(3)), ("two.pdf".into(), fixture(2))]);
     });
     h.run_steps(3);
@@ -727,6 +728,7 @@ fn closing_the_combine_tab_forgets_its_list() {
 #[test]
 fn combine_lists_size_and_warns_before_combining() {
     let mut h = harness(1, |app| {
+        app.set_option("combine-view", "list").unwrap();
         app.use_files(
             pdfcraft_ui_egui::FilePurpose::Combine,
             vec![
@@ -792,9 +794,13 @@ fn combine_names(h: &Harness<'static, PdfCraftApp>) -> Vec<String> {
     h.state().combine_draft.iter().map(|f| f.name.clone()).collect()
 }
 
+/// Files in the Combine tab's list view (the table: headings, page ranges, row links).
 fn combine_of(names: &[(&str, usize)]) -> Harness<'static, PdfCraftApp> {
     let files: Vec<(String, Vec<u8>)> = names.iter().map(|(n, p)| (n.to_string(), fixture(*p))).collect();
-    let mut h = harness(1, move |app| app.use_files(pdfcraft_ui_egui::FilePurpose::Combine, files));
+    let mut h = harness(1, move |app| {
+        app.set_option("combine-view", "list").unwrap();
+        app.use_files(pdfcraft_ui_egui::FilePurpose::Combine, files);
+    });
     h.run_steps(3);
     h
 }
@@ -887,6 +893,7 @@ fn undo_and_redo_restore_the_combine_list() {
 #[test]
 fn protected_files_that_can_be_combined_are_flagged() {
     let mut h = harness(1, |app| {
+        app.set_option("combine-view", "list").unwrap();
         app.use_files(
             pdfcraft_ui_egui::FilePurpose::Combine,
             vec![("one.pdf".into(), fixture(1)), ("no-copy.pdf".into(), protected("", "owner", -1 ^ 16))],

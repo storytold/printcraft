@@ -3723,3 +3723,68 @@ fn a_deleted_image_is_not_kept_by_reduce_or_optimize() {
     let reopened = ok(&mut a, "doc_open", json!({ "path": "reduced.pdf" }));
     assert_eq!(reopened["pages"], 1);
 }
+
+/// A two-page PDF with the same three-row table ("Name Qty / Apple 12 / Pear 7"); the second
+/// page is turned with /Rotate 90.
+fn table_pdf() -> Vec<u8> {
+    let body = "BT /F1 12 Tf 20 250 Td (Name) Tj 130 0 Td (Qty) Tj -130 -20 Td (Apple) Tj 130 0 Td (12) Tj -130 -20 Td (Pear) Tj 130 0 Td (7) Tj ET";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 /MediaBox [0 0 300 300] >>".to_string(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Contents 6 0 R /Resources << /Font << /F1 3 0 R >> >> >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Rotate 90 /Contents 6 0 R /Resources << /Font << /F1 3 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{body}\nendstream", body.len()),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+/// Issue #740: `text_extract` with `rect` takes what Column select takes, in the displayed-page
+/// coordinates `text_find` reports, on upright and turned pages alike.
+#[test]
+fn text_extract_with_a_rect_takes_one_column() {
+    let dir = workdir("column");
+    std::fs::write(dir.join("table.pdf"), table_pdf()).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "table.pdf" }))["doc"].as_u64().unwrap();
+    let reading = ok(&mut a, "text_extract", json!({ "doc": doc, "pages": [1] }));
+    assert_eq!(reading["pages"][0]["text"], "Name\nApple\nPear\nQty\n12\n7", "reading order is column by column");
+
+    for page in [1u64, 2] {
+        // The box around "Qty" and "7", as text_find reports them on this page.
+        let rect_of = |a: &mut Automation, q: &str| -> [f64; 4] {
+            let found = ok(a, "text_find", json!({ "doc": doc, "query": q }));
+            let m = found["matches"].as_array().unwrap().iter().find(|m| m["page"] == page).unwrap().clone();
+            let r: Vec<f64> = m["rects"][0].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            [r[0], r[1], r[2], r[3]]
+        };
+        let (qty, seven) = (rect_of(&mut a, "Qty"), rect_of(&mut a, "7"));
+        let rect = [qty[0].min(seven[0]) - 2.0, qty[1].min(seven[1]) - 2.0, qty[2].max(seven[2]) + 2.0, qty[3].max(seven[3]) + 2.0];
+        let column = ok(&mut a, "text_extract", json!({ "doc": doc, "pages": [page], "rect": rect }));
+        assert_eq!(column["pages"][0]["text"], "Qty\n12\n7", "page {page}, rect {rect:?}");
+    }
+
+    // The whole table, row by row with tab-separated cells (upright page).
+    let all = ok(&mut a, "text_extract", json!({ "doc": doc, "pages": [1], "rect": [0, 0, 300, 300] }));
+    assert_eq!(all["pages"][0]["text"], "Name\tQty\nApple\t12\nPear\t7");
+    // Nothing inside: empty text, not an error.
+    let none = ok(&mut a, "text_extract", json!({ "doc": doc, "pages": [1], "rect": [0, 0, 5, 5] }));
+    assert_eq!(none["pages"][0]["text"], "");
+    // A rect that is not four numbers is refused.
+    for bad in [json!([1, 2, 3]), json!("0 0 1 1"), json!([0, 0, "a", 1])] {
+        let e = a.call("text_extract", &json!({ "doc": doc, "rect": bad })).unwrap_err();
+        assert!(matches!(e, ToolError::InvalidArgs(_)), "{bad}: {e}");
+    }
+}

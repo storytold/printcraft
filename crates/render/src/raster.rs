@@ -883,6 +883,48 @@ impl RenderPool {
     }
 }
 
+/// A pool's threads after [`RenderPool::retire`]. Idle ones exit at once; one still rendering is
+/// told to stop at its next drawing operator and exits when its render returns, which a single
+/// long operator (such as decoding a huge image) can delay.
+pub struct Retiring(Vec<JoinHandle<()>>);
+
+impl Retiring {
+    /// The threads that haven't exited yet.
+    pub fn running(&mut self) -> usize {
+        self.0.retain(|h| !h.is_finished());
+        self.0.len()
+    }
+
+    /// Whether every thread has exited.
+    pub fn exited(&self) -> bool {
+        self.0.iter().all(JoinHandle::is_finished)
+    }
+}
+
+impl RenderPool {
+    /// No replacement threads: when the watchdog gives up on a render, the request (and any
+    /// later one) is answered with an error instead of starting another thread. For a caller that
+    /// bounds how many render threads exist at once: the stuck thread keeps running until its
+    /// operator returns, and a replacement would run beside it.
+    pub fn without_replacements(self) -> Self {
+        *lock(&self.replacements_left) = 0;
+        self
+    }
+
+    /// This pool's threads that haven't exited (workers and replacements; 0 when rendering inline).
+    pub fn threads(&self) -> usize {
+        lock(&self._workers).iter().filter(|h| !h.is_finished()).count()
+    }
+
+    /// Drop the pool but keep its threads' handles, for a caller that bounds how many render
+    /// threads run at once: a render the watchdog gave up on can outlive its pool.
+    pub fn retire(self) -> Retiring {
+        let handles = std::mem::take(&mut *lock(&self._workers));
+        drop(self);
+        Retiring(handles)
+    }
+}
+
 impl Drop for RenderPool {
     fn drop(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1292,6 +1334,58 @@ mod tests {
         waiter.join().unwrap();
         release_tx.send(()).unwrap();
         assert!(initializer.join().unwrap().unwrap().is_some());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_retired_pool_counts_its_threads_until_they_exit() {
+        // Idle: its thread leaves as soon as the pool is gone.
+        let mut idle = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 1, RenderConfig::default()).retire();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while idle.running() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(idle.running(), 0);
+        // Busy in a step that can't be interrupted: still counted after the pool is dropped.
+        let pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 1, RenderConfig::default());
+        *lock(&pool.shared.slow_page) = Some((0, std::time::Duration::from_secs(2)));
+        pool.set_queue(vec![RenderRequest { page: 0, scale: 1.0, ..Default::default() }]);
+        while pool.shared.render_started.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut busy = pool.retire();
+        assert_eq!(busy.running(), 1, "the render is still under way");
+        while busy.running() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(busy.running(), 0, "and the thread exits when it returns");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_pool_without_replacements_never_runs_a_second_thread() {
+        // The watchdog gives up on a render stuck in one long step; with no replacement, the
+        // request is answered with an error and the stuck thread is the only one.
+        let mut pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 1, RenderConfig::default()).without_replacements();
+        pool.set_stuck_after(std::time::Duration::from_millis(50));
+        *lock(&pool.shared.slow_page) = Some((0, std::time::Duration::from_secs(2)));
+        pool.set_queue(vec![RenderRequest { page: 0, scale: 1.0, ..Default::default() }]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let answer = loop {
+            assert!(pool.threads() <= 1, "{} render threads", pool.threads());
+            if let Some(page) = pool.try_recv() {
+                break page;
+            }
+            assert!(std::time::Instant::now() < deadline, "the stuck render is answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(answer.error.is_some(), "answered with an error, not a second attempt");
+        assert!(pool.threads() <= 1);
+        let mut retired = pool.retire();
+        while retired.running() > 0 {
+            assert!(std::time::Instant::now() < deadline, "the stuck thread exits when its step ends");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

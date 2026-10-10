@@ -73,6 +73,7 @@
 	Fit visible	表示範囲に合わせる
 	Marquee zoom	範囲指定ズーム
 	Take a snapshot	スナップショットを作成
+	Column select	列の選択
 	Full screen mode	全画面表示
 	Read mode	閲覧モード
 	Switch light / dark theme	明るい／暗いテーマを切り替え
@@ -2156,3 +2157,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	スペース
+	Grid view	グリッド表示
+	List view	リスト表示
+	Files are combined in the order shown. Drag them to change it.	ファイルは表示されている順に結合されます。ドラッグして順番を変更できます。
+	Preview unavailable: {e}	プレビューを表示できません: {e}
+	Pages: {k} of {n}	ページ: {k}/{n}
+	Check the pages	ページ指定を確認してください
+	Switch to List view to change the pages it takes.	使用するページを変更するには、リスト表示に切り替えてください。

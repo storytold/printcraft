@@ -17,8 +17,8 @@ use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, icons, widgets};
 
 /// Same reds and ambers as the signature status (`sign_ui`).
-const ERROR: Color32 = Color32::from_rgb(0xD7, 0x37, 0x3F);
-const WARNING: Color32 = Color32::from_rgb(0xE6, 0x86, 0x19);
+pub(crate) const ERROR: Color32 = Color32::from_rgb(0xD7, 0x37, 0x3F);
+pub(crate) const WARNING: Color32 = Color32::from_rgb(0xE6, 0x86, 0x19);
 /// Undo steps kept for the list (each holds the list itself; the files' bytes are shared).
 const HISTORY: usize = 100;
 
@@ -113,6 +113,32 @@ impl Columns {
     }
 }
 
+/// How the files are shown: a thumbnail of each (the default, to see what goes where) or the
+/// table (kept in the settings).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CombineView {
+    #[default]
+    Grid,
+    List,
+}
+
+impl CombineView {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CombineView::Grid => "grid",
+            CombineView::List => "list",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "grid" => Some(CombineView::Grid),
+            "list" => Some(CombineView::List),
+            _ => None,
+        }
+    }
+}
+
 /// A column heading being dragged to a new place.
 #[derive(Clone, Copy)]
 struct HeadingDrag(SortKey);
@@ -152,6 +178,39 @@ pub struct CombineTab {
     fitted: f32,
     /// The password box of Unlock…, while it shows.
     unlock: Option<UnlockPrompt>,
+    /// Bumped on every change to the list, so a grid drag that began before one is dropped.
+    pub(crate) revision: u64,
+    /// The file the keyboard moved to, for the grid to scroll into view.
+    pub(crate) reveal: Option<u64>,
+    /// Files per grid row as last drawn (Up/Down move a row in the grid).
+    pub(crate) grid_columns: usize,
+    /// A grid zoom asked for this frame (toolbar, keys, pinch); the grid applies it once it has
+    /// laid out, so it can keep the same cards in view.
+    pub(crate) zoom_request: Option<f32>,
+    /// The card size slider, which takes the arrow keys while it has the keyboard.
+    pub(crate) zoom_slider: Option<egui::Id>,
+    /// The card kept in place through a zoom gesture: its file, how far below the top of the grid
+    /// it was, and when the grid last zoomed (seconds).
+    pub(crate) zoom_anchor: Option<(u64, f32, f64)>,
+    /// A file shown large (a card's magnifier), while it shows.
+    pub(crate) preview: Option<Preview>,
+    /// The card that had the keyboard last frame: Space shows its file large; on any other focused
+    /// widget Space is that widget's.
+    pub(crate) card_focus: Option<egui::Id>,
+}
+
+/// The pages a range takes, and the range and page count they were worked out for.
+pub(crate) type PagesTaken = ((String, usize), Arc<[usize]>);
+
+/// A file shown large: which, the place among the pages it adds, and those pages (worked out
+/// again only when its page range or page count changes).
+#[derive(Clone, Debug)]
+pub(crate) struct Preview {
+    pub(crate) file: u64,
+    pub(crate) at: usize,
+    /// The page (0-based, in the file) on screen, for the thumbnails to render.
+    pub(crate) page: Option<usize>,
+    pub(crate) pages: Option<PagesTaken>,
 }
 
 /// A password: kept in memory only, never printed (debug output ends up in logs).
@@ -188,6 +247,8 @@ struct UnlockPrompt {
 /// What can be known about a file up front, opened with a password or not.
 struct Assessed {
     pages: usize,
+    /// Each page's displayed size in points (empty when the inspector couldn't read it).
+    sizes: Arc<[(f32, f32)]>,
     problem: Option<String>,
     lock: Option<Lock>,
     notes: Vec<String>,
@@ -216,6 +277,10 @@ fn assess(bytes: &Arc<Vec<u8>>, password: Option<&str>) -> Result<Assessed, Asse
         Some(i) => i.pages.len(),
         None => pdfcraft_engine::source_page_count(bytes, password).unwrap_or(0),
     };
+    let sizes: Arc<[(f32, f32)]> = match &info {
+        Some(i) => i.pages.iter().map(|p| (p.width, p.height)).collect(),
+        None => Arc::from(Vec::new()),
+    };
     let encrypted = password.is_some() || info.as_ref().is_some_and(|i| i.encrypted);
     let warnings = info.map(|i| i.warnings).unwrap_or_default();
     let (problem, lock) = match check {
@@ -239,7 +304,7 @@ fn assess(bytes: &Arc<Vec<u8>>, password: Option<&str>) -> Result<Assessed, Asse
         });
     }
     notes.extend(warnings.into_iter().take(5));
-    Ok(Assessed { pages, problem, lock, notes })
+    Ok(Assessed { pages, sizes, problem, lock, notes })
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +323,15 @@ pub(crate) struct Incoming {
     pub note: Option<String>,
 }
 
+/// A new value for [`CombineFile::auth`]: counted for the whole run, outside the undo history.
+fn next_auth() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A page range checked: the pages it takes and the first of them (0-based), or why it's wrong.
+type RangeCheck = Result<(usize, usize), String>;
+
 #[derive(Clone, Debug)]
 pub struct CombineFile {
     /// Stable while the file is in the list (selection, undo).
@@ -265,6 +339,11 @@ pub struct CombineFile {
     pub name: String,
     pub bytes: Arc<Vec<u8>>,
     pub pages: usize,
+    /// Each page's displayed size in points; shared, so undo snapshots don't copy it.
+    pub(crate) sizes: Arc<[(f32, f32)]>,
+    /// How the file was read (with which password): a new value every time it is read, never
+    /// reused, not even after undo, so a thumbnail made another way is never taken for this one.
+    pub(crate) auth: u64,
     /// The pages to take ("" = all).
     pub range: String,
     /// When the file was last modified (desktop picks and drops only).
@@ -279,34 +358,68 @@ pub struct CombineFile {
     pub notes: Vec<String>,
     /// Where it came from, shown among the warnings (e.g. an open document's unsaved changes).
     origin_note: Option<String>,
-    /// The range last checked and the result: the number of pages it takes, or why it is wrong.
-    checked: Option<(String, Result<usize, String>)>,
+    /// The range last checked and the result: the number of pages it takes and the first of
+    /// them (0-based), or why it is wrong.
+    checked: Option<(String, RangeCheck)>,
 }
 
 impl CombineFile {
     fn take(&mut self, a: Assessed, password: Option<Secret>) {
         self.pages = a.pages;
+        self.sizes = a.sizes;
         self.problem = a.problem;
         self.lock = a.lock;
         self.password = password;
+        self.auth = next_auth();
         self.notes = self.origin_note.iter().cloned().chain(a.notes).collect();
         self.checked = None;
+    }
+
+    /// The password the file was unlocked with, if any.
+    pub(crate) fn password(&self) -> Option<&str> {
+        self.password.as_ref().map(|p| p.0.as_str())
     }
 
     /// The number of pages `range` takes, or why it can't be used. Checked again only when the
     /// range changes.
     pub fn selection(&mut self) -> Result<usize, String> {
+        self.checked_range().map(|(count, _)| count)
+    }
+
+    /// The first page (0-based) the range takes, in its order ("3, 1" starts with page 3): the
+    /// page the grid shows for the file.
+    pub fn first_page(&mut self) -> Result<usize, String> {
+        self.checked_range().map(|(_, first)| first)
+    }
+
+    /// Every page (0-based) the range takes, in its order: what the preview flips through.
+    pub(crate) fn pages_taken(&self) -> Result<Vec<usize>, String> {
+        if self.range.trim().is_empty() {
+            return Ok((0..self.pages).collect());
+        }
+        match pdfcraft_engine::print::select_pages(self.pages, Some(&self.range), &[], pdfcraft_engine::print::Subset::All, false) {
+            Ok(p) if p.is_empty() => Err(tl!("No pages selected").to_string()),
+            Ok(p) => Ok(p),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn checked_range(&mut self) -> RangeCheck {
         if let Some((range, result)) = &self.checked
             && *range == self.range
         {
             return result.clone();
         }
         let result = if self.range.trim().is_empty() {
-            Ok(self.pages)
+            // (A file whose pages couldn't be counted is left to the engine, as before; the grid
+            // checks the first page against the page count.)
+            Ok((self.pages, 0))
         } else {
             match pdfcraft_engine::print::select_pages(self.pages, Some(&self.range), &[], pdfcraft_engine::print::Subset::All, false) {
-                Ok(p) if p.is_empty() => Err(tl!("No pages selected").to_string()),
-                Ok(p) => Ok(p.len()),
+                Ok(p) => match p.first() {
+                    Some(first) => Ok((p.len(), *first)),
+                    None => Err(tl!("No pages selected").to_string()),
+                },
                 Err(e) => Err(e.to_string()),
             }
         };
@@ -326,22 +439,38 @@ impl CombineFile {
     }
 }
 
-enum RowAction {
+pub(crate) enum RowAction {
     /// A click on row `i` (Ctrl/⌘ toggles it, Shift selects up to it).
     Click(usize, Modifiers),
     SelectAll,
-    /// Up/Down arrow; with Shift the selection grows.
+    /// An arrow key: `by` files on (1 in the list, or along a grid row; a grid row's length for
+    /// Up/Down in the grid). With Shift the selection grows.
     Step {
         down: bool,
+        by: usize,
         extend: bool,
     },
     MoveUp,
     MoveDown,
     Remove,
+    /// One file's card trash: that file only, whatever else is selected.
+    RemoveFile(u64),
+    /// One file's magnifier: show it large.
+    Preview(u64),
+    /// Space: show the file the keyboard is on (or the first selected) large.
+    PreviewSelected,
     /// Row `from` (and the rest of the selection, if it is selected) dropped on row `to`.
     Drop {
         from: usize,
         to: usize,
+    },
+    /// A grid card (and the rest of the selection, if it is selected) dropped at `gap`
+    /// (0 = before the first file, n = after the last), if the list hasn't changed since the
+    /// drag began.
+    DropAt {
+        file: u64,
+        revision: u64,
+        gap: usize,
     },
     Sort(SortKey),
     /// Unlock… on row `i` (and the rest of the selection, if it is selected), or on the
@@ -369,7 +498,25 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let selected: Vec<bool> = ids.iter().map(|id| app.combine_tab.selected.contains(id)).collect();
     let count = selected.iter().filter(|s| **s).count();
     let blocker = blocker(&app.combine_draft, &checks);
-    let mut events = TableEvents { action: keyboard(ui, n, count > 0), ..Default::default() };
+    let grid = app.combine_view == CombineView::Grid;
+    let columns = grid.then_some(app.combine_tab.grid_columns);
+    // The keyboard is the list's unless a text field, the password box or the size slider has it.
+    let slider_focused = grid && app.combine_tab.zoom_slider.is_some_and(|id| ui.memory(|m| m.has_focus(id)));
+    // (Nor while a file is shown large: its window may only open or close this frame.)
+    let covered = app.combine_tab.unlock.is_some() || app.combine_tab.preview.is_some();
+    let focus = ui.memory(|m| m.focused());
+    let space = focus.is_none() || focus == app.combine_tab.card_focus;
+    let keys = if covered || slider_focused { None } else { keyboard(ui, n, count > 0, columns, space) };
+    let mut events = TableEvents { action: keys, ..Default::default() };
+    // ⌘+ / ⌘− / ⌘0 size the grid's cards (instead of the whole window's text).
+    if grid && n > 0 && !covered {
+        app.combine_tab.zoom_request = zoom_keys(ui, app.combine_zoom).or(app.combine_tab.zoom_request);
+    }
+    // An arrow pressed or a zoom asked for in the list has nothing for the grid to do later.
+    if !grid {
+        app.combine_tab.reveal = None;
+        app.combine_tab.zoom_request = None;
+    }
     let mut combine = false;
 
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(28, 20)).show(ui, |ui| {
@@ -386,12 +533,19 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
             });
         });
-        ui.label(egui::RichText::new(tl!("Files are combined from top to bottom. Leave Pages empty to take every page.")).color(t.text_faint));
+        let hint = if grid {
+            tl!("Files are combined in the order shown. Drag them to change it.")
+        } else {
+            tl!("Files are combined from top to bottom. Leave Pages empty to take every page.")
+        };
+        ui.label(egui::RichText::new(hint).color(t.text_faint));
         ui.add_space(12.0);
 
-        // Toolbar.
-        ui.horizontal(|ui| {
+        // Toolbar: on two lines when the window is narrow.
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            // Where the line ends (an overflowing line would move it).
+            let edge = ui.max_rect().right();
             add_menu(app, ui);
             let open_docs: Vec<(usize, String)> =
                 app.views.iter().enumerate().filter_map(|(i, v)| app.session.get(v.id).map(|d| (i, d.display_name()))).collect();
@@ -409,7 +563,7 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     }
                 }
             });
-            separator(ui, &t);
+            group(ui, &t, edge, 4.0 * 30.0 + 3.0 * 6.0);
             // Moves need a selected row with room to move; the buttons stay put either way.
             let can_up = selected.iter().skip_while(|s| **s).any(|s| *s);
             let can_down = selected.iter().rev().skip_while(|s| **s).any(|s| *s);
@@ -436,7 +590,7 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             if unlock.clicked() {
                 events.action = Some(RowAction::Unlock(None, unlock.rect.left_bottom() + vec2(0.0, 6.0)));
             }
-            separator(ui, &t);
+            group(ui, &t, edge, 2.0 * 30.0 + 6.0);
             let (undo, redo) = (!app.combine_tab.undo.is_empty(), !app.combine_tab.redo.is_empty());
             if tool(ui, undo, "undo-2", tl!("Undo"), tl!("Nothing to undo")).clicked() {
                 app.execute("edit.undo");
@@ -444,9 +598,19 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             if tool(ui, redo, "redo-2", tl!("Redo"), tl!("Nothing to redo")).clicked() {
                 app.execute("edit.redo");
             }
+            group(ui, &t, edge, 2.0 * 30.0 + 6.0);
+            // Thumbnails or the table; the choice is kept in the settings.
+            for (view, icon, label) in [(CombineView::Grid, "layout-grid", tl!("Grid view")), (CombineView::List, "list", tl!("List view"))] {
+                if icons::button(ui, icon, 30.0, app.combine_view == view, label).clicked() {
+                    app.combine_view = view;
+                }
+            }
             if count > 1 {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(crate::i18n::fmt(tl!("{n} selected"), &[("n", &count.to_string())])).color(t.text_muted));
+            }
+            if grid && n > 0 {
+                zoom_controls(app, ui, &t, edge);
             }
         });
         ui.add_space(10.0);
@@ -459,9 +623,19 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             ui,
             |ui| {
                 ui.set_min_height(card_h - 12.0);
+                // The grid scrolls inside the card, leaving room for the totals below it.
+                if grid {
+                    ui.set_max_height(card_h - 12.0);
+                }
                 ui.set_width(ui.available_width());
                 if n == 0 {
                     empty_state(app, ui, &t, files_hovering);
+                // The view as the toolbar left it: a click on List view this frame starts no
+                // thumbnail renders.
+                } else if app.combine_view == CombineView::Grid {
+                    if let Some(action) = crate::combine_grid::grid(app, ui, &t, &checks, &selected) {
+                        events.action = Some(action);
+                    }
                 } else {
                     let table_events = table(app, ui, &t, &checks, &selected);
                     events.range_focused |= table_events.range_focused;
@@ -472,6 +646,9 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
             },
         );
+
+        // A file shown large, over everything.
+        crate::combine_grid::preview(app, ui.ctx(), &t);
 
         // Totals.
         ui.add_space(8.0);
@@ -597,8 +774,20 @@ fn unlock_prompt(app: &mut PdfCraftApp, ctx: &egui::Context) {
 
 fn separator(ui: &mut egui::Ui, t: &Tokens) {
     ui.add_space(4.0);
-    ui.painter().vline(ui.cursor().left(), ui.max_rect().y_range().shrink(4.0), Stroke::new(1.0, t.divider));
+    // As tall as the buttons on this line (the toolbar can take two).
+    let top = ui.cursor().top();
+    ui.painter().vline(ui.cursor().left(), (top + 4.0)..=(top + 26.0), Stroke::new(1.0, t.divider));
     ui.add_space(6.0);
+}
+
+/// Before a group of toolbar buttons `width` wide: a divider, or a new line when the group
+/// doesn't fit before `edge` (the toolbar wraps between groups, never inside one).
+fn group(ui: &mut egui::Ui, t: &Tokens, edge: f32, width: f32) {
+    if edge - ui.cursor().min.x < width + 10.0 {
+        ui.end_row();
+    } else {
+        separator(ui, t);
+    }
 }
 
 /// A toolbar icon button, disabled with a reason.
@@ -623,15 +812,24 @@ fn blocker(files: &[CombineFile], checks: &[Result<usize, String>]) -> Option<St
 }
 
 /// While no text field has the keyboard: Up/Down select (Shift extends), Alt+Up/Down move the
-/// selection, Delete removes it, Ctrl/⌘+A selects every file.
-fn keyboard(ui: &egui::Ui, n: usize, any_selected: bool) -> Option<RowAction> {
-    if n == 0 || ui.ctx().memory(|m| m.focused().is_some()) {
+/// selection, Delete removes it, Ctrl/⌘+A selects every file. In the grid (`columns` per row)
+/// Left/Right step one file and Up/Down one row.
+pub(crate) fn keyboard(ui: &egui::Ui, n: usize, any_selected: bool, grid_columns: Option<usize>, space: bool) -> Option<RowAction> {
+    // A focused card or button still leaves the arrows to the list; a text field, an open menu
+    // or a dialog doesn't.
+    let ctx = ui.ctx();
+    if n == 0 || ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.top_modal_layer().is_some()) {
         return None;
     }
     use egui::Key;
     ui.ctx().input_mut(|i| {
         if i.consume_key(Modifiers::COMMAND, Key::A) {
             return Some(RowAction::SelectAll);
+        }
+        // As Quick Look: the file the keyboard is on, large (the way there without a pointer). A
+        // focused button keeps its Space.
+        if any_selected && space && i.consume_key(Modifiers::NONE, Key::Space) {
+            return Some(RowAction::PreviewSelected);
         }
         if any_selected {
             if i.consume_key(Modifiers::ALT, Key::ArrowUp) {
@@ -644,16 +842,87 @@ fn keyboard(ui: &egui::Ui, n: usize, any_selected: bool) -> Option<RowAction> {
                 return Some(RowAction::Remove);
             }
         }
-        for (down, key) in [(false, Key::ArrowUp), (true, Key::ArrowDown)] {
-            if i.consume_key(Modifiers::NONE, key) {
-                return Some(RowAction::Step { down, extend: false });
-            }
+        let row = grid_columns.unwrap_or(1).max(1);
+        let mut keys = vec![(false, row, Key::ArrowUp), (true, row, Key::ArrowDown)];
+        if grid_columns.is_some() {
+            keys.extend([(false, 1, Key::ArrowLeft), (true, 1, Key::ArrowRight)]);
+        }
+        for (down, by, key) in keys {
+            // Shift first: a plain arrow also matches with Shift held (egui ignores an extra
+            // Shift), which would step instead of extending.
             if i.consume_key(Modifiers::SHIFT, key) {
-                return Some(RowAction::Step { down, extend: true });
+                return Some(RowAction::Step { down, by, extend: true });
+            }
+            if i.consume_key(Modifiers::NONE, key) {
+                return Some(RowAction::Step { down, by, extend: false });
             }
         }
         None
     })
+}
+
+/// ⌘+ (or ⌘=), ⌘− and ⌘0, while no text field, menu or dialog has the keyboard: the grid zoom
+/// they ask for, from `zoom`.
+fn zoom_keys(ui: &egui::Ui, zoom: f32) -> Option<f32> {
+    use crate::combine_grid::zoom_step;
+    use egui::{Key, KeyboardShortcut};
+    let ctx = ui.ctx();
+    if ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.top_modal_layer().is_some()) {
+        return None;
+    }
+    // All of them are taken (several can arrive in one slow frame), so none is left for egui to
+    // zoom the whole window with.
+    let (larger, smaller, reset) = ctx.input_mut(|i| {
+        let mut pressed = |k| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, k));
+        (pressed(Key::Plus) | pressed(Key::Equals), pressed(Key::Minus), pressed(Key::Num0))
+    });
+    match (larger, smaller, reset) {
+        (_, _, true) => Some(1.0),
+        (true, false, _) => Some(zoom_step(zoom, true)),
+        (false, true, _) => Some(zoom_step(zoom, false)),
+        _ => None,
+    }
+}
+
+/// The grid's card size, at the right of the toolbar (right to left: larger, the percentage, the
+/// slider, smaller), as the page grid's.
+fn zoom_controls(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, edge: f32) {
+    use crate::combine_grid::{ZOOM_RANGE, zoom_step};
+    let zoom = app.combine_zoom;
+    // Two buttons, the percentage, the slider and the spaces between: on a line of their own when
+    // they don't fit beside the rest.
+    let needed = 30.0 + 44.0 + 96.0 + 30.0 + 4.0 * ui.spacing().item_spacing.x + 8.0;
+    if edge - ui.cursor().min.x < needed {
+        ui.end_row();
+    }
+    // Right-aligned on the line, up to its end.
+    let line = Rect::from_min_max(ui.cursor().min, egui::pos2(edge, ui.cursor().min.y + 30.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(line).layout(Layout::right_to_left(Align::Center)), |ui| {
+        let larger = ui.add_enabled_ui(zoom < *ZOOM_RANGE.end(), |ui| icons::button(ui, "zoom-in", 30.0, false, tl!("Larger pages"))).inner;
+        if larger.clicked() {
+            app.combine_tab.zoom_request = Some(zoom_step(zoom, true));
+        }
+        let percent =
+            egui::Button::new(egui::RichText::new(format!("{:.0}%", zoom * 100.0)).font(theme::medium(12.0)).color(t.text_muted)).frame(false);
+        let percent = ui.add_sized([44.0, 30.0], percent);
+        percent.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Reset page size")));
+        if percent.on_hover_text(tl!("Reset page size")).clicked() {
+            app.combine_tab.zoom_request = Some(1.0);
+        }
+        let mut value = zoom;
+        ui.spacing_mut().slider_width = 96.0;
+        let slider = ui.add(egui::Slider::new(&mut value, ZOOM_RANGE).show_value(false));
+        // Read out as a percentage, as shown beside it.
+        slider.widget_info(|| egui::WidgetInfo::slider(true, f64::from(value * 100.0).round(), tl!("Page size")));
+        app.combine_tab.zoom_slider = Some(slider.id);
+        if slider.on_hover_text(tl!("Page size")).changed() {
+            app.combine_tab.zoom_request = Some(value);
+        }
+        let smaller = ui.add_enabled_ui(zoom > *ZOOM_RANGE.start(), |ui| icons::button(ui, "zoom-out", 30.0, false, tl!("Smaller pages"))).inner;
+        if smaller.clicked() {
+            app.combine_tab.zoom_request = Some(zoom_step(zoom, false));
+        }
+    });
 }
 
 fn empty_state(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, files_hovering: bool) {
@@ -1092,6 +1361,37 @@ fn natural(a: &str, b: &str) -> Ordering {
     }
 }
 
+/// Where an arrow key goes from `at` among `n` files, `by` at a time (1 in the list; a grid
+/// row's length for Up/Down in the grid). It stays put on the first row going up and on the last
+/// row going down; a short last row is reached from the row above at its last file.
+pub(crate) fn step_to(at: usize, n: usize, by: usize, down: bool) -> usize {
+    let by = by.max(1);
+    let last = n.saturating_sub(1);
+    let at = at.min(last);
+    if down {
+        if at >= last / by * by { at } else { at.saturating_add(by).min(last) }
+    } else if at < by {
+        at
+    } else {
+        at - by
+    }
+}
+
+/// The order after moving the files `moving` (keeping their order) to `gap` in `ids` as it is
+/// (0 = before the first, `ids.len()` = after the last); `None` when nothing would change.
+pub(crate) fn moved_order(ids: &[u64], moving: &BTreeSet<u64>, gap: usize) -> Option<Vec<u64>> {
+    let gap = gap.min(ids.len());
+    // The gap counted among the files that stay.
+    let before = ids.get(..gap).map_or(0, |s| s.iter().filter(|id| moving.contains(id)).count());
+    let (taken, mut rest): (Vec<u64>, Vec<u64>) = ids.iter().partition(|id| moving.contains(id));
+    if taken.is_empty() {
+        return None;
+    }
+    let at = gap.saturating_sub(before).min(rest.len());
+    rest.splice(at..at, taken);
+    (rest != ids).then_some(rest)
+}
+
 /// Six dots: the drag handle.
 fn grip(ui: &egui::Ui, rect: Rect, colour: Color32) {
     for dx in [-2.5, 2.5] {
@@ -1167,6 +1467,7 @@ impl PdfCraftApp {
         self.combine_tab.selected = s.selected;
         self.combine_tab.sort = s.sort;
         self.combine_tab.range_edit = None;
+        self.combine_tab.revision = self.combine_tab.revision.wrapping_add(1);
         // A Pages field with the keyboard would otherwise keep typing into the restored list
         // without an undo step.
         if let Some(ctx) = &self.ctx {
@@ -1175,6 +1476,7 @@ impl PdfCraftApp {
     }
 
     fn combine_push_undo(&mut self, before: Snapshot) {
+        self.combine_tab.revision = self.combine_tab.revision.wrapping_add(1);
         let undo = &mut self.combine_tab.undo;
         undo.push(before);
         if undo.len() > HISTORY {
@@ -1230,7 +1532,19 @@ impl PdfCraftApp {
         self.combine_tab.sort = Some((key, ascending));
     }
 
-    fn combine_apply(&mut self, action: RowAction) {
+    /// Move `moving` to `gap`, as one undo step; a move that changes nothing leaves the list,
+    /// its sort and the history alone.
+    fn combine_move_to_gap(&mut self, moving: BTreeSet<u64>, gap: usize) {
+        let ids: Vec<u64> = self.combine_draft.iter().map(|f| f.id).collect();
+        let Some(order) = moved_order(&ids, &moving, gap) else { return };
+        self.combine_record();
+        let rank: std::collections::HashMap<u64, usize> = order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        self.combine_draft.sort_by_key(|f| rank.get(&f.id).copied().unwrap_or(usize::MAX));
+        self.combine_tab.selected = moving.into_iter().filter(|id| rank.contains_key(id)).collect();
+        self.combine_tab.sort = None;
+    }
+
+    pub(crate) fn combine_apply(&mut self, action: RowAction) {
         let ids: Vec<u64> = self.combine_draft.iter().map(|f| f.id).collect();
         let n = ids.len();
         let index_of = |id: Option<u64>| id.and_then(|id| ids.iter().position(|x| *x == id));
@@ -1259,10 +1573,9 @@ impl PdfCraftApp {
             RowAction::SelectAll => {
                 tab.selected = ids.iter().copied().collect();
             }
-            RowAction::Step { down, extend } => {
+            RowAction::Step { down, by, extend } => {
                 let next = match index_of(tab.cursor) {
-                    Some(c) if down => (c + 1).min(n.saturating_sub(1)),
-                    Some(c) => c.saturating_sub(1),
+                    Some(c) => step_to(c, n, by, down),
                     None if down => 0,
                     None => n.saturating_sub(1),
                 };
@@ -1275,6 +1588,7 @@ impl PdfCraftApp {
                     tab.anchor = Some(id);
                 }
                 tab.cursor = Some(id);
+                tab.reveal = Some(id);
             }
             RowAction::MoveUp | RowAction::MoveDown => {
                 let up = matches!(action, RowAction::MoveUp);
@@ -1313,21 +1627,52 @@ impl PdfCraftApp {
                 self.combine_tab.selected = next.into_iter().collect();
                 (self.combine_tab.anchor, self.combine_tab.cursor) = (next, next);
             }
+            RowAction::RemoveFile(id) => {
+                if !ids.contains(&id) {
+                    return;
+                }
+                self.combine_record();
+                self.combine_draft.retain(|f| f.id != id);
+                // The rest of the selection stays as it was.
+                self.combine_tab.selected.remove(&id);
+                if self.combine_tab.anchor == Some(id) {
+                    self.combine_tab.anchor = None;
+                }
+                if self.combine_tab.cursor == Some(id) {
+                    self.combine_tab.cursor = None;
+                }
+            }
+            RowAction::Preview(id) => {
+                if ids.contains(&id) {
+                    self.combine_tab.preview = Some(Preview { file: id, at: 0, page: None, pages: None });
+                }
+            }
+            RowAction::PreviewSelected => {
+                let id = tab.cursor.filter(|c| tab.selected.contains(c)).or_else(|| ids.iter().copied().find(|id| tab.selected.contains(id)));
+                // Only what its card would offer a magnifier for (unlocked, readable, measured).
+                let shows = |id: u64| self.combine_draft.iter().any(|f| f.id == id && f.lock.is_none() && f.problem.is_none() && !f.sizes.is_empty());
+                if let Some(id) = id.filter(|id| shows(*id)) {
+                    self.combine_tab.preview = Some(Preview { file: id, at: 0, page: None, pages: None });
+                }
+            }
             RowAction::Drop { from, to } => {
                 let (Some(&dragged), Some(&target)) = (ids.get(from), ids.get(to)) else { return };
                 // Dragging a selected file takes the whole selection along.
                 let moving: BTreeSet<u64> = if tab.selected.contains(&dragged) { tab.selected.clone() } else { BTreeSet::from([dragged]) };
+                // Dropped on the selection itself: nothing to do.
                 if moving.contains(&target) {
                     return;
                 }
-                self.combine_record();
-                let list = &mut self.combine_draft;
-                let (taken, mut rest): (Vec<_>, Vec<_>) = list.drain(..).partition(|f| moving.contains(&f.id));
-                let at = rest.iter().position(|f| f.id == target).map_or(rest.len(), |p| if from < to { p + 1 } else { p });
-                rest.splice(at..at, taken);
-                *list = rest;
-                self.combine_tab.selected = moving;
-                self.combine_tab.sort = None;
+                // Below the row when dragged down, above it when dragged up.
+                self.combine_move_to_gap(moving, if from < to { to + 1 } else { to });
+            }
+            RowAction::DropAt { file, revision, gap } => {
+                // The list changed under the drag (e.g. undo): the gap no longer means the same.
+                if revision != tab.revision || !ids.contains(&file) {
+                    return;
+                }
+                let moving: BTreeSet<u64> = if tab.selected.contains(&file) { tab.selected.clone() } else { BTreeSet::from([file]) };
+                self.combine_move_to_gap(moving, gap);
             }
             RowAction::Unlock(row, at) => {
                 let locked: BTreeSet<u64> = self.combine_draft.iter().filter(|f| f.lock.is_some()).map(|f| f.id).collect();
@@ -1356,8 +1701,11 @@ impl PdfCraftApp {
     /// Close the Combine files tab and forget its list; the last document shows, if any.
     pub fn close_combine_tab(&mut self) {
         let showing = self.combine_showing();
-        self.combine_tab = CombineTab::default();
+        // (Revisions keep counting: a drag begun before can never match a list made after.)
+        let revision = self.combine_tab.revision.wrapping_add(1);
+        self.combine_tab = CombineTab { revision, ..CombineTab::default() };
         self.combine_draft.clear();
+        self.combine_thumbs.clear();
         if showing {
             self.active = self.views.len().checked_sub(1);
         }
@@ -1394,6 +1742,8 @@ impl PdfCraftApp {
                 problem: None,
                 lock: None,
                 password: None,
+                sizes: Arc::from(Vec::new()),
+                auth: 0,
                 notes: Vec::new(),
                 origin_note: note,
                 checked: None,
@@ -1522,6 +1872,74 @@ impl PdfCraftApp {
             }
             // The list stays, so the user can fix it.
             Err(e) => self.notify_fmt("Couldn't combine files: {e}", &[("e", &e.to_string())]),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-page PDF that opens with "pw".
+    fn locked() -> Vec<u8> {
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] >>",
+            "<< /Type /Page /Parent 2 0 R >>",
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+        for o in offsets {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+        let mut doc = pdfcraft_cos::Document::open(Arc::new(out)).unwrap();
+        doc.set_encryption(&pdfcraft_cos::NewEncryption {
+            algorithm: pdfcraft_cos::Algorithm::Aes256,
+            user_password: "pw",
+            owner_password: "owner",
+            permissions: -1,
+            encrypt_metadata: true,
+            seed: [4; 32],
+        })
+        .unwrap();
+        pdfcraft_cos::write_full(&doc, &Default::default()).unwrap()
+    }
+
+    #[test]
+    fn every_read_of_a_file_is_new_even_after_undo() {
+        // Regression: the read counter lived in the undo history, so unlock → undo → unlock (with
+        // another password) could repeat a value and keep a thumbnail of the other read.
+        let mut app = PdfCraftApp::new();
+        app.stage_combine(vec![("secret.pdf".into(), locked())]);
+        let added = app.combine_draft[0].auth;
+        assert!(app.combine_unlock_rows(&[0], "pw"));
+        let first = app.combine_draft[0].auth;
+        app.combine_history_step(true);
+        assert_eq!(app.combine_draft[0].auth, added, "undo brings back the file as it was read");
+        assert!(app.combine_unlock_rows(&[0], "owner"));
+        let second = app.combine_draft[0].auth;
+        assert!(second != first && second != added, "added {added}, unlocked {first}, unlocked again {second}");
+    }
+
+    #[test]
+    fn moves_by_rank_never_lose_or_repeat_a_file() {
+        let mut app = PdfCraftApp::new();
+        app.stage_combine((0..6).map(|i| (format!("f{i}.pdf"), locked())).collect());
+        let mut ids: Vec<u64> = app.combine_draft.iter().map(|f| f.id).collect();
+        for (moving, gap) in [(vec![0usize, 2, 4], 6), (vec![5], 0), (vec![1, 3], 3)] {
+            let set: BTreeSet<u64> = moving.iter().filter_map(|i| ids.get(*i).copied()).collect();
+            app.combine_move_to_gap(set, gap);
+            let mut now: Vec<u64> = app.combine_draft.iter().map(|f| f.id).collect();
+            ids = now.clone();
+            now.sort_unstable();
+            assert_eq!(now, (0..6).collect::<Vec<u64>>(), "every file once");
         }
     }
 }

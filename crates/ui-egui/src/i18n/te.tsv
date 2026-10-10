@@ -50,6 +50,7 @@ comment menu	Edit	సవరించు
 	Fit visible	కనిపించే భాగానికి సరిపోయేలా
 	Marquee zoom	ఎంచుకున్న ప్రాంతానికి జూమ్
 	Take a snapshot	స్నాప్‌షాట్ తీయి
+	Column select	నిలువు వరుస ఎంపిక
 	Full screen mode	పూర్తి స్క్రీన్ మోడ్
 	Read mode	చదివే మోడ్
 	Switch light / dark theme	లేత / ముదురు థీమ్‌ల మధ్య మారు
@@ -2084,3 +2085,13 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	స్పేస్
+	Grid view	గ్రిడ్ వీక్షణ
+	List view	జాబితా వీక్షణ
+	Files are combined in the order shown. Drag them to change it.	ఫైల్‌లు చూపిన క్రమంలో కలపబడతాయి. క్రమాన్ని మార్చడానికి వాటిని లాగండి.
+	Preview unavailable: {e}	ప్రివ్యూ అందుబాటులో లేదు: {e}
+	Pages: {k} of {n}	పేజీలు: {n}లో {k}
+	Check the pages	పేజీలను తనిఖీ చేయండి
+	Switch to List view to change the pages it takes.	ఇది తీసుకునే పేజీలను మార్చడానికి జాబితా వీక్షణకు మారండి.
+	Larger pages	పెద్ద పేజీలు
+	Smaller pages	చిన్న పేజీలు
+	Reset page size	పేజీ పరిమాణాన్ని రీసెట్ చేయి

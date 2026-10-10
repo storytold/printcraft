@@ -26,8 +26,10 @@ mod a11y_ui;
 mod actions_ui;
 pub mod canvas;
 mod chrome;
+mod combine_grid;
+pub use combine_grid::ThumbState as CombineThumb;
 mod combine_ui;
-pub use combine_ui::{Columns as CombineColumns, Lock as CombineLock, SortKey};
+pub use combine_ui::{Columns as CombineColumns, CombineView, Lock as CombineLock, SortKey};
 mod commands;
 mod comment_props;
 pub mod comments;
@@ -206,6 +208,9 @@ pub enum QuickTool {
     MarqueeZoom,
     /// Edit ▸ Take a Snapshot.
     Snapshot,
+    /// Edit ▸ Column Select: drag a rectangle to select only the text inside it (#740). The
+    /// Select tool does the same while Alt/Option is held at the start of a drag.
+    ColumnSelect,
 }
 
 /// Files dropped on a document's page grid.
@@ -516,6 +521,13 @@ pub struct PdfCraftApp {
     pub combine_tab: combine_ui::CombineTab,
     /// The Combine files table's column order and widths (kept in the settings).
     pub combine_columns: combine_ui::Columns,
+    /// Combine files as thumbnails or as the table (kept in the settings).
+    pub combine_view: combine_ui::CombineView,
+    /// How large the Combine grid draws its cards (1.0 = the usual; kept in the settings). Set
+    /// with [`PdfCraftApp::set_combine_zoom`].
+    pub combine_zoom: f32,
+    /// The Combine grid's thumbnails: rendered off the UI thread, a few at a time.
+    pub(crate) combine_thumbs: combine_grid::Thumbs,
     /// Images waiting for the resolution choice (released on cancel).
     pub image_import: Option<create_ui::ImageImport>,
     /// The custom stamp library, and the stamp being created.
@@ -765,6 +777,9 @@ impl PdfCraftApp {
             combine_draft: Vec::new(),
             combine_tab: Default::default(),
             combine_columns: Default::default(),
+            combine_view: Default::default(),
+            combine_zoom: 1.0,
+            combine_thumbs: Default::default(),
             image_import: None,
             custom_stamps: Vec::new(),
             stamp_draft: Default::default(),
@@ -1375,6 +1390,8 @@ impl PdfCraftApp {
             "javascript": self.session.javascript(),
             "actions": actions_ui::encode(&self.custom_actions),
             "combine_columns": self.combine_columns.to_json(),
+            "combine_view": self.combine_view.as_str(),
+            "combine_zoom": self.combine_zoom,
             "comments_panel_closed": self.comments_panel_closed,
         })
         .to_string()
@@ -1384,6 +1401,12 @@ impl PdfCraftApp {
     pub fn restore(&mut self, json: &str) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
         self.combine_columns = combine_ui::Columns::from_json(&v["combine_columns"]);
+        if let Some(view) = v["combine_view"].as_str().and_then(combine_ui::CombineView::parse) {
+            self.combine_view = view;
+        }
+        if let Some(zoom) = v["combine_zoom"].as_f64() {
+            self.set_combine_zoom(zoom as f32);
+        }
         if let Ok(r) = serde_json::from_value::<Vec<RecentFile>>(v["recent"].clone()) {
             // Only keep entries whose files still exist.
             #[cfg(not(target_arch = "wasm32"))]
@@ -1676,6 +1699,7 @@ impl PdfCraftApp {
                     "sign" => QuickTool::SignArea { certify: false },
                     "marquee-zoom" => QuickTool::MarqueeZoom,
                     "snapshot" => QuickTool::Snapshot,
+                    "column-select" => QuickTool::ColumnSelect,
                     "certify" => QuickTool::SignArea { certify: true },
                     custom if custom.starts_with("custom-stamp-") => {
                         let i: usize = custom[13..].parse().map_err(|_| format!("bad stamp {custom}"))?;
@@ -1719,6 +1743,18 @@ impl PdfCraftApp {
                 v.comments.selected = Some((p.saturating_sub(1), i.saturating_sub(1)));
                 v.comments.reveal = true;
             }
+            // `--combine-view list`: Combine files as thumbnails (grid) or as the table (list).
+            ("combine-view", _) => {
+                self.combine_view = combine_ui::CombineView::parse(value).ok_or("combine-view must be grid or list")?;
+            }
+            // `--combine-zoom 150`: the size of the cards in the Combine grid, in percent.
+            ("combine-zoom", _) => {
+                let percent = value.trim_end_matches('%').parse::<f32>().map_err(|e| e.to_string())?;
+                if !percent.is_finite() || !combine_grid::ZOOM_RANGE.contains(&(percent / 100.0)) {
+                    return Err("combine-zoom must be between 60 and 200".into());
+                }
+                self.set_combine_zoom(percent / 100.0);
+            }
             (k, None)
                 if ["page", "zoom", "layout", "cover", "organize", "grid-zoom", "fields", "find", "rotate", "select", "notice", "comment"]
                     .contains(&k) =>
@@ -1747,7 +1783,8 @@ impl PdfCraftApp {
             return;
         }
         self.registry_shortcuts(ctx);
-        if self.full_screen && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        // (Esc closes a Combine file shown large first.)
+        if self.full_screen && self.combine_tab.preview.is_none() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.set_full_screen(ctx, false);
         }
         if let Some(i) = self.active {
@@ -2022,6 +2059,8 @@ impl eframe::App for PdfCraftApp {
 
 impl PdfCraftApp {
     fn finish_render_frame(&mut self, ctx: &egui::Context) {
+        // The Combine grid's thumbnails, whichever tab shows (renders under way still finish).
+        self.combine_thumbs_frame(ctx);
         // Retire hidden documents before admitting the visible document's textures, so the
         // three cache limits apply to the application, regardless of how many tabs are open.
         for (i, view) in self.views.iter_mut().enumerate() {

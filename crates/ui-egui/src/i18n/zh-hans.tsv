@@ -115,6 +115,7 @@
 	Rotate view clockwise	顺时针旋转视图
 	Rotate view counterclockwise	逆时针旋转视图
 	Take a snapshot	拍摄快照
+	Column select	列选择
 	Full screen mode	全屏模式
 	Read mode	阅读模式
 	Switch light / dark theme	切换浅色/深色主题
@@ -2120,3 +2121,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	空格
+	Grid view	网格视图
+	List view	列表视图
+	Files are combined in the order shown. Drag them to change it.	文件按显示的顺序合并。拖动可更改顺序。
+	Preview unavailable: {e}	无法预览：{e}
+	Pages: {k} of {n}	页面：{k}/{n}
+	Check the pages	请检查页码
+	Switch to List view to change the pages it takes.	切换到列表视图以更改要使用的页面。

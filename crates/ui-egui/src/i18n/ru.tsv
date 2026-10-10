@@ -65,6 +65,7 @@
 	Fit visible	По видимой области
 	Marquee zoom	Масштаб выделением
 	Take a snapshot	Сделать снимок
+	Column select	Выделение столбца
 	Full screen mode	Полноэкранный режим
 	Read mode	Режим чтения
 	Switch light / dark theme	Переключить светлую / тёмную тему
@@ -2069,3 +2070,10 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	Пробел
+	Grid view	Вид сеткой
+	List view	Вид списком
+	Files are combined in the order shown. Drag them to change it.	Файлы объединяются в показанном порядке. Перетащите их, чтобы изменить его.
+	Preview unavailable: {e}	Предпросмотр недоступен: {e}
+	Pages: {k} of {n}	Страницы: {k} из {n}
+	Check the pages	Проверьте страницы
+	Switch to List view to change the pages it takes.	Переключитесь на вид списком, чтобы изменить, какие страницы взять.

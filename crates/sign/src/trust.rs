@@ -48,6 +48,10 @@ pub fn is_builtin_root(c: &Certificate) -> bool {
 /// `cargo xtask trust-roots cca-india-roots` rebuilds the file from it. Off unless
 /// `TrustStore::cca_india` is set.
 pub fn cca_india_roots() -> &'static [Certificate] {
+    #[cfg(test)]
+    if let Some(roots) = tests::CCA_INDIA_STAND_IN.with(|r| r.get()) {
+        return roots;
+    }
     static PARSED: OnceLock<Vec<Certificate>> = OnceLock::new();
     PARSED.get_or_init(|| parse_concatenated(CCA_INDIA_ROOTS))
 }
@@ -99,8 +103,18 @@ impl TrustList {
 }
 
 #[cfg(test)]
-mod tests {
+#[path = "eaadhaar_tests.rs"]
+mod eaadhaar_tests;
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
+
+    thread_local! {
+        /// Test roots that stand in for [`cca_india_roots`] on this thread, so a synthetic chain
+        /// shaped like e-Aadhaar's can be validated through the set (nobody has the CCA's keys).
+        pub(crate) static CCA_INDIA_STAND_IN: std::cell::Cell<Option<&'static [Certificate]>> = const { std::cell::Cell::new(None) };
+    }
 
     #[test]
     fn the_cca_india_roots_match_their_manifest() {

@@ -78,6 +78,23 @@ fn page_selection() {
 }
 
 #[test]
+fn page_selection_handles_ranges_between_hyphenated_labels() {
+    let labels: Vec<String> = ["A-1", "A-2", "A-3", "B-1", "B-2"].iter().map(|s| s.to_string()).collect();
+    let pages = |range| select_pages(5, Some(range), &labels, Subset::All, false).unwrap();
+    assert_eq!(pages("A-1"), [0], "the complete label takes precedence over a range");
+    assert_eq!(pages("A-1-A-3"), [0, 1, 2]);
+    assert_eq!(pages("A-3-A-1"), [2, 1, 0], "reverse logical ranges");
+    assert_eq!(pages("A-2-"), [1, 2, 3, 4], "an open-ended range starting at a hyphenated label");
+    assert_eq!(pages("-A-2"), [0, 1], "an open-ended range ending at a hyphenated label");
+    assert_eq!(pages("A-2-5"), [1, 2, 3, 4], "a label followed by a numeric endpoint");
+    assert_eq!(pages("B-1-B-2"), [3, 4]);
+    // If an earlier dash yields one known label but an unknown endpoint, continue
+    // checking later dashes instead of rejecting the whole range.
+    let ambiguous: Vec<String> = ["A-1", "A-1-B", "C"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(select_pages(3, Some("A-1-B-C"), &ambiguous, Subset::All, false).unwrap(), [1, 2]);
+}
+
+#[test]
 fn size_modes() {
     let sizes = [(200.0, 300.0), (1000.0, 1500.0)];
     let fit = layout(&sizes, &settings(vec![0, 1], Layout::Size(SizeMode::Fit))).unwrap();

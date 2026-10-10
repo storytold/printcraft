@@ -81,8 +81,9 @@ fn zoo() -> Vec<Value> {
 
 /// Paths that must never resolve inside the root. Absolute ones point into the test's own temp
 /// `base` (the root's parent), never at real system files or network shares, so a confinement
-/// bug can only touch what the test made.
-fn escapes(base: &std::path::Path) -> Vec<String> {
+/// bug can only touch what the test made. `linked`: the root holds `link-out`, a symbolic link
+/// to `base`.
+fn escapes(base: &std::path::Path, linked: bool) -> Vec<String> {
     let mut out: Vec<String> = vec![
         "../outside.pdf".into(),
         "../../outside.pdf".into(),
@@ -92,13 +93,32 @@ fn escapes(base: &std::path::Path) -> Vec<String> {
         base.join("outside.pdf").to_string_lossy().into_owned(),
         base.join("new-outside.pdf").to_string_lossy().into_owned(),
         base.join("sub").join("new-outside.pdf").to_string_lossy().into_owned(),
-        "link-out/outside.pdf".into(), // through a planted symbolic link, when the system allows one
     ];
+    if linked {
+        out.push("link-out/outside.pdf".into());
+    }
     // Backslashes separate only on Windows; elsewhere this is an ordinary file name in the root.
     if cfg!(windows) {
         out.push(r"..\..\outside.pdf".into());
     }
     out
+}
+
+/// A symbolic link to a folder, where the system allows one (Windows needs Developer Mode or an
+/// administrator for it, #948).
+fn dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(std::io::Error::other(format!("no symbolic links here: {} {}", target.display(), link.display())))
+    }
 }
 
 /// The properties of `def` whose values are paths, by name and whether they are a list.
@@ -223,11 +243,15 @@ fn no_tool_escapes_the_root() {
     .expect("outside file");
     let before = listing(&base);
 
-    // A link inside the root pointing out of it, where the system allows one to be made.
-    #[cfg(unix)]
-    let _ = std::os::unix::fs::symlink(&base, root.join("link-out"));
-    #[cfg(windows)]
-    let _ = std::os::windows::fs::symlink_dir(&base, root.join("link-out"));
+    // A link inside the root pointing out of it, where the system allows one to be made. Without
+    // it `link-out/…` is an ordinary path inside the root, which tools that write rightly accept.
+    let linked = match dir_symlink(&base, &root.join("link-out")) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("escapes through a symbolic link not checked: {e}");
+            false
+        }
+    };
 
     let mut a = Automation::new().with_root(&root).expect("root");
 
@@ -247,7 +271,7 @@ fn no_tool_escapes_the_root() {
 
     for def in tools() {
         for (prop, is_list) in path_props(&def) {
-            for escape in escapes(&base) {
+            for escape in escapes(&base, linked) {
                 let mut obj = plausible_with(&def, Some(doc));
                 obj.insert(prop.clone(), if is_list { json!([escape]) } else { json!(escape) });
                 let args = Value::Object(obj);

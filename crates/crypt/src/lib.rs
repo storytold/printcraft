@@ -151,15 +151,19 @@ impl SecurityHandler {
         let mut recovered_user = None;
         let (key, auth) = match dict.r {
             2..=4 => {
-                let legacy = legacy_password(pw);
-                if let Some((k, user)) = owner_key_r4(&dict, id0, &legacy) {
-                    recovered_user = Some(user);
-                    (k, Auth::Owner)
-                } else if let Some(k) = user_key_r4(&dict, id0, &legacy) {
-                    (k, Auth::User)
-                } else {
-                    return Err(CryptError::WrongPassword);
+                let mut found = None;
+                for legacy in legacy_candidates(pw) {
+                    if let Some((k, user)) = owner_key_r4(&dict, id0, &legacy) {
+                        recovered_user = Some(user);
+                        found = Some((k, Auth::Owner));
+                    } else if let Some(k) = user_key_r4(&dict, id0, &legacy) {
+                        found = Some((k, Auth::User));
+                    }
+                    if found.is_some() {
+                        break;
+                    }
                 }
+                found.ok_or(CryptError::WrongPassword)?
             }
             5 | 6 => {
                 let pw = sasl_password(pw);
@@ -300,9 +304,48 @@ impl SecurityHandler {
 
 // ── Passwords ──────────────────────────────────────────────────────────────────────────────────
 
-/// Revisions 2–4 use PDFDocEncoding passwords; characters outside Latin-1 are dropped.
+/// PDFDocEncoding (ISO 32000-2 Annex D) where it differs from Latin-1: bytes 0x18–0x1F and
+/// 0x80–0xA0 (0x9F is undefined). Here rather than in pdfcraft-cos, which decodes text strings
+/// with it, because R2–R4 passwords need it too and cos depends on this crate.
+const PDFDOC_LOW: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
+const PDFDOC_HIGH: [char; 33] = [
+    '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ',
+    'š', 'ž', '\u{FFFD}', '€',
+];
+
+/// PDFDocEncoding → Unicode.
+pub fn pdfdoc_char(c: u8) -> char {
+    match c {
+        0x18..=0x1F => PDFDOC_LOW[usize::from(c - 0x18)],
+        0x80..=0xA0 => PDFDOC_HIGH[usize::from(c - 0x80)],
+        _ => char::from(c),
+    }
+}
+
+/// Unicode → PDFDocEncoding, `None` for a character it lacks (ğ, ş, İ, Cyrillic, CJK, …).
+pub fn pdfdoc_byte(c: char) -> Option<u8> {
+    let at = |table: &[char], base: u8| table.iter().position(|&t| t == c && t != '\u{FFFD}').and_then(|i| u8::try_from(i).ok()).map(|i| base + i);
+    at(&PDFDOC_LOW, 0x18).or_else(|| at(&PDFDOC_HIGH, 0x80)).or_else(|| match u32::from(c) {
+        0x18..=0x1F | 0x80..=0xA0 => None,
+        n => u8::try_from(n).ok(),
+    })
+}
+
+/// Revisions 2–4: the password in PDFDocEncoding (§7.6.4.3.2, Algorithm 2), at most 32 bytes.
+/// Characters PDFDocEncoding lacks are dropped.
 fn legacy_password(pw: &str) -> Vec<u8> {
-    pw.chars().filter_map(|c| u8::try_from(u32::from(c)).ok()).take(32).collect()
+    pw.chars().filter_map(pdfdoc_byte).take(32).collect()
+}
+
+/// The bytes an R2–R4 password may have been written as: PDFDocEncoding, as the specification
+/// asks; and for a password with characters PDFDocEncoding lacks (ğ, ş, İ, …), which it gives
+/// no bytes, also its UTF-8 bytes, which qpdf and other tools write for such passwords.
+fn legacy_candidates(pw: &str) -> Vec<Vec<u8>> {
+    let mut out = vec![legacy_password(pw)];
+    if pw.chars().any(|c| pdfdoc_byte(c).is_none()) {
+        out.push(pw.bytes().take(32).collect());
+    }
+    out
 }
 
 /// Revisions 5–6: SASLprep (RFC 4013), UTF-8, at most 127 bytes.

@@ -27,6 +27,9 @@
 	Preferences	Налаштування
 	Preferences…	Налаштування…
 	Interface language	Мова інтерфейсу
+	Interface size	Розмір інтерфейсу
+	Auto ({percent}%)	Автоматично ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	Автоматичний режим використовує розмір тексту із системних налаштувань. Сторінки завжди відображаються в повній роздільній здатності екрана.
 	Identity	Особисті дані
 	Name on new comments	Ім’я в нових коментарях
 	Open…	Відкрити…
@@ -72,6 +75,7 @@
 	Fit visible	За видимою областю
 	Marquee zoom	Масштабувати виділену область
 	Take a snapshot	Зробити знімок
+	Column select	Виділення стовпця
 	Full screen mode	Повноекранний режим
 	Read mode	Режим читання
 	Switch light / dark theme	Перемкнути світлу / темну тему
@@ -1092,6 +1096,7 @@
 	Dates	Дати
 	Text in images isn't found; recognise text (OCR) first.	Текст у зображеннях не знаходиться; спочатку розпізнайте текст (OCR).
 	No matches.	Збігів немає.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Деякі закладки тут не показано: панель показує обмежену кількість закладок з обмеженою глибиною вкладення.
 	{n} match(es) marked for redaction.	Збігів, позначених для вилучення: {n}.
 	Multiple words or phrases	Кілька слів або фраз
 	One word or phrase per line	По одному слову або фразі в рядку
@@ -1494,6 +1499,8 @@
 	Right Edge	Правий край
 	Language	Мова
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	Збережено {place}: {before} → {after} (менше на {pct}%){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	Цей файл уже мінімального розміру ({size}). Копію не збережено.
+	Saved {place}: {before} → {after} (not smaller){detail}	Збережено {place}: {before} → {after} (не менше){detail}
 	Couldn't save the image: {e}	Не вдалося зберегти зображення: {e}
 	Adding images arrives on the web with file pickers for images	Додавання зображень з’явиться у вебверсії разом із вибором файлів зображень
 	Replacing images on page {p} arrives on the web with image pickers ({i})	Заміна зображень на сторінці {p} з’явиться у вебверсії разом із вибором зображень ({i})
@@ -2164,3 +2171,39 @@ certificate	Subject	Власник сертифіката
 	The field {name} no longer exists.	Поле {name} більше не існує.
 	A selected field has no widget on any page, so the fields can't be edited together.	Одне з вибраних полів не має віджета на жодній сторінці, тому поля не можна редагувати разом.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} — з роздільністю {dpi} dpi, найбільшою, з якою їх можна відобразити)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	Виділено {n} об’єкт|Виділено {n} об’єкти|Виділено {n} об’єктів
+	Drag the selection to move it. Esc clears the selection.	Перетягніть виділення, щоб перемістити його. Esc скасовує виділення.
+	Shift-click to select several objects. Drag empty space to select an area.	Клацніть із Shift, щоб вибрати кілька об’єктів. Протягніть рамку на порожньому місці, щоб виділити область.
+	Select at most 1000 objects at a time.	Вибирайте не більше 1000 об’єктів одночасно.
+	Finish or discard the text being edited before selecting several objects.	Завершіть або скасуйте редагування тексту, перш ніж вибирати кілька об’єктів.
+	Move object	Перемістити об’єкт
+	Move objects	Перемістити об’єкти
+	Vertical text cannot be moved with this selection.	Вертикальний текст не можна перемістити разом із цим виділенням.
+	Text used as a clipping path cannot be moved with this selection.	Текст, що використовується як контур відсікання, не можна перемістити разом із цим виділенням.
+	These objects could not be moved. Select them again and try a smaller move.	Не вдалося перемістити ці об’єкти. Виберіть їх знову та спробуйте менше зміщення.
+	This page contains objects that cannot be selected together.	На цій сторінці є об’єкти, які не можна виділити разом.
+	Fill colour	Колір заливки
+	No fill	Без заливки
+	Fill colour: none	Колір заливки: немає
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	Пробіл
+	Grid view	Вигляд сіткою
+	List view	Вигляд списком
+	Files are combined in the order shown. Drag them to change it.	Файли об’єднуються в показаному порядку. Перетягніть їх, щоб змінити його.
+	Preview unavailable: {e}	Попередній перегляд недоступний: {e}
+	Pages: {k} of {n}	Сторінки: {k} із {n}
+	Check the pages	Перевірте сторінки
+	Switch to List view to change the pages it takes.	Перейдіть до вигляду списком, щоб змінити, які сторінки взяти.
+	Expand all	Розгорнути всі
+	Collapse all	Згорнути всі
+	Remove page	Видалити сторінку
+	Remove {n} pages	Видалити сторінки: {n}

@@ -21,8 +21,9 @@ pub mod text;
 use pdfcraft_cos::Document;
 
 pub use data::{
-    DataNode, DataOp, DataPath, DatasetsWrite, FieldData, FieldDatum, add_data_instances, build_data, iso_to_pattern, parse_datasets, pattern_to_iso,
-    read_values, remove_data_instance, som_to_path, write_data_ops, write_data_value, write_datasets, write_datasets_reusing,
+    DataNode, DataOp, DataPath, DatasetsWrite, FieldData, FieldDatum, add_data_instances, build_data, data_path, iso_to_pattern, parse_datasets,
+    pattern_to_iso, read_values, read_values_with, remove_data_instance, som_to_path, write_data_ops, write_data_value, write_datasets,
+    write_datasets_reusing, write_datasets_with,
 };
 pub use layout::{Action, BorderShape, Form, Item, MAX_PAGES, Page, Widget, WidgetKind, layout};
 pub use packets::{Encoding, Packets, decode as decode_packet, encode as encode_packet, read_packets};

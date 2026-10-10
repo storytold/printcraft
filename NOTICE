@@ -13,6 +13,10 @@ This product bundles third-party material under its own licenses, listed below. 
 list (author, source, license) is in ATTRIBUTION.md.
 
 - Lucide icons (assets/icons/*.svg) — ISC License. See assets/icons/LICENSE-lucide.txt.
+  The Windows PDF file icon (assets/app-icon/pdfcraft-document.svg and .ico) adapts Lucide's
+  file-text outline and combines it with contributor-original artwork. See
+  assets/app-icon/LICENSE-document.txt (ISC AND (MIT OR Apache-2.0)), packaged as
+  LICENSE-document.txt beside the Windows executables.
 - Inter typeface (assets/fonts/Inter-*.ttf) — SIL Open Font License 1.1. See assets/fonts/OFL-Inter.txt.
 - JetBrains Mono typeface (assets/fonts/JetBrainsMono-*.ttf) — SIL Open Font License 1.1. See assets/fonts/OFL-JetBrainsMono.txt.
 - Dancing Script typeface (assets/fonts/DancingScript.ttf), Copyright 2016 The Dancing Script Project Authors — SIL Open Font License 1.1 (Reserved Font Name "Dancing Script"). See assets/fonts/OFL-DancingScript.txt.

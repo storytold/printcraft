@@ -71,8 +71,10 @@ object!(Array<'a>, Array);
 impl Skippable for Array<'_> {
     fn skip(r: &mut Reader<'_>, is_content_stream: bool) -> Option<()> {
         r.forward_tag(b"[")?;
+        r.enter_container()?;
 
-        loop {
+        // PdfCraft patch: leave even when an element's skip fails through `?`.
+        let result = (|| loop {
             r.skip_white_spaces_and_comments();
 
             if let Some(()) = r.forward_tag(b"]") {
@@ -82,7 +84,9 @@ impl Skippable for Array<'_> {
             } else {
                 r.skip::<MaybeRef<Object<'_>>>(false)?;
             }
-        }
+        })();
+        r.leave_container();
+        result
     }
 }
 

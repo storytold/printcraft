@@ -58,6 +58,9 @@
 	Preferences	首选项
 	Preferences…	首选项…
 	Interface language	界面语言
+	Interface size	界面大小
+	Auto ({percent}%)	自动 ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	“自动”会跟随系统的文字大小。页面始终以显示器的完整分辨率渲染。
 	Identity	身份
 	Name on new comments	新注释的作者姓名
 	Open…	打开…
@@ -115,6 +118,7 @@
 	Rotate view clockwise	顺时针旋转视图
 	Rotate view counterclockwise	逆时针旋转视图
 	Take a snapshot	拍摄快照
+	Column select	列选择
 	Full screen mode	全屏模式
 	Read mode	阅读模式
 	Switch light / dark theme	切换浅色/深色主题
@@ -793,6 +797,7 @@
 	Dates	日期
 	Text in images isn't found; recognise text (OCR) first.	图像中的文本无法找到；请先识别文本（OCR）。
 	No matches.	无匹配。
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	此处未显示部分书签：面板列出的书签数量和嵌套深度有限。
 	{n} match(es) marked for redaction.	已标记 {n} 个匹配以待密文。
 	Multiple words or phrases	多个单词或短语
 	One word or phrase per line	每行一个单词或短语
@@ -1455,6 +1460,8 @@
 	Right Edge	右边缘
 	Language	语言
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	已保存{place}：{before} → {after}（缩小了{pct}%）{detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	此文件已经是最小的了（{size}）。未保存副本。
+	Saved {place}: {before} → {after} (not smaller){detail}	已保存{place}：{before} → {after}（未缩小）{detail}
 	Couldn't save the image: {e}	无法保存图像：{e}
 	Adding images arrives on the web with file pickers for images	Web 端添加图像将使用图像文件选择器
 	Replacing images on page {p} arrives on the web with image pickers ({i})	在 Web 端替换第{p}页的图像将使用图像选择器（{i}）
@@ -2105,3 +2112,39 @@
 	The field {name} no longer exists.	字段 {name} 已不存在。
 	A selected field has no widget on any page, so the fields can't be edited together.	某个所选字段在任何页面上都没有控件，因此无法一起编辑这些字段。
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	（{n} 张以可绘制的最大尺寸 {dpi} dpi 导出）
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	已选择 {n} 个对象
+	Drag the selection to move it. Esc clears the selection.	拖动选区即可移动。按 Esc 清除选择。
+	Shift-click to select several objects. Drag empty space to select an area.	按住 Shift 单击可选择多个对象。拖动空白区域可框选。
+	Select at most 1000 objects at a time.	一次最多选择 1000 个对象。
+	Finish or discard the text being edited before selecting several objects.	请先完成或放弃正在编辑的文本，再选择多个对象。
+	Move object	移动对象
+	Move objects	移动多个对象
+	Vertical text cannot be moved with this selection.	无法随此选区移动竖排文本。
+	Text used as a clipping path cannot be moved with this selection.	无法随此选区移动用作剪切路径的文本。
+	These objects could not be moved. Select them again and try a smaller move.	无法移动这些对象。请重新选择并尝试较小的移动距离。
+	This page contains objects that cannot be selected together.	此页面包含无法一起选择的对象。
+	Fill colour	填充颜色
+	No fill	无填充
+	Fill colour: none	填充颜色：无
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	空格
+	Grid view	网格视图
+	List view	列表视图
+	Files are combined in the order shown. Drag them to change it.	文件按显示的顺序合并。拖动可更改顺序。
+	Preview unavailable: {e}	无法预览：{e}
+	Pages: {k} of {n}	页面：{k}/{n}
+	Check the pages	请检查页码
+	Switch to List view to change the pages it takes.	切换到列表视图以更改要使用的页面。
+	Expand all	全部展开
+	Collapse all	全部折叠
+	Remove page	删除页面
+	Remove {n} pages	删除 {n} 页

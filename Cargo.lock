@@ -3639,6 +3639,7 @@ dependencies = [
 name = "pdfcraft-create"
 version = "0.5.0"
 dependencies = [
+ "encoding_rs",
  "hayro-syntax",
  "image",
  "pdfcraft-cos",
@@ -3814,6 +3815,9 @@ dependencies = [
 [[package]]
 name = "pdfcraft-platform"
 version = "0.5.0"
+dependencies = [
+ "zbus",
+]
 
 [[package]]
 name = "pdfcraft-preflight"

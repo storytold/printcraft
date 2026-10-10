@@ -21,6 +21,10 @@ pub struct DigitalIdEntry {
     pub issuer: String,
     pub email: String,
     pub expires: String,
+    /// Why the ID can't sign (a Windows store certificate whose key PdfCraft can't use): shown
+    /// greyed with the reason, and never selectable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unusable: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,14 +97,16 @@ pub struct SignDraft {
 }
 
 impl SignDraft {
-    fn new(page: usize, rect: Option<[f64; 4]>, field: Option<String>, certify: Option<u8>, ids: usize) -> Self {
+    /// Starts at Choose when there are IDs to show (even only unusable ones, so their reasons
+    /// are seen), with the first usable one selected.
+    fn new(page: usize, rect: Option<[f64; 4]>, field: Option<String>, certify: Option<u8>, ids: &[DigitalIdEntry]) -> Self {
         Self {
             page,
             rect,
             field,
             certify,
-            step: if ids == 0 { SignStep::Configure } else { SignStep::Choose },
-            selected: (ids > 0).then_some(0),
+            step: if ids.is_empty() { SignStep::Configure } else { SignStep::Choose },
+            selected: ids.iter().position(|e| e.unusable.is_none()),
             password: String::new(),
             reason: String::new(),
             location: String::new(),
@@ -220,6 +226,20 @@ pub fn entry_for(path: &str, c: &Certificate) -> DigitalIdEntry {
         issuer: c.issuer.common_name().map(str::to_string).unwrap_or_else(|| c.issuer.display()),
         email: c.subject.email().unwrap_or("").to_string(),
         expires: format!("{:04}.{:02}.{:02}", c.not_after.year, c.not_after.month, c.not_after.day),
+        unusable: None,
+    }
+}
+
+/// A greyed entry for a Windows store certificate that can't sign, with the reason.
+#[cfg(target_os = "windows")]
+fn entry_unusable(u: &sign::windows::Unusable) -> DigitalIdEntry {
+    DigitalIdEntry {
+        path: format!("windows:{}", u.fingerprint.split(' ').collect::<String>().to_ascii_lowercase()),
+        name: u.subject.clone(),
+        issuer: String::new(),
+        email: String::new(),
+        expires: String::new(),
+        unusable: Some(u.reason.clone()),
     }
 }
 
@@ -227,7 +247,7 @@ impl PdfCraftApp {
     /// Start signing: the rectangle (or field) is known; show Sign with a Digital ID.
     pub fn start_signing(&mut self, page: usize, rect: Option<[f64; 4]>, field: Option<String>, certify: Option<u8>) {
         self.refresh_os_key_store_ids();
-        self.sign_draft = Some(SignDraft::new(page, rect, field, certify, self.digital_ids.len()));
+        self.sign_draft = Some(SignDraft::new(page, rect, field, certify, &self.digital_ids));
         self.dialog = Some(crate::Dialog::Sign);
     }
 
@@ -247,10 +267,15 @@ impl PdfCraftApp {
         }
         #[cfg(target_os = "windows")]
         if self.os_key_store_ids {
-            match sign::windows::identities() {
-                Ok(ids) => {
-                    for id in ids {
+            match sign::windows::list() {
+                Ok(listing) => {
+                    for id in &listing.ids {
                         self.digital_ids.push(entry_for(&sign::windows::reference(&id.certificate), &id.certificate));
+                    }
+                    // Certificates without a private key aren't identities; the rest are shown
+                    // greyed with why they can't sign (issue #179).
+                    for u in listing.unusable.iter().filter(|u| !u.no_private_key) {
+                        self.digital_ids.push(entry_unusable(u));
                     }
                 }
                 Err(e) => self.notify_fmt("The Windows store's digital IDs couldn't be listed: {e}", &[("e", &e.to_string())]),
@@ -325,7 +350,7 @@ impl PdfCraftApp {
         }
         let Some((_, doc_id)) = self.active_ids() else { return Err("no document".into()) };
         let d = self.sign_draft.clone().ok_or("nothing to sign")?;
-        let entry = d.selected.and_then(|i| self.digital_ids.get(i)).cloned().ok_or("Choose a digital ID.")?;
+        let entry = d.selected.and_then(|i| self.digital_ids.get(i)).filter(|e| e.unusable.is_none()).cloned().ok_or("Choose a digital ID.")?;
         let id = if entry.path.starts_with("keychain:") {
             keychain_id(&entry.path)?
         } else if entry.path.starts_with("windows:") {
@@ -467,17 +492,20 @@ fn choose(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool {
     egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
         for (i, e) in ids.iter().enumerate() {
             let selected = d.selected == Some(i);
+            let usable = e.unusable.is_none();
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), egui::Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, &e.name));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, usable, selected, &e.name));
             let fill = if selected {
                 t.accent_soft
-            } else if resp.hovered() {
+            } else if resp.hovered() && usable {
                 t.hover
             } else {
                 Color32::TRANSPARENT
             };
             ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
-            icons::paint(ui, Rect::from_min_size(rect.min + vec2(10.0, 15.0), vec2(20.0, 20.0)), "badge-check", 18.0, t.accent);
+            // An unusable ID is greyed, with the reason where the issuer would be.
+            let (icon, name_color) = if usable { (t.accent, t.text) } else { (t.text_muted, t.text_muted) };
+            icons::paint(ui, Rect::from_min_size(rect.min + vec2(10.0, 15.0), vec2(20.0, 20.0)), "badge-check", 18.0, icon);
             // Certificate names can be any length: cut both lines with "…" at the row's edge
             // and show them whole on hover.
             let line = |text: &str, font: egui::FontId, color: Color32| {
@@ -485,27 +513,33 @@ fn choose(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool {
                 job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 50.0).max(0.0));
                 ui.painter().layout_job(job)
             };
-            let name = line(&e.name, theme::semibold(13.0), t.text);
-            let sub = format!(
-                "{keychain}{email}{issued}{issuer}{expires}{date}",
-                keychain = if e.path.starts_with("keychain:") {
-                    tl!("Keychain  ·  ").to_string()
-                } else if e.path.starts_with("windows:") {
-                    tl!("Windows store  ·  ").to_string()
-                } else {
-                    String::new()
-                },
-                email = if e.email.is_empty() { String::new() } else { format!("{}  ·  ", e.email) },
-                issued = tl!("Issued by: "),
-                issuer = e.issuer,
-                expires = tl!(", Expires: "),
-                date = e.expires,
-            );
+            let name = line(&e.name, theme::semibold(13.0), name_color);
+            let store = if e.path.starts_with("keychain:") {
+                tl!("Keychain  ·  ").to_string()
+            } else if e.path.starts_with("windows:") {
+                tl!("Windows store  ·  ").to_string()
+            } else {
+                String::new()
+            };
+            let sub = match &e.unusable {
+                Some(reason) => format!("{store}{reason}"),
+                None => format!(
+                    "{store}{email}{issued}{issuer}{expires}{date}",
+                    email = if e.email.is_empty() { String::new() } else { format!("{}  ·  ", e.email) },
+                    issued = tl!("Issued by: "),
+                    issuer = e.issuer,
+                    expires = tl!(", Expires: "),
+                    date = e.expires,
+                ),
+            };
             let details = line(&sub, theme::regular(11.5), t.text_muted);
             let elided = name.elided || details.elided;
-            ui.painter().galley(rect.min + vec2(40.0, 9.0), name, t.text);
+            ui.painter().galley(rect.min + vec2(40.0, 9.0), name, name_color);
             ui.painter().galley(rect.min + vec2(40.0, 28.0), details, t.text_muted);
             let resp = if elided { resp.on_hover_text(format!("{}\n{sub}", e.name)) } else { resp };
+            if !usable {
+                continue;
+            }
             if resp.clicked() {
                 d.selected = Some(i);
             }
@@ -1141,7 +1175,7 @@ mod tests {
     fn create_in(dir: &std::path::Path) -> Result<PathBuf, String> {
         let mut app = PdfCraftApp::new();
         app.export_dir_override = Some(dir.to_string_lossy().into_owned());
-        let mut draft = SignDraft::new(0, None, None, None, 0);
+        let mut draft = SignDraft::new(0, None, None, None, &[]);
         // P-256 keeps the test fast.
         let key = KEY_ALGORITHMS.iter().position(|k| k.1 == "p256").unwrap();
         draft.new_id =

@@ -86,31 +86,61 @@ impl ObjectStream {
             warn!("object stream: the object stream dictionary specifies a wrong number of objects")
         }
 
-        let chunks_filter_map = |chunk: &[_]| {
+        // PdfCraft patch: bound members by the next distinct offset and parse each offset
+        // only once, so overlapping or duplicate entries cannot amplify decoded content.
+        let mut extents = BTreeMap::new();
+        for (index, chunk) in numbers[..len].chunks(2).enumerate() {
+            if let &[Some(_), Some(offset)] = chunk {
+                let offset = first_offset.saturating_add(offset as usize);
+                if offset < content.len() {
+                    extents.entry(offset).or_insert((index, content.len()));
+                }
+            }
+        }
+        let mut end = content.len();
+        for (&offset, (_, extent_end)) in extents.iter_mut().rev() {
+            *extent_end = end;
+            end = offset;
+        }
+
+        let chunks_filter_map = |(index, chunk): (usize, &[_])| {
             let id = chunk[0]?;
-            let offset = first_offset + chunk[1]? as usize;
+            let offset = first_offset.saturating_add(chunk[1]? as usize);
 
             if offset >= content.len() {
                 warn!("out-of-bounds offset in object stream");
                 return None;
             }
+            let &(first_index, extent_end) = extents.get(&offset)?;
+            if index != first_index {
+                warn!("duplicate offset in object stream");
+                return None;
+            }
             // Skip leading whitespace — some PDFs emit newlines before objects in ObjStm
             let mut start = offset;
-            while start < content.len() && content[start].is_ascii_whitespace() {
+            while start < extent_end && content[start].is_ascii_whitespace() {
                 start += 1;
             }
-            if start >= content.len() {
+            if start >= extent_end {
                 warn!("only whitespace after offset in object stream");
                 return None;
             }
-            let object = parser::direct_object(&content[start..])?;
+            let object = parser::direct_object(&content[start..extent_end])?;
 
             Some(((id, 0), object))
         };
         #[cfg(feature = "rayon")]
-        let objects = numbers[..len].par_chunks(2).filter_map(chunks_filter_map).collect();
+        let objects = numbers[..len]
+            .par_chunks(2)
+            .enumerate()
+            .filter_map(chunks_filter_map)
+            .collect();
         #[cfg(not(feature = "rayon"))]
-        let objects = numbers[..len].chunks(2).filter_map(chunks_filter_map).collect();
+        let objects = numbers[..len]
+            .chunks(2)
+            .enumerate()
+            .filter_map(chunks_filter_map)
+            .collect();
 
         Ok(ObjectStream {
             objects,

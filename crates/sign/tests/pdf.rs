@@ -1086,7 +1086,12 @@ fn a_timestamp_token_may_sign_with_a_different_digest_than_its_imprint() {
 #[cfg(windows)]
 #[test]
 fn windows_store_enumeration_and_missing_identity() {
-    assert!(pdfcraft_sign::windows::identities().is_ok());
+    let listing = pdfcraft_sign::windows::list().unwrap();
+    assert_eq!(listing.ids.len(), pdfcraft_sign::windows::identities().unwrap().len());
+    // Whatever this machine's store holds, every certificate left out is named and explained.
+    for u in &listing.unusable {
+        assert!(!u.subject.is_empty() && !u.reason.is_empty() && u.fingerprint.len() == 95, "{u:?}");
+    }
     assert!(pdfcraft_sign::windows::find("windows:no such signer").is_err());
 }
 
@@ -1108,9 +1113,10 @@ impl Drop for Certificates {
     fn drop(&mut self) {
         for thumbprint in &self.0 {
             // New-SelfSignedCertificate also leaves a public copy of a self-signed or CA
-            // certificate in Intermediate Certification Authorities (CA).
+            // certificate in Intermediate Certification Authorities (CA). -DeleteKey fails on
+            // a certificate without a key; the plain removal then runs.
             let out = powershell(&format!(
-                "Remove-Item -LiteralPath 'Cert:\\CurrentUser\\My\\{thumbprint}' -DeleteKey; $copy='Cert:\\CurrentUser\\CA\\{thumbprint}'; if (Test-Path -LiteralPath $copy) {{ Remove-Item -LiteralPath $copy }}"
+                "$p='Cert:\\CurrentUser\\My\\{thumbprint}'; try {{ Remove-Item -LiteralPath $p -DeleteKey }} catch {{ Remove-Item -LiteralPath $p }}; $copy='Cert:\\CurrentUser\\CA\\{thumbprint}'; if (Test-Path -LiteralPath $copy) {{ Remove-Item -LiteralPath $copy }}"
             ));
             if !out.status.success() {
                 eprintln!("test certificate cleanup failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -1156,6 +1162,20 @@ fn signing_with_windows_store_identities() {
         assert_eq!(signature.modification, Modification::None);
         assert_eq!(signature.signer.as_deref(), Some(name.as_str()));
     }
+    // A certificate without a private key (issued to someone else, filed under Personal) is
+    // reported as such rather than listed or dropped silently (issue #179).
+    let ada = pkcs12::open(&data("rsa-aes.p12"), "test").unwrap().certificate;
+    let cer = std::env::temp_dir().join(format!("pdfcraft-windows-store-{unique}.cer"));
+    std::fs::write(&cer, &ada.raw).unwrap();
+    let out = powershell(&format!("(Import-Certificate -FilePath '{}' -CertStoreLocation 'Cert:\\CurrentUser\\My').Thumbprint", cer.display()));
+    let _ = std::fs::remove_file(&cer);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    created.0.push(String::from_utf8(out.stdout).unwrap().trim().to_string());
+    let listing = pdfcraft_sign::windows::list().unwrap();
+    let reported = listing.unusable.iter().find(|u| u.fingerprint == ada.fingerprint()).expect("key-less certificate reported");
+    assert!(reported.no_private_key, "{reported:?}");
+    assert_eq!(reported.subject, ada.display_name());
+    assert!(listing.ids.iter().all(|id| id.certificate.raw != ada.raw));
     let thumbprints = created.0.clone();
     drop(created);
     for thumbprint in thumbprints {

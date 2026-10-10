@@ -5,7 +5,8 @@
 //! approximations. Meanings come from `/ToUnicode`, else the encoding (`/Encoding` base and
 //! `/Differences` glyph names, ISO 32000-2 Annex D).
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use pdfcraft_cos::{Dict, Document, Object};
 
@@ -46,7 +47,7 @@ pub struct Metrics {
     pub descent: f64,
     pub composite: bool,
     /// Code → Unicode text.
-    unicode: HashMap<u32, String>,
+    unicode: Unicode,
     /// `/BaseFont` (or Type 3 descriptor's `/FontName`), and whether it is a subset (`ABCDEF+Name`: other glyphs are missing).
     pub base_font: String,
     pub subset: bool,
@@ -73,12 +74,137 @@ fn descriptor_flags(doc: &Document, descriptor: &Dict) -> u32 {
     u32::try_from(value).unwrap_or(0)
 }
 
-/// Most entries a CMap may add, so a small stream of overlapping `bfrange`s can't take minutes
-/// or gigabytes; a full 2-byte code space is 65 536. Entries past it are ignored.
+/// Most mappings a CMap may add, where each `bfchar` or array-form entry counts one and each sequential
+/// range counts two (it covers at least two codes). So a CMap with at most this many codes is kept whole;
+/// mappings past the budget are ignored, so a stream of them can't take minutes or gigabytes.
 const MAX_CMAP_ENTRIES: usize = 1 << 20;
 /// Most codespace or CID ranges kept from a CMap; Adobe's largest published CMaps have a few
 /// thousand.
 const MAX_CMAP_RANGES: usize = 1 << 16;
+
+/// Code → Unicode of a font. Explicit mappings and sequential ranges are kept as declared, so a range
+/// costs one record however many codes it covers; where two overlap, the one declared later wins.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Unicode {
+    /// Simple fonts: the encoding table and `/Differences`, which ToUnicode overrides.
+    encoding: HashMap<u32, String>,
+    /// `bfchar` and array-form entries: the text of each code, with the declaration order of its last one.
+    explicit: HashMap<u32, (u32, String)>,
+    /// Sequential `bfrange` records, in declaration order.
+    ranges: Vec<BfRange>,
+    /// Which record covers each stretch of codes; see [`cover_index`].
+    cover: Vec<(u64, Option<usize>)>,
+    /// The latest-declared range covering each code below 65 536, as an index into `ranges` (`u32::MAX` for
+    /// none); empty without ranges. See [`owners_below_64k`].
+    low: Vec<u32>,
+    /// One bit per code below 65 536 that has an explicit entry; empty without any. A miss then skips the
+    /// hash lookup. See [`bit_set_below_64k`].
+    explicit_low: Vec<u64>,
+}
+
+/// A sequential `bfrange`: code `lo + k` (up to `hi`) maps to `units` with its last unit moved on by `k`.
+#[derive(Clone, Debug, PartialEq)]
+struct BfRange {
+    lo: u32,
+    hi: u32,
+    /// Declaration order, shared with the explicit entries.
+    seq: u32,
+    units: Box<[u16]>,
+}
+
+impl Unicode {
+    /// Whether `code` may have an explicit entry; false is certain for codes below 65 536 without one.
+    #[inline]
+    fn may_be_explicit(&self, code: u32) -> bool {
+        code >= 0x1_0000 || self.explicit_low.get(code as usize / 64).is_some_and(|w| (*w >> (code % 64)) & 1 == 1)
+    }
+
+    /// The latest-declared range that covers `code`.
+    #[inline]
+    fn covering(&self, code: u32) -> Option<&BfRange> {
+        if code < 0x1_0000 {
+            return self.ranges.get(*self.low.get(code as usize)? as usize);
+        }
+        let step = self.cover.partition_point(|&(start, _)| start <= u64::from(code));
+        let &(_, record) = self.cover.get(step.checked_sub(1)?)?;
+        self.ranges.get(record?)
+    }
+
+    /// The text of `code`: its explicit entry, unless a range declared after it covers the code;
+    /// otherwise the covering range, otherwise the encoding.
+    #[inline]
+    fn text(&self, code: u32) -> Option<Cow<'_, str>> {
+        let range = self.covering(code);
+        let explicit = if self.may_be_explicit(code) { self.explicit.get(&code) } else { None };
+        if let Some((seq, text)) = explicit
+            && range.is_none_or(|r| r.seq < *seq)
+        {
+            return Some(Cow::Borrowed(text.as_str()));
+        }
+        match range {
+            Some(r) => Some(Cow::Owned(r.text_at(code))),
+            None => self.encoding.get(&code).map(|t| Cow::Borrowed(t.as_str())),
+        }
+    }
+}
+
+impl BfRange {
+    /// The text of `code`, which lies in this range.
+    fn text_at(&self, code: u32) -> String {
+        // The offset is below 65 536 (the width limit in `parse_to_unicode`), so truncating it is exact.
+        let offset = code.saturating_sub(self.lo) as u16;
+        let last = self.units.len().saturating_sub(1);
+        let units = self.units.iter().enumerate().map(|(i, &u)| if i == last { u.wrapping_add(offset) } else { u });
+        char::decode_utf16(units).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
+    }
+
+    /// The lowest code of this range whose own text is `c` and that `valid` accepts. Only a single
+    /// unit (a BMP character, or U+FFFD through a surrogate unit) or a surrogate pair can decode to
+    /// one character `c`; longer destinations always decode to several.
+    fn first_code(&self, c: char, valid: impl Fn(u32) -> bool) -> Option<u32> {
+        let width = self.hi.checked_sub(self.lo)?;
+        match &*self.units {
+            [base] if c == '\u{FFFD}' => {
+                // The offsets whose unit is a surrogate or U+FFFD, in order; each decodes to U+FFFD.
+                let mut cursor = 0u32;
+                loop {
+                    let unit = (u32::from(*base) + cursor) & 0xFFFF;
+                    let offset = cursor.checked_add(match unit {
+                        0..=0xD7FF => 0xD800 - unit,
+                        0xD800..=0xDFFF | 0xFFFD => 0,
+                        0xE000..=0xFFFC => 0xFFFD - unit,
+                        _ => 0x1_0000 - unit + 0xD800,
+                    })?;
+                    if offset > width {
+                        return None;
+                    }
+                    if let Some(code) = self.lo.checked_add(offset)
+                        && valid(code)
+                    {
+                        return Some(code);
+                    }
+                    cursor = offset.checked_add(1)?;
+                }
+            }
+            [base] => {
+                let offset = u32::from(u16::try_from(u32::from(c)).ok()?.wrapping_sub(*base));
+                let code = self.lo.checked_add(offset).filter(|_| offset <= width)?;
+                valid(code).then_some(code)
+            }
+            [lead, last] => {
+                let v = u32::from(c).checked_sub(0x1_0000)?;
+                if u32::from(*lead) != 0xD800 + (v >> 10) {
+                    return None;
+                }
+                let low = u16::try_from(0xDC00 + (v & 0x3FF)).ok()?;
+                let offset = u32::from(low.wrapping_sub(*last));
+                let code = self.lo.checked_add(offset).filter(|_| offset <= width)?;
+                valid(code).then_some(code)
+            }
+            _ => None,
+        }
+    }
+}
 
 /// A token of a CMap stream (PostScript syntax, ISO 32000-2 §9.10.3).
 #[derive(Debug, PartialEq)]
@@ -286,7 +412,7 @@ impl Metrics {
             ascent: 0.9,
             descent: -0.25,
             composite: false,
-            unicode: (32..127u8).map(|c| (u32::from(c), char::from(c).to_string())).collect(),
+            unicode: Unicode { encoding: (32..127u8).map(|c| (u32::from(c), char::from(c).to_string())).collect(), ..Unicode::default() },
             base_font: "Helvetica".into(),
             subset: false,
             bold: false,
@@ -481,12 +607,13 @@ impl Metrics {
 impl Metrics {
     /// The text a string shows (codes without a known meaning are left out).
     pub fn decode(&self, s: &[u8]) -> String {
-        self.codes(s).into_iter().filter_map(|(c, _)| self.unicode.get(&c).cloned()).collect()
+        self.codes(s).into_iter().filter_map(|(c, _)| self.text_of(c)).collect()
     }
 
     /// The Unicode text of one code, if known.
-    pub fn text_of(&self, code: u32) -> Option<&str> {
-        self.unicode.get(&code).map(String::as_str)
+    #[inline]
+    pub fn text_of(&self, code: u32) -> Option<Cow<'_, str>> {
+        self.unicode.text(code)
     }
 
     /// Whether the font has a glyph for `code` (subset fonts lack the glyphs they don't use).
@@ -501,19 +628,44 @@ impl Metrics {
         }
     }
 
+    /// Whether `code` shows exactly `c` and has a glyph for it.
+    fn shows(&self, code: u32, c: char) -> bool {
+        self.unicode.text(code).is_some_and(|t| t.chars().eq(std::iter::once(c))) && self.has_glyph(code)
+    }
+
     /// The bytes that show `text` in this font, or `None` if some character has no code or
     /// no glyph in it (the caller then substitutes another font).
     pub fn encode(&self, text: &str) -> Option<Vec<u8>> {
-        let mut reverse: HashMap<&str, u32> = HashMap::new();
-        for (code, t) in &self.unicode {
-            if self.has_glyph(*code) {
-                reverse.entry(t.as_str()).and_modify(|c| *c = (*c).min(*code)).or_insert(*code);
+        // The lowest code showing each wanted character. Explicit entries and the encoding are
+        // checked one by one; each range is asked for the wanted characters it can show.
+        let wanted: HashSet<char> = text.chars().collect();
+        let mut reverse: HashMap<char, u32> = HashMap::new();
+        for (&code, (_, t)) in &self.unicode.explicit {
+            if let Some(c) = only_char(t)
+                && wanted.contains(&c)
+                && self.shows(code, c)
+            {
+                keep(&mut reverse, c, code);
+            }
+        }
+        for (&code, t) in &self.unicode.encoding {
+            if let Some(c) = only_char(t)
+                && wanted.contains(&c)
+                && self.shows(code, c)
+            {
+                keep(&mut reverse, c, code);
+            }
+        }
+        for range in &self.unicode.ranges {
+            for &c in &wanted {
+                if let Some(code) = range.first_code(c, |m| self.shows(m, c)) {
+                    keep(&mut reverse, c, code);
+                }
             }
         }
         let mut out = Vec::with_capacity(text.len() * self.code_len);
-        let mut buf = [0u8; 4];
         for ch in text.chars() {
-            let code = *reverse.get(ch.encode_utf8(&mut buf) as &str)?;
+            let code = *reverse.get(&ch)?;
             let bytes = code.to_be_bytes();
             out.extend_from_slice(&bytes[4 - self.code_len.clamp(1, 4)..]);
         }
@@ -521,24 +673,156 @@ impl Metrics {
     }
 }
 
-/// UTF-16BE (with surrogates) from CMap hex bytes.
-fn utf16(b: &[u8]) -> String {
-    let units: Vec<u16> = b.chunks(2).map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])).collect();
-    String::from_utf16_lossy(&units)
+/// The UTF-16 code units of CMap hex bytes.
+fn code_units(b: &[u8]) -> Vec<u16> {
+    b.chunks(2).map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])).collect()
 }
 
-/// `bfchar`/`bfrange` entries of a ToUnicode CMap, at most [`MAX_CMAP_ENTRIES`] of them.
-fn parse_to_unicode(data: &[u8], out: &mut HashMap<u32, String>) {
-    let mut budget = MAX_CMAP_ENTRIES;
+/// UTF-16BE (with surrogates) from CMap hex bytes.
+fn utf16(b: &[u8]) -> String {
+    String::from_utf16_lossy(&code_units(b))
+}
+
+/// The character `s` is made of, if it is exactly one.
+fn only_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    chars.next().is_none().then_some(c)
+}
+
+/// Keeps the lowest code found for `c`.
+fn keep(reverse: &mut HashMap<char, u32>, c: char, code: u32) {
+    reverse.entry(c).and_modify(|r| *r = (*r).min(code)).or_insert(code);
+}
+
+/// Spends `cost` of the budget; `false` when less is left.
+fn spend(budget: &mut usize, cost: usize) -> bool {
+    let Some(left) = budget.checked_sub(cost) else { return false };
+    *budget = left;
+    true
+}
+
+/// Adds an explicit mapping; `false` once the budget is spent.
+fn add_explicit(out: &mut Unicode, budget: &mut usize, seq: &mut u32, code: u32, text: String) -> bool {
+    if !spend(budget, 1) {
+        return false;
+    }
+    *seq = seq.saturating_add(1);
+    out.explicit.insert(code, (*seq, text));
+    true
+}
+
+/// Adds a sequential range, which covers at least two codes and so costs two; `false` once the budget is spent.
+fn add_range(out: &mut Unicode, budget: &mut usize, seq: &mut u32, lo: u32, hi: u32, units: Box<[u16]>) -> bool {
+    if !spend(budget, 2) {
+        return false;
+    }
+    *seq = seq.saturating_add(1);
+    out.ranges.push(BfRange { lo, hi, seq: *seq, units });
+    true
+}
+
+/// For each stretch of codes, from its first code on, the latest-declared range covering it (`None`
+/// where no range does), sorted by code; a lookup is one binary search over it.
+fn cover_index(ranges: &[BfRange]) -> Vec<(u64, Option<usize>)> {
+    // Openings (first code, record) and closings (one past the last code), each in code order. The cover
+    // can only change at one of their codes, so the sweep visits those codes in order.
+    let mut opens: Vec<(u32, u32)> = ranges.iter().enumerate().map(|(i, r)| (r.lo, i as u32)).collect();
+    opens.sort_unstable();
+    let mut closes: Vec<u64> = ranges.iter().map(|r| u64::from(r.hi) + 1).collect();
+    closes.sort_unstable();
+    // Records that have opened and not yet closed; the top is the latest declared one.
+    let mut open: BinaryHeap<u32> = BinaryHeap::new();
+    let mut cover: Vec<(u64, Option<usize>)> = Vec::new();
+    let (mut next_open, mut next_close) = (0, 0);
+    loop {
+        let p = match (opens.get(next_open), closes.get(next_close)) {
+            (Some(&(lo, _)), Some(&end)) => u64::from(lo).min(end),
+            (Some(&(lo, _)), None) => u64::from(lo),
+            (None, Some(&end)) => end,
+            (None, None) => break,
+        };
+        while let Some(&(lo, record)) = opens.get(next_open)
+            && u64::from(lo) <= p
+        {
+            open.push(record);
+            next_open += 1;
+        }
+        while closes.get(next_close).is_some_and(|&end| end <= p) {
+            next_close += 1;
+        }
+        while open.peek().is_some_and(|&top| ranges.get(top as usize).is_none_or(|r| u64::from(r.hi) < p)) {
+            open.pop();
+        }
+        let winner = open.peek().map(|&top| top as usize);
+        if cover.last().map(|&(_, w)| w) != Some(winner) {
+            cover.push((p, winner));
+        }
+    }
+    cover
+}
+
+/// One bit for each code below 65 536 in `codes`; empty when there is none.
+/// Sized to the highest such code, so a font with a few low codes costs a few words, not 8 KB.
+fn bit_set_below_64k(codes: impl Iterator<Item = u32>) -> Vec<u64> {
+    let low: Vec<u32> = codes.filter(|&code| code < 0x1_0000).collect();
+    let Some(&max) = low.iter().max() else { return Vec::new() };
+    let mut bits = vec![0u64; max as usize / 64 + 1];
+    for code in low {
+        if let Some(word) = bits.get_mut(code as usize / 64) {
+            *word |= 1u64 << (code % 64);
+        }
+    }
+    bits
+}
+
+/// The latest-declared range covering each code below 65 536, read off the stretches of `cover`; empty
+/// when no range covers such a code. The stretches are disjoint, so this takes at most 65 536 steps
+/// however many ranges there are.
+///
+/// The table ends with the last covered code: a code past it has no covering range, and a font whose
+/// ranges cover a few low codes costs that many entries, not a fixed 256 KB.
+fn owners_below_64k(cover: &[(u64, Option<usize>)]) -> Vec<u32> {
+    let stretch_end = |i: usize| cover.get(i + 1).map_or(0x1_0000, |&(next, _)| next.min(0x1_0000));
+    let len = cover
+        .iter()
+        .enumerate()
+        .filter(|&(_, &(start, winner))| winner.is_some() && start < 0x1_0000)
+        .map(|(i, _)| stretch_end(i))
+        .max()
+        .unwrap_or(0);
+    let mut owner = vec![u32::MAX; usize::try_from(len).unwrap_or(0)];
+    for (i, &(start, winner)) in cover.iter().enumerate() {
+        let Some(record) = winner else { continue };
+        // Record indices are below MAX_CMAP_ENTRIES, which fits in a u32.
+        let record = record as u32;
+        for code in start..stretch_end(i) {
+            if let Some(slot) = owner.get_mut(code as usize) {
+                *slot = record;
+            }
+        }
+    }
+    owner
+}
+
+/// `bfchar`/`bfrange` entries of a ToUnicode CMap, at most [`MAX_CMAP_ENTRIES`] mappings of them.
+fn parse_to_unicode(data: &[u8], out: &mut Unicode) {
+    parse_to_unicode_within(data, out, MAX_CMAP_ENTRIES);
+}
+
+/// [`parse_to_unicode`] with `budget` explicit entries, so tests can use a small one.
+fn parse_to_unicode_within(data: &[u8], out: &mut Unicode, mut budget: usize) {
+    let mut seq = 0u32;
     let mut toks = Lexer::new(data);
-    while let Some(t) = toks.next() {
+    'scan: while let Some(t) = toks.next() {
         match t {
             Tok::Word(b"beginbfchar") => {
                 while let Some([c, u]) = entry(&mut toks, b"endbfchar") {
                     if let (Tok::Hex(Some(c)), Tok::Hex(Some(u))) = (c, u) {
-                        let Some(left) = budget.checked_sub(1) else { return };
-                        budget = left;
-                        out.insert(be(&c), utf16(&u));
+                        let added = add_explicit(out, &mut budget, &mut seq, be(&c), utf16(&u));
+                        if !added {
+                            break 'scan;
+                        }
                     }
                 }
             }
@@ -560,9 +844,10 @@ fn parse_to_unicode(data: &[u8], out: &mut HashMap<u32, String>) {
                                 match t {
                                     Tok::Close => break,
                                     Tok::Hex(Some(u)) => {
-                                        let Some(left) = budget.checked_sub(1) else { return };
-                                        budget = left;
-                                        out.insert(c, utf16(&u));
+                                        let added = add_explicit(out, &mut budget, &mut seq, c, utf16(&u));
+                                        if !added {
+                                            break 'scan;
+                                        }
                                     }
                                     // A bad entry still stands for its code.
                                     _ => {}
@@ -571,14 +856,13 @@ fn parse_to_unicode(data: &[u8], out: &mut HashMap<u32, String>) {
                             }
                         }
                         Tok::Hex(Some(u)) if hi >= lo && hi - lo < 65536 => {
-                            let mut units: Vec<u16> = u.chunks(2).map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])).collect();
-                            for code in lo..=hi {
-                                let Some(left) = budget.checked_sub(1) else { return };
-                                budget = left;
-                                out.insert(code, String::from_utf16_lossy(&units));
-                                if let Some(last) = units.last_mut() {
-                                    *last = last.wrapping_add(1);
-                                }
+                            let added = if lo == hi {
+                                add_explicit(out, &mut budget, &mut seq, lo, utf16(&u))
+                            } else {
+                                add_range(out, &mut budget, &mut seq, lo, hi, code_units(&u).into_boxed_slice())
+                            };
+                            if !added {
+                                break 'scan;
                             }
                         }
                         _ => {}
@@ -588,6 +872,9 @@ fn parse_to_unicode(data: &[u8], out: &mut HashMap<u32, String>) {
             _ => {}
         }
     }
+    out.cover = cover_index(&out.ranges);
+    out.low = owners_below_64k(&out.cover);
+    out.explicit_low = bit_set_below_64k(out.explicit.keys().copied());
 }
 
 /// A glyph name's Unicode (Annex D names, `uniXXXX`, `uXXXX[XX]`, single letters).
@@ -600,8 +887,8 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
 }
 
 /// Code → Unicode for a font: its ToUnicode CMap, else (simple fonts) its encoding.
-fn unicode_map(doc: &Document, font: &Dict, composite: bool) -> HashMap<u32, String> {
-    let mut out = HashMap::new();
+fn unicode_map(doc: &Document, font: &Dict, composite: bool) -> Unicode {
+    let mut out = Unicode::default();
     if !composite {
         let enc = font.get(b"Encoding").map(|e| doc.resolve(e));
         let base_name = match enc.as_deref() {
@@ -616,7 +903,7 @@ fn unicode_map(doc: &Document, font: &Dict, composite: bool) -> HashMap<u32, Str
         };
         for (code, u) in table.iter().enumerate() {
             if let Some(c) = char::from_u32(*u).filter(|_| *u != 0) {
-                out.insert(code as u32, c.to_string());
+                out.encoding.insert(code as u32, c.to_string());
             }
         }
         if let Some(Object::Dict(d)) = enc.as_deref()
@@ -629,8 +916,8 @@ fn unicode_map(doc: &Document, font: &Dict, composite: bool) -> HashMap<u32, Str
                     Object::Int(n) => code = u32::try_from((*n).max(0)).unwrap_or(u32::MAX),
                     Object::Name(n) => {
                         match glyph_unicode(&String::from_utf8_lossy(n)) {
-                            Some(c) => out.insert(code, c.to_string()),
-                            None => out.remove(&code),
+                            Some(c) => out.encoding.insert(code, c.to_string()),
+                            None => out.encoding.remove(&code),
                         };
                         code = code.saturating_add(1);
                     }
@@ -652,6 +939,21 @@ mod tests {
     use pdfcraft_cos::{Dict, Document, Object, Stream};
 
     use super::*;
+
+    /// A font whose ranges cover a few low codes keeps tables that size, not a fixed 64k-entry one.
+    #[test]
+    fn low_code_tables_end_with_the_last_covered_code() {
+        // One range over codes 0x20..=0x21, then nothing.
+        let cover = [(0x20u64, Some(0usize)), (0x22, None)];
+        let owner = super::owners_below_64k(&cover);
+        assert_eq!(owner.len(), 0x22);
+        assert_eq!((owner[0x1F], owner[0x20], owner[0x21]), (u32::MAX, 0, 0));
+        assert!(super::owners_below_64k(&[(0x2_0000, Some(0))]).is_empty(), "no code below 65 536");
+        let bits = super::bit_set_below_64k([3u32, 130, 0x2_0000].into_iter());
+        assert_eq!(bits.len(), 3);
+        assert_eq!((bits[0], bits[2]), (1 << 3, 1 << 2));
+        assert!(super::bit_set_below_64k([0x1_0000u32].into_iter()).is_empty());
+    }
 
     fn font(doc: &mut Document, entries: Vec<(&str, Object)>) -> Dict {
         let mut d = Dict::new();
@@ -802,9 +1104,10 @@ mod tests {
     }
 
     fn to_unicode(cmap: &[u8]) -> HashMap<u32, String> {
-        let mut out = HashMap::new();
-        parse_to_unicode(cmap, &mut out);
-        out
+        let mut u = Unicode::default();
+        parse_to_unicode(cmap, &mut u);
+        let codes: Vec<u32> = u.explicit.keys().copied().chain(u.ranges.iter().flat_map(|r| r.lo..=r.hi)).collect();
+        codes.into_iter().filter_map(|c| u.text(c).map(|t| (c, t.into_owned()))).collect()
     }
 
     #[test]
@@ -852,22 +1155,233 @@ mod tests {
         let mut enc = Dict::new();
         enc.set(b"Differences".to_vec(), Object::Array(vec![Object::Int(i64::MAX), Object::name("A"), Object::name("B")]));
         let f = font(&mut doc, vec![("Subtype", Object::name("Type1")), ("Encoding", Object::Dict(enc))]);
-        assert_eq!(unicode_map(&doc, &f, false).get(&u32::MAX).map(String::as_str), Some("B"));
+        assert_eq!(unicode_map(&doc, &f, false).text(u32::MAX).as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn sequential_ranges_past_the_entry_cap_still_map() {
+        // 17 ranges of 65 536 codes: 1 114 112 codes from 0.4 KB of CMap, more than MAX_CMAP_ENTRIES
+        // (the first 16 ranges use up the whole cap). Each range maps its codes upward from 'A', so
+        // the last code of the last range, 0x100019, is 'A' + 0x19 = 'Z'.
+        let mut cmap = b"17 beginbfrange ".to_vec();
+        for k in 0..17u32 {
+            cmap.extend(format!("<{:08X}> <{:08X}> <0041> ", k << 16, (k << 16) | 0xffff).bytes());
+        }
+        cmap.extend(b"endbfrange");
+        let mut doc = Document::new_empty();
+        let tu = doc.add(Object::Stream(Stream::from_raw(Dict::new(), cmap)));
+        let f = font(
+            &mut doc,
+            vec![
+                ("Subtype", Object::name("Type0")),
+                ("BaseFont", Object::name("Wide")),
+                ("Encoding", Object::name("Identity-H")),
+                ("ToUnicode", Object::Ref(tu)),
+            ],
+        );
+        let m = Metrics::from_dict(&doc, &f);
+        assert_eq!(m.text_of(0x0010_0019).as_deref(), Some("Z"));
     }
 
     #[test]
     fn a_cmap_adds_at_most_max_entries() {
-        // 200 ranges of 65 536 codes would be 13 million strings from 4 KB of stream.
+        // 200 ranges of 65 536 codes would be 13 million codes from 4 KB of stream: 200 records.
         let mut cmap = b"200 beginbfrange ".to_vec();
         for k in 0..200u32 {
             cmap.extend(format!("<{:08X}> <{:08X}> <0041> ", k << 16, (k << 16) | 0xffff).bytes());
         }
         cmap.extend(b"endbfrange");
-        assert_eq!(to_unicode(&cmap).len(), MAX_CMAP_ENTRIES);
+        let mut u = Unicode::default();
+        parse_to_unicode(&cmap, &mut u);
+        assert_eq!((u.ranges.len(), u.explicit.len()), (200, 0));
+        // Explicit entries are what the budget counts: 250 of the 300 here are kept.
+        let mut many = b"300 beginbfchar ".to_vec();
+        for k in 0..300u32 {
+            many.extend(format!("<{k:04X}> <{:04X}> ", 0x4E00 + k).bytes());
+        }
+        many.extend(b"endbfchar");
+        let mut u = Unicode::default();
+        parse_to_unicode_within(&many, &mut u, 250);
+        assert_eq!((u.explicit.len(), u.text(249).is_some(), u.text(250).is_some()), (250, true, false));
         let mut many = b"begincidrange ".to_vec();
         for k in 0..MAX_CMAP_RANGES + 10 {
             many.extend(format!("<{k:08X}> <{k:08X}> 1 ").bytes());
         }
         assert_eq!(parse_cmap(&many).1.len(), MAX_CMAP_RANGES);
+    }
+
+    #[test]
+    fn a_range_is_one_record_however_many_codes() {
+        let mut u = Unicode::default();
+        parse_to_unicode(b"1 beginbfrange <0000> <FFFF> <0041> endbfrange", &mut u);
+        assert_eq!((u.ranges.len(), u.explicit.len()), (1, 0));
+        assert_eq!(u.text(0xFFFF).as_deref(), Some("@"), "0x41 + 0xFFFF wraps to U+0040");
+    }
+
+    #[test]
+    fn sequential_ranges_count_against_the_budget() {
+        // Range k maps codes k and k + 1 and costs two, so a budget of 250 keeps ranges 0 to 124.
+        let mut cmap = Vec::new();
+        for k in 0..300u32 {
+            cmap.extend(format!("1 beginbfrange <{k:08X}> <{:08X}> <0041> endbfrange ", k + 1).bytes());
+        }
+        let mut u = Unicode::default();
+        parse_to_unicode_within(&cmap, &mut u, 250);
+        assert_eq!((u.ranges.len(), u.text(125).is_some(), u.text(126).is_none()), (125, true, true));
+    }
+
+    #[test]
+    fn explicit_and_range_mappings_override_the_encoding() {
+        let mut doc = Document::new_empty();
+        let cmap = b"1 beginbfchar <41> <0058> endbfchar 1 beginbfrange <42> <43> <0059> endbfrange";
+        let tu = doc.add(Object::Stream(Stream::from_raw(Dict::new(), cmap.to_vec())));
+        let f = font(
+            &mut doc,
+            vec![
+                ("Subtype", Object::name("Type1")),
+                ("BaseFont", Object::name("Custom")),
+                ("Encoding", Object::name("WinAnsiEncoding")),
+                ("ToUnicode", Object::Ref(tu)),
+            ],
+        );
+        let m = Metrics::from_dict(&doc, &f);
+        let shown: Vec<Option<String>> = (0x41..=0x44).map(|c| m.text_of(c).map(|t| t.into_owned())).collect();
+        assert_eq!(shown, [Some("X".to_string()), Some("Y".to_string()), Some("Z".to_string()), Some("D".to_string())]);
+    }
+
+    /// Deterministic input for the differential test below.
+    struct Gen(u64);
+
+    impl Gen {
+        fn below(&mut self, n: u32) -> u32 {
+            self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 33) % u64::from(n)) as u32
+        }
+
+        /// A destination: a unit from a pool of edge cases, a surrogate pair, or a lone high surrogate.
+        fn units(&mut self) -> Vec<u16> {
+            const POOL: [u16; 12] = [0x41, 0x42, 0xE9, 0x0, 0xFFFD, 0xFFFE, 0xFFFF, 0x100, 0x3042, 0xD800, 0xDC00, 0xDFFF];
+            match self.below(6) {
+                0 => vec![0xD835, 0xDC00 + self.below(0x400) as u16],
+                1 => vec![0xD800, 0x41],
+                _ => vec![POOL[self.below(POOL.len() as u32) as usize]],
+            }
+        }
+    }
+
+    fn hex(units: &[u16]) -> String {
+        units.iter().map(|u| format!("{u:04X}")).collect()
+    }
+
+    #[test]
+    fn lookups_match_the_expanded_mappings() {
+        // Random ToUnicode CMaps; `expected` is what expanding their entries in order gives.
+        let mut g = Gen(0x2545_f491_4f6c_dd1d);
+        for _ in 0..300 {
+            let mut cmap = String::from("1 begincodespacerange <0000> <FFFF> endcodespacerange ");
+            let mut expected: HashMap<u32, String> = HashMap::new();
+            for _ in 0..1 + g.below(12) {
+                match g.below(3) {
+                    0 => {
+                        let (code, u) = (g.below(300), g.units());
+                        cmap += &format!("1 beginbfchar <{code:04X}> <{}> endbfchar ", hex(&u));
+                        expected.insert(code, String::from_utf16_lossy(&u));
+                    }
+                    1 => {
+                        let (lo, width, u) = (g.below(300), g.below(13), g.units());
+                        cmap += &format!("1 beginbfrange <{lo:04X}> <{:04X}> <{}> endbfrange ", lo + width, hex(&u));
+                        for k in 0..=width {
+                            let mut v = u.clone();
+                            if let Some(last) = v.last_mut() {
+                                *last = last.wrapping_add(k as u16);
+                            }
+                            expected.insert(lo + k, String::from_utf16_lossy(&v));
+                        }
+                    }
+                    _ => {
+                        let (lo, width) = (g.below(300), g.below(5));
+                        let dests: Vec<Vec<u16>> = (0..=width).map(|_| g.units()).collect();
+                        let list: Vec<String> = dests.iter().map(|d| format!("<{}>", hex(d))).collect();
+                        cmap += &format!("1 beginbfrange <{lo:04X}> <{:04X}> [{}] endbfrange ", lo + width, list.join(" "));
+                        for (k, d) in dests.iter().enumerate() {
+                            expected.insert(lo + k as u32, String::from_utf16_lossy(d));
+                        }
+                    }
+                }
+            }
+            let mut doc = Document::new_empty();
+            let tu = doc.add(Object::Stream(Stream::from_raw(Dict::new(), cmap.clone().into_bytes())));
+            let f = font(
+                &mut doc,
+                vec![
+                    ("Subtype", Object::name("Type0")),
+                    ("BaseFont", Object::name("Gen")),
+                    ("Encoding", Object::name("Identity-H")),
+                    ("ToUnicode", Object::Ref(tu)),
+                ],
+            );
+            let m = Metrics::from_dict(&doc, &f);
+            for code in 0..=320u32 {
+                let got = m.text_of(code).map(|t| t.into_owned());
+                assert_eq!(got, expected.get(&code).cloned(), "code {code:#06x} in {cmap}");
+            }
+            let mut reverse: HashMap<char, u32> = HashMap::new();
+            for (&code, text) in &expected {
+                if let Some(c) = only_char(text) {
+                    keep(&mut reverse, c, code);
+                }
+            }
+            let mut chars: Vec<char> = expected.values().flat_map(|t| t.chars()).chain(['A', '\u{FFFD}', '\u{0}', '\u{1D400}']).collect();
+            chars.sort_unstable();
+            chars.dedup();
+            for c in chars {
+                let want = reverse.get(&c).map(|code| code.to_be_bytes()[2..].to_vec());
+                assert_eq!(m.encode(&c.to_string()), want, "char {c:?} in {cmap}");
+            }
+        }
+    }
+
+    #[test]
+    fn fffd_lookups_skip_overridden_surrogates() {
+        // Each record maps every code to itself, so its surrogate offsets decode to U+FFFD. The last
+        // record overrides the surrogates with letters, so each lookup walks past them to U+FFFD itself.
+        let mut cmap = "1 beginbfrange <0000> <FFFF> <0000> endbfrange ".repeat(300);
+        cmap.push_str("1 beginbfrange <D800> <DFFF> <0041> endbfrange");
+        let mut doc = Document::new_empty();
+        let tu = doc.add(Object::Stream(Stream::from_raw(Dict::new(), cmap.into_bytes())));
+        let f = font(
+            &mut doc,
+            vec![
+                ("Subtype", Object::name("Type0")),
+                ("BaseFont", Object::name("Gen")),
+                ("Encoding", Object::name("Identity-H")),
+                ("ToUnicode", Object::Ref(tu)),
+            ],
+        );
+        let m = Metrics::from_dict(&doc, &f);
+        assert_eq!(m.encode("\u{FFFD}"), Some(vec![0xFF, 0xFD]));
+    }
+
+    #[test]
+    fn hostile_ranges_stay_bounded() {
+        // A range wider than 65 536 codes is ignored, a reversed one maps nothing, and a maximal
+        // one-code range maps just its own code.
+        let mut u = Unicode::default();
+        let cmap = b"1 beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange \
+            1 beginbfrange <0005> <0001> <0041> endbfrange \
+            1 beginbfrange <FFFFFFFF> <FFFFFFFF> <FFFF> endbfrange";
+        parse_to_unicode(cmap, &mut u);
+        assert_eq!((u.ranges.len(), u.text(u32::MAX).as_deref()), (0, Some("\u{FFFF}")));
+    }
+
+    #[test]
+    fn low_codes_resolve_to_the_covering_range() {
+        let mut u = Unicode::default();
+        let cmap = b"1 beginbfrange <0005> <0007> <0041> endbfrange 1 beginbfrange <0064> <0065> <0042> endbfrange \
+            1 beginbfrange <0000FFFE> <00010001> <0043> endbfrange";
+        parse_to_unicode(cmap, &mut u);
+        let covered: Vec<u32> = (0..0x70).filter(|&c| u.covering(c).is_some()).collect();
+        assert_eq!(covered, [5, 6, 7, 100, 101]);
+        assert_eq!((u.covering(0xFFFF).is_some(), u.covering(0x1_0001).is_some(), u.covering(0x1_0002).is_none()), (true, true, true));
     }
 }

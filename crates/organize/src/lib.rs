@@ -24,11 +24,11 @@ pub mod view;
 
 pub use boxes::{BoxSpec, PageBox, page_boxes, set_page_box};
 pub use dedupe::dedupe_resources;
-pub use import::{SplitBy, combine, combine_selected, extract_pages, import_pages, page_as_form, split, split_ranges};
-pub use labels::{LabelRange, LabelStyle, number_pages, page_label_ranges, page_labels, set_page_label_ranges};
+pub use import::{Run, SplitBy, combine, combine_grouped, combine_selected, extract_pages, import_pages, page_as_form, split, split_ranges};
+pub use labels::{LabelRange, LabelStyle, PageLabels, number_pages, page_label_ranges, page_labels, set_page_label_ranges};
 pub use outline::{
-    Bookmark, OutlineEntry, OutlineError, add_bookmark, add_bookmark_tree, bookmarks, delete_bookmark, move_bookmark, rename_bookmark,
-    set_bookmark_open, set_bookmark_page,
+    Bookmark, BookmarkPage, OutlineEntry, OutlineError, add_bookmark, add_bookmark_tree, bookmark_page, bookmarks, delete_bookmark, move_bookmark,
+    rename_bookmark, set_bookmark_open, set_bookmark_page, top_level_bookmarks,
 };
 pub use view::{InitialView, displays_doc_title, initial_view, set_initial_view};
 
@@ -197,6 +197,7 @@ pub fn delete_pages(doc: &mut Document, indices: &[usize]) -> Result<(), Organiz
 /// Bookmarks, and links on the `keep` pages, that go to one of the `gone` pages lose that
 /// destination (/Dest, or a GoTo /A), rather than pointing at nothing; so does the catalog's /OpenAction.
 fn drop_destinations_to(doc: &mut Document, gone: &[ObjRef], keep: &[(ObjRef, Dict)]) -> Result<(), OrganizeError> {
+    let dead_names = drop_named_destinations(doc, gone)?;
     let mut holders = outline::items(doc);
     for (p, _) in keep {
         let annots = doc.get(*p).as_dict().and_then(|d| d.get(b"Annots").cloned()).map(|a| doc.resolve(&a).as_array().cloned().unwrap_or_default());
@@ -209,7 +210,12 @@ fn drop_destinations_to(doc: &mut Document, gone: &[ObjRef], keep: &[(ObjRef, Di
         );
     }
     let to_gone = |o: Option<&Object>| {
-        o.map(|o| doc.resolve(o)).and_then(|o| o.as_array().and_then(|a| a.first()).and_then(Object::as_ref)).is_some_and(|r| gone.contains(&r))
+        let Some(o) = o.map(|o| doc.resolve(o)) else { return false };
+        match &*o {
+            Object::Name(n) => dead_names.contains(n),
+            Object::String(s) => dead_names.contains(&s.bytes),
+            _ => goes_to(doc, &o, gone),
+        }
     };
     let mut dead: Vec<(ObjRef, &[u8])> = Vec::new();
     for h in holders {
@@ -240,6 +246,132 @@ fn drop_destinations_to(doc: &mut Document, gone: &[ObjRef], keep: &[(ObjRef, Di
         })?;
     }
     Ok(())
+}
+
+/// True when a destination (an array, or a dictionary whose /D is one) opens one of the `gone` pages.
+fn goes_to(doc: &Document, dest: &Object, gone: &[ObjRef]) -> bool {
+    let dest = doc.resolve(dest);
+    let array = match dest.as_dict() {
+        Some(d) => d.get(b"D").map(|d| doc.resolve(d)),
+        None => Some(dest.clone()),
+    };
+    array.and_then(|a| a.as_array().and_then(|a| a.first()).and_then(Object::as_ref)).is_some_and(|r| gone.contains(&r))
+}
+
+/// Remove the named destinations (the catalog's /Names /Dests tree and the legacy /Dests
+/// dictionary) that open one of the `gone` pages. Returns the removed names, so that the links
+/// using them can lose their destination too. Names of surviving pages are left alone.
+fn drop_named_destinations(doc: &mut Document, gone: &[ObjRef]) -> Result<Vec<Vec<u8>>, OrganizeError> {
+    let mut dead: Vec<Vec<u8>> = Vec::new();
+    let Some(root) = doc.root() else { return Ok(dead) };
+    let Some(catalog) = doc.get(root).as_dict().cloned() else { return Ok(dead) };
+    match catalog.get(b"Dests").cloned() {
+        Some(Object::Ref(r)) => {
+            if let Some(mut d) = doc.get(r).as_dict().cloned()
+                && prune_legacy(doc, &mut d, gone, &mut dead)
+            {
+                doc.update_dict(r, |x| *x = d)?;
+            }
+        }
+        Some(Object::Dict(mut d)) => {
+            if prune_legacy(doc, &mut d, gone, &mut dead) {
+                doc.update_dict(root, |c| c.set(b"Dests".to_vec(), Object::Dict(d)))?;
+            }
+        }
+        _ => {}
+    }
+    match catalog.get(b"Names").cloned() {
+        Some(Object::Ref(n)) => {
+            let tree = doc.get(n).as_dict().and_then(|d| d.get(b"Dests").cloned());
+            if let Some(new) = tree.and_then(|t| prune_tree_slot(doc, &t, gone, &mut dead).transpose()).transpose()? {
+                doc.update_dict(n, |d| d.set(b"Dests".to_vec(), Object::Dict(new)))?;
+            }
+        }
+        Some(Object::Dict(mut names)) => {
+            let tree = names.get(b"Dests").cloned();
+            if let Some(new) = tree.and_then(|t| prune_tree_slot(doc, &t, gone, &mut dead).transpose()).transpose()? {
+                names.set(b"Dests".to_vec(), Object::Dict(new));
+                doc.update_dict(root, |c| c.set(b"Names".to_vec(), Object::Dict(names)))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(dead)
+}
+
+/// Drop the entries of a legacy /Dests dictionary that go to a `gone` page. True when any went.
+fn prune_legacy(doc: &Document, dests: &mut Dict, gone: &[ObjRef], dead: &mut Vec<Vec<u8>>) -> bool {
+    let keys: Vec<Vec<u8>> = dests.iter().filter(|(_, v)| goes_to(doc, v, gone)).map(|(k, _)| k.clone()).collect();
+    for k in &keys {
+        dests.remove(k);
+    }
+    dead.extend(keys.iter().cloned());
+    !keys.is_empty()
+}
+
+/// Prune a name tree held in `slot` (a reference, or a dictionary written inline). A reference is
+/// updated in place and yields `None`; an inline dictionary that changed is handed back.
+fn prune_tree_slot(doc: &mut Document, slot: &Object, gone: &[ObjRef], dead: &mut Vec<Vec<u8>>) -> Result<Option<Dict>, OrganizeError> {
+    let mut seen = Vec::new();
+    match slot {
+        Object::Ref(r) => {
+            prune_tree_ref(doc, *r, gone, dead, &mut seen)?;
+            Ok(None)
+        }
+        Object::Dict(d) => {
+            let mut node = d.clone();
+            Ok(prune_tree_node(doc, &mut node, gone, dead, &mut seen)?.then_some(node))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn prune_tree_ref(doc: &mut Document, r: ObjRef, gone: &[ObjRef], dead: &mut Vec<Vec<u8>>, seen: &mut Vec<ObjRef>) -> Result<(), OrganizeError> {
+    if seen.contains(&r) {
+        return Ok(());
+    }
+    seen.push(r);
+    let Some(mut node) = doc.get(r).as_dict().cloned() else { return Ok(()) };
+    if prune_tree_node(doc, &mut node, gone, dead, seen)? {
+        doc.update_dict(r, |d| *d = node)?;
+    }
+    Ok(())
+}
+
+/// Drop the /Names pairs of one name-tree node that go to a `gone` page, then do the same for its
+/// /Kids. True when `node` itself changed (kids held by reference are written back here).
+fn prune_tree_node(
+    doc: &mut Document,
+    node: &mut Dict,
+    gone: &[ObjRef],
+    dead: &mut Vec<Vec<u8>>,
+    seen: &mut Vec<ObjRef>,
+) -> Result<bool, OrganizeError> {
+    let mut changed = false;
+    if let Some(pairs) = node.get(b"Names").map(|n| doc.resolve(n)).and_then(|n| n.as_array().cloned()) {
+        let mut kept = Vec::with_capacity(pairs.len());
+        for pair in pairs.chunks(2) {
+            match pair {
+                [key, value] if goes_to(doc, value, gone) => {
+                    if let Some(s) = doc.resolve(key).as_string() {
+                        dead.push(s.bytes.clone());
+                    }
+                }
+                _ => kept.extend_from_slice(pair),
+            }
+        }
+        if kept.len() != pairs.len() {
+            node.set(b"Names".to_vec(), Object::Array(kept));
+            changed = true;
+        }
+    }
+    let kids = node.get(b"Kids").map(|k| doc.resolve(k)).and_then(|k| k.as_array().cloned()).unwrap_or_default();
+    for kid in kids {
+        if let Some(r) = kid.as_ref() {
+            prune_tree_ref(doc, r, gone, dead, seen)?;
+        }
+    }
+    Ok(changed)
 }
 
 /// Take widgets out of the form: out of their field's /Kids, or out of /AcroForm /Fields when

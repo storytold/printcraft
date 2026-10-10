@@ -208,6 +208,55 @@ endif</script></event></field>
     .to_string()
 }
 
+/// Shaped like a real Designer leave-request form: a positioned page whose unnamed subform holds
+/// an area (`box`) with a top-to-bottom table of positioned rows (`<occur min="3"/>`) and a
+/// read-only total that a FormCalc calculate works out over a fixed range of rows, as such forms
+/// do. `data` is `xfa:data` content as Adobe's viewers write it: areas are not data scopes, so
+/// there is no `box` element.
+pub fn leave_template(data: &str) -> String {
+    let datasets = if data.is_empty() {
+        String::new()
+    } else {
+        format!("<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfa:data>{data}</xfa:data></xfa:datasets>")
+    };
+    format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ <subform name="page" w="7.5in" h="9in">
+  <subform w="7.5in" h="8in">
+   <area name="box" x="0.25in" y="0.5in">
+    <subform name="table" layout="tb" w="5in">
+     <subform name="row" w="5in" h="0.3in"><occur min="3" max="-1"/>
+      <field name="reason" x="0in" w="3in" h="0.3in"><ui><textEdit/></ui></field>
+      <field name="days" x="3in" w="1in" h="0.3in"><ui><numericEdit/></ui></field>
+     </subform>
+    </subform>
+    <field name="carried" y="1.5in" w="2in" h="0.3in"><ui><numericEdit/></ui></field>
+    <field name="allowance" y="2in" w="2in" h="0.3in"><ui><numericEdit/></ui><value><float>30</float></value></field>
+    <field name="rest" y="2.5in" w="2in" h="0.3in" access="readOnly"><ui><numericEdit/></ui>
+     <calculate><script>
+      var left = carried + allowance
+      for i=0 upto 2 step 1 do
+       if (table.row[i].reason == "Regular") then
+        left = left - table.row[i].days
+       endif
+      endfor
+      this = left
+     </script></calculate></field>
+   </area>
+  </subform>
+ </subform>
+</subform>
+</template>
+{datasets}
+</xdp:xdp>
+"##
+    )
+}
+
 /// A 2 × 2 RGBA PNG: red, green / blue, transparent.
 pub fn tiny_png() -> Vec<u8> {
     TINY_PNG.to_vec()

@@ -94,6 +94,124 @@ fn util_printf_printd_and_printx() {
     assert_eq!(o.value, "1,234,567.89|00042|hi|FF|1.234,50|Jan 5, 2024 09:07|Friday|(555) 123-4567|ABC");
 }
 
+fn assert_printf_error(script: &str, message: &str) {
+    let o = go(script, &Event::doc("Open"));
+    assert!(o.error.as_deref().is_some_and(|e| e.starts_with(message)), "{script}: {:?}", o.error);
+    let o = xfa::run_xfa(
+        script,
+        &xfa::XfaEvent { activity: "initialize".into(), target: "form1[0]".into(), ..Default::default() },
+        &xfa::XfaDoc::default(),
+        &xfa_model::form(),
+        Limits::default(),
+    );
+    assert!(o.error.as_deref().is_some_and(|e| e.starts_with(message)), "XFA: {script}: {:?}", o.error);
+}
+
+#[test]
+fn util_printf_rejects_large_width() {
+    assert_printf_error("util.printf('%99999999999d', 1)", "TypeError: util.printf width or precision exceeds 4096");
+}
+
+#[test]
+fn util_printf_rejects_large_precision() {
+    assert_printf_error("util.printf('%.99999999999f', 1)", "TypeError: util.printf width or precision exceeds 4096");
+}
+
+#[test]
+fn util_printf_rejects_overflowing_width() {
+    assert_printf_error("util.printf('%9999999999999999999999999999999999999999d', 1)", "TypeError: util.printf width or precision exceeds 4096");
+}
+
+#[test]
+fn util_printf_rejects_overflowing_precision() {
+    assert_printf_error("util.printf('%.9999999999999999999999999999999999999999f', 1)", "TypeError: util.printf width or precision exceeds 4096");
+}
+
+#[test]
+fn util_printf_rejects_limits_for_all_conversions() {
+    for conv in ['d', 'f', 's', 'x'] {
+        for spec in ["4097", ".4097", "99999999999", ".99999999999"] {
+            assert_printf_error(&format!("util.printf('%{spec}{conv}', 1)"), "TypeError: util.printf width or precision exceeds 4096");
+        }
+    }
+}
+
+#[test]
+fn util_printf_bounds_total_output() {
+    for script in [
+        "util.printf('%4096d'.repeat(300), 1)",
+        "util.printf('%04096d'.repeat(300), -1)",
+        "util.printf('aa'.repeat(524288) + 'a')",
+        "util.printf('é'.repeat(524289))",
+        "util.printf('%%%%'.repeat(524288) + '%%')",
+        "util.printf('%s', 'aa'.repeat(524288) + 'a')",
+        "util.printf('%s%s', 'aa'.repeat(524288), 'b')",
+    ] {
+        assert_printf_error(script, "TypeError: util.printf output exceeds 1048576 bytes");
+    }
+}
+
+#[test]
+fn util_printf_accepts_limits_and_preserves_formats() {
+    let o = go(
+        "event.value = [util.printf('%4096d', 1).length, util.printf('%04096d', -1).length, \
+         util.printf('%.4096f', 1).length, util.printf('%.4096s', 'a'.repeat(4097)).length, \
+         util.printf('%4096x', 255).length, util.printf('%.4096x', 255), \
+         util.printf('%4096d'.repeat(255) + '%4095d', 1).length, util.printf('%4096d'.repeat(256), 1).length, \
+         util.printf('é'.repeat(524288)).length, util.printf('a%%b:%+06d|%4s|%.2s|%x', 42, 'é', 'é界a', 255)].join('|');",
+        &Event::field("Calculate", "total", ""),
+    );
+    assert_eq!(o.error, None);
+    assert_eq!(o.value, "4096|4096|4098|4096|4096|FF|1048575|1048576|524288|a%b:+00042|   é|é界|FF");
+}
+
+fn assert_array_error(script: &str) {
+    let o = go(script, &Event::field("Calculate", "total", ""));
+    assert!(o.error.as_deref().is_some_and(|e| e.starts_with("TypeError: array length exceeds 1048576")), "{script}: {:?}", o.error);
+    assert!(o.requests.is_empty() && o.changed.is_empty(), "{script}");
+}
+
+#[test]
+fn reset_form_and_field_setters_refuse_huge_arrays() {
+    for script in [
+        "this.resetForm(new Array(4294967295))",
+        "getField('total').value = new Array(4294967295)",
+        "event.target.value = new Array(4294967295)",
+        "getField('total').textColor = new Array(4294967295)",
+        "getField('total').fillColor = new Array(4294967295)",
+    ] {
+        assert_array_error(script);
+    }
+}
+
+#[test]
+fn reset_form_and_field_setters_take_arrays_up_to_the_limit() {
+    let o = go("this.resetForm(new Array(1 << 20)); getField('total').value = new Array(1 << 20);", &Event::field("Calculate", "total", ""));
+    assert_eq!(o.error, None);
+    assert!(matches!(&o.requests[..], [Request::Reset(names)] if names.len() == 1 << 20 && names.iter().all(String::is_empty)));
+    assert_eq!(o.changed.iter().find(|f| f.name == "total").unwrap().value, [""]);
+    assert_array_error("this.resetForm(new Array((1 << 20) + 1))");
+    assert_array_error("getField('total').value = new Array((1 << 20) + 1)");
+}
+
+#[test]
+fn reset_form_and_field_setters_still_read_short_arrays() {
+    let mut f = fields();
+    f.push(FieldState::new("pick", FieldType::ListBox, vec![]));
+    let o = run(
+        "this.resetForm(['a', 'b']); getField('pick').value = ['x', 'y', 'z']; getField('total').value = ['x', 'y', 'z'];",
+        &Event::field("Calculate", "total", ""),
+        &doc(),
+        &f,
+        &[],
+        Limits::default(),
+    );
+    assert_eq!(o.error, None);
+    assert_eq!(o.requests, [Request::Reset(vec!["a".into(), "b".into()])]);
+    assert_eq!(o.changed.iter().find(|f| f.name == "pick").unwrap().value, ["x", "y", "z"]);
+    assert_eq!(o.changed.iter().find(|f| f.name == "total").unwrap().value, ["x"]);
+}
+
 #[test]
 fn document_requests_and_console() {
     let o = go(

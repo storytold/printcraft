@@ -153,6 +153,16 @@ fn tool_detail(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, g: &'static
     }
     // Edit a PDF shows Format text at the top while text is selected or being added.
     if g.id == "edit" {
+        if app.quick_tool == crate::QuickTool::EditText {
+            let count = app.active_ids().map_or(0, |(i, _)| app.views[i].objects.count());
+            if count > 0 {
+                ui.label(crate::i18n::trn(crate::i18n::current(), count as u64, "{n} object selected", "{n} objects selected"));
+                ui.label(tl!("Drag the selection to move it. Esc clears the selection."));
+            } else {
+                ui.label(tl!("Shift-click to select several objects. Drag empty space to select an area."));
+            }
+            ui.add_space(6.0);
+        }
         format_section(app, ui, t);
     }
     let mut run = None;
@@ -552,6 +562,9 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                         }
                         for (i, item) in info.outline.iter().enumerate() {
                             outline_item(ui, &t, info, item, &[i], info.outline.len(), &mut ctx);
+                        }
+                        if info.outline_more {
+                            ui.label(tl!("Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth."));
                         }
                     }
                     RightPanel::Pages => pages(ui, &t, info, view, modal, bm_editable, &mut nav),

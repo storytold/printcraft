@@ -588,3 +588,16 @@ fn printer_option_defaults_and_job_arguments() {
     assert!(args.ends_with("-o fit-to-page=false -o InputSlot=Tray2 -o EFMediaType=Heavy1"), "{args}");
     assert!(spool::printer_options("../../etc/passwd").is_empty(), "not a queue name");
 }
+
+#[test]
+fn a_scaled_appearance_is_not_scaled_twice() {
+    let doc = fixture(1);
+    let nums = |v: [f64; 6]| Object::Array(v.iter().map(|x| Object::Real(*x)).collect());
+    let mut form = Dict::new();
+    form.set(b"BBox".to_vec(), Object::Array([0.0, 0.0, 10.0, 10.0].iter().map(|x| Object::Real(*x)).collect()));
+    form.set(b"Matrix".to_vec(), nums([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]));
+    // The form's own /Matrix doubles it to 20x20 when drawn; the placement only has to map 20x20 onto the 40x40 rect.
+    let m = appearance_matrix(&doc, &form, [10.0, 10.0, 50.0, 50.0]).unwrap();
+    assert!(close(m.0[0], 2.0) && close(m.0[3], 2.0), "{:?}", m.0);
+    assert!(close(m.0[4], 10.0) && close(m.0[5], 10.0), "{:?}", m.0);
+}

@@ -50,7 +50,6 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
     }
     let q = app.palette_query.trim().to_lowercase();
     let mut hits: Vec<(usize, Hit)> = Vec::new();
-    let mac = cfg!(target_os = "macos") || cfg!(target_arch = "wasm32");
     let active = app.active_ids().map(|(_, id)| id);
     for spec in pdfcraft_engine::commands::COMMANDS {
         let label = pdfcraft_engine::commands::current_label(spec, &app.session, active);
@@ -61,7 +60,10 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
                 Hit {
                     group: None,
                     label: translated,
-                    detail: spec.shortcut.map(|k| k.label(mac)).unwrap_or_else(|| tl!(spec.menu.unwrap_or("Command")).to_string()),
+                    detail: spec
+                        .shortcut
+                        .map(|k| crate::commands::shortcut_label(ctx, k))
+                        .unwrap_or_else(|| tl!(spec.menu.unwrap_or("Command")).to_string()),
                     icon: spec.icon,
                     command: Some(spec.id),
                     ready: app.command_enabled(spec),

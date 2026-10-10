@@ -258,6 +258,7 @@ fn os_store_identities_are_not_persisted() {
             issuer: "Test issuer".into(),
             email: String::new(),
             expires: "2030.01.01".into(),
+            unusable: None,
         });
     }
     let saved = app.persist();
@@ -282,6 +283,7 @@ fn windows_store_identity_does_not_ask_for_a_file_password() {
         issuer: "Test issuer".into(),
         email: String::new(),
         expires: "2030.01.01".into(),
+        unusable: None,
     });
     let draft = h.state_mut().sign_draft.as_mut().unwrap();
     draft.step = SignStep::Choose;
@@ -311,6 +313,7 @@ fn long_digital_id_names_stay_inside_the_picker() {
         issuer: long,
         email: String::new(),
         expires: "2030.01.01".into(),
+        unusable: None,
     });
     h.state_mut().sign_draft.as_mut().unwrap().step = SignStep::Choose;
     h.run_steps(3);
@@ -333,4 +336,43 @@ fn long_digital_id_names_stay_inside_the_picker() {
             line.pos.x + line.galley.size().x
         );
     }
+}
+
+/// A store certificate that can't sign is shown with its reason (so the user learns why an
+/// identity Acrobat lists is missing, issue #179) but is never selected or chosen.
+#[test]
+fn an_unusable_id_is_shown_with_its_reason_and_cannot_be_chosen() {
+    let mut h = harness(dir());
+    // Not a `windows:` path: those are replaced by the real store listing when signing starts.
+    h.state_mut().digital_ids.push(pdfcraft_ui_egui::DigitalIdEntry {
+        path: "store-test:broken".into(),
+        name: "Broken signer".into(),
+        issuer: String::new(),
+        email: String::new(),
+        expires: String::new(),
+        unusable: Some("its private key can't be opened: the key is missing from its key store (Windows error 0x80090016)".into()),
+    });
+    h.state_mut().start_signing(0, None, None, None);
+    h.run_steps(3);
+    let draft = h.state().sign_draft.as_ref().unwrap();
+    assert_eq!(draft.step, SignStep::Choose, "shown, with its reason, rather than skipped to Configure");
+    assert_eq!(draft.selected, None);
+    h.get_by_label("Broken signer").click();
+    h.run_steps(3);
+    assert_eq!(h.state().sign_draft.as_ref().unwrap().selected, None);
+    h.get_by_label("Continue").click();
+    h.run_steps(3);
+    assert_eq!(h.state().sign_draft.as_ref().unwrap().step, SignStep::Choose);
+    // A usable ID after it is the one selected to begin with.
+    h.state_mut().digital_ids.push(pdfcraft_ui_egui::DigitalIdEntry {
+        path: "store-test:fine".into(),
+        name: "Working signer".into(),
+        issuer: "Test issuer".into(),
+        email: String::new(),
+        expires: "2030.01.01".into(),
+        unusable: None,
+    });
+    h.state_mut().start_signing(0, None, None, None);
+    h.run_steps(3);
+    assert_eq!(h.state().sign_draft.as_ref().unwrap().selected, Some(1));
 }

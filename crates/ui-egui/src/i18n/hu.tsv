@@ -18,6 +18,9 @@
 	Preferences	Beállítások
 	Preferences…	Beállítások…
 	Interface language	Felület nyelve
+	Interface size	Felület mérete
+	Auto ({percent}%)	Automatikus ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	Az Automatikus beállítás a rendszer szövegméretét követi. Az oldalak mindig a kijelző teljes felbontásában jelennek meg.
 	Identity	Személyazonosság
 	Name on new comments	Név az új megjegyzéseken
 	Open…	Megnyitás…
@@ -44,6 +47,7 @@
 	Fit visible	Látható tartalomhoz igazítás
 	Marquee zoom	Kijelölő nagyítás
 	Take a snapshot	Pillanatkép
+	Column select	Oszlopkijelölés
 	Full screen mode	Teljes képernyő
 	Read mode	Olvasási mód
 	Switch light / dark theme	Világos / sötét téma váltása
@@ -1064,6 +1068,7 @@
 	Dates	Dátumok
 	Text in images isn't found; recognise text (OCR) first.	A képekben lévő szöveg nem található meg; előbb futtass szövegfelismerést (OCR).
 	No matches.	Nincs találat.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Néhány könyvjelző itt nem látható: a panel korlátozott számút és korlátozott mélységig sorol fel.
 	{n} match(es) marked for redaction.	{n} találat megjelölve kitakarásra.
 	Multiple words or phrases	Több szó vagy kifejezés
 	One word or phrase per line	Soronként egy szó vagy kifejezés
@@ -1465,6 +1470,8 @@
 	Right Edge	Jobb szél
 	Language	Nyelv
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	Mentve ide: {place}: {before} → {after} ({pct}%-kal kisebb){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	Ez a fájl már a lehető legkisebb ({size}). Nem készült másolat.
+	Saved {place}: {before} → {after} (not smaller){detail}	Mentve ide: {place}: {before} → {after} (nem kisebb){detail}
 	Couldn't save the image: {e}	A képet nem sikerült menteni: {e}
 	Adding images arrives on the web with file pickers for images	A képek hozzáadása a webes változatban a képválasztóval együtt érkezik
 	Replacing images on page {p} arrives on the web with image pickers ({i})	A {p}. oldal képeinek cseréje a webes változatban a képválasztóval együtt érkezik ({i})
@@ -2139,3 +2146,39 @@ action wizard	Start	Indítás
 	The field {name} no longer exists.	A(z) {name} mező már nem létezik.
 	A selected field has no widget on any page, so the fields can't be edited together.	Az egyik kijelölt mezőnek egyik oldalon sincs widgetje, ezért a mezők nem szerkeszthetők együtt.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} {dpi} dpi felbontással, a legnagyobb méretben, amelyben megjeleníthetők)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	{n} objektum kijelölve|{n} objektum kijelölve
+	Drag the selection to move it. Esc clears the selection.	A kijelölés áthelyezéséhez húzza azt. Az Esc törli a kijelölést.
+	Shift-click to select several objects. Drag empty space to select an area.	Több objektum kijelöléséhez kattintson a Shift lenyomásával. Terület kijelöléséhez húzzon az üres részen.
+	Select at most 1000 objects at a time.	Egyszerre legfeljebb 1000 objektumot jelöljön ki.
+	Finish or discard the text being edited before selecting several objects.	Több objektum kijelölése előtt fejezze be vagy vesse el a szöveg szerkesztését.
+	Move object	Objektum áthelyezése
+	Move objects	Objektumok áthelyezése
+	Vertical text cannot be moved with this selection.	A függőleges szöveg nem helyezhető át ezzel a kijelöléssel.
+	Text used as a clipping path cannot be moved with this selection.	A vágógörbeként használt szöveg nem helyezhető át ezzel a kijelöléssel.
+	These objects could not be moved. Select them again and try a smaller move.	Ezeket az objektumokat nem sikerült áthelyezni. Jelölje ki őket újra, és próbáljon kisebb elmozdítást.
+	This page contains objects that cannot be selected together.	Ez az oldal olyan objektumokat tartalmaz, amelyek nem jelölhetők ki együtt.
+	Fill colour	Kitöltőszín
+	No fill	Nincs kitöltés
+	Fill colour: none	Kitöltőszín: nincs
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	Szóköz
+	Grid view	Rácsnézet
+	List view	Listanézet
+	Files are combined in the order shown. Drag them to change it.	A fájlok a látható sorrendben egyesülnek. Húzd őket a sorrend módosításához.
+	Preview unavailable: {e}	Nincs előnézet: {e}
+	Pages: {k} of {n}	Oldalak: {k} / {n}
+	Check the pages	Ellenőrizd az oldalakat
+	Switch to List view to change the pages it takes.	Válts listanézetre, ha módosítanád, mely oldalak kerüljenek bele.
+	Expand all	Összes kibontása
+	Collapse all	Összes összecsukása
+	Remove page	Oldal eltávolítása
+	Remove {n} pages	{n} oldal eltávolítása

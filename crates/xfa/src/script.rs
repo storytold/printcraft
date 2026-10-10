@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use pdfcraft_cos::{Dict, Document, Object, PdfString};
 
-use crate::data::{DataNode, parse_datasets, som_to_path};
+use crate::data::{DataNode, data_path, parse_datasets};
 use crate::model::*;
 use crate::{Report, XfaError};
 
@@ -171,6 +171,8 @@ fn child_som(parent: &str, name: Option<&str>, index: usize) -> String {
 }
 
 struct Walker<'a> {
+    /// For data paths (areas are not data scopes).
+    tpl: &'a Template,
     data: Option<&'a DataNode>,
     ov: &'a Overrides,
     events: Vec<ScriptEvent>,
@@ -241,7 +243,7 @@ impl Walker<'_> {
 
     fn field(&mut self, f: &Field, parent_som: &str, index: usize, radio: Option<&str>) -> FormNode {
         let som = child_som(parent_som, f.common.name.as_deref().or(Some("field")), index);
-        let data_value = self.data.and_then(|d| d.value_at(&som_to_path(&som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        let data_value = self.data.and_then(|d| d.value_at(&data_path(self.tpl, &som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
         let value = match (radio, data_value) {
             // A radio button's value is its on value when the group picked it.
             (Some(selected), _) => {
@@ -281,7 +283,7 @@ impl Walker<'_> {
             match n {
                 Node::Subform(sf) => {
                     let from_data = match (&sf.common.name, self.data) {
-                        (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&som_to_path(parent_som), name),
+                        (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(self.tpl, parent_som), name),
                         _ => 0,
                     };
                     let instances = crate::layout::instance_count(&sf.occur, from_data);
@@ -344,7 +346,8 @@ impl Walker<'_> {
                 }
                 Node::ExclGroup(g) => {
                     let som = child_som(parent_som, g.common.name.as_deref().or(Some("group")), sib);
-                    let selected = self.data.and_then(|d| d.text_at(&som_to_path(&som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+                    let selected =
+                        self.data.and_then(|d| d.text_at(&data_path(self.tpl, &som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
                     self.push_events(&som, &g.scripts, None, None, None);
                     let fields: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
                     let mut children = Vec::new();
@@ -378,7 +381,7 @@ impl Walker<'_> {
 /// from the template and `ov`) and every scripted event, in document order, within
 /// [`MAX_FORM_NODES`] objects.
 pub fn form_tree(tpl: &Template, data: Option<&DataNode>, ov: &Overrides) -> LiveForm {
-    let mut w = Walker { data, ov, events: Vec::new(), nodes: 0, truncated: false };
+    let mut w = Walker { tpl, data, ov, events: Vec::new(), nodes: 0, truncated: false };
     let root = Node::Subform(Box::new(tpl.root.clone()));
     let mut nodes = w.children(std::slice::from_ref(&root), "", 0);
     let mut root_node = nodes.pop().unwrap_or_default();

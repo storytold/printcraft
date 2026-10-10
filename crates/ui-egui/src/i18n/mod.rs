@@ -115,8 +115,18 @@ fn plural_arabic(n: u64) -> usize {
     }
 }
 
+/// Polish integer counts: 1 is one; endings 2–4 except 12–14 are few; the rest are many.
+fn plural_polish(n: u64) -> usize {
+    match (n, n % 100, n % 10) {
+        (1, _, _) => 0,
+        (_, 12..=14, _) => 2,
+        (_, _, 2..=4) => 1,
+        _ => 2,
+    }
+}
+
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 16] = [
+pub static LANGUAGES: [LangInfo; 17] = [
     LangInfo { code: "en", name: "English", source: "", plural: plural_one_other, rtl: false, catalog: OnceLock::new() },
     LangInfo { code: "ja", name: "日本語", source: include_str!("ja.tsv"), plural: plural_none, rtl: false, catalog: OnceLock::new() },
     // Simplified Chinese; `zh`, `zh-CN`, `zh-SG` and `zh-Hans-*` locales resolve here (see `candidates`).
@@ -165,6 +175,8 @@ pub static LANGUAGES: [LangInfo; 16] = [
     // Arabic (Modern Standard, Western digits); every `ar-*` locale (`ar-MA`, `ar-EG`, `ar-SA` ...)
     // resolves here. Right to left: see `LangInfo::rtl`.
     LangInfo { code: "ar", name: "العربية", source: include_str!("ar.tsv"), plural: plural_arabic, rtl: true, catalog: OnceLock::new() },
+    // Polish; every `pl-*` locale (`pl-pl`, `pl_pl.UTF-8`) resolves here.
+    LangInfo { code: "pl", name: "Polski", source: include_str!("pl.tsv"), plural: plural_polish, rtl: false, catalog: OnceLock::new() },
 ];
 
 impl LangInfo {
@@ -383,6 +395,12 @@ pub fn t(s: &str) -> &str {
     tr(current(), s)
 }
 
+/// The name of a keyboard key, distinct from a command such as Delete. Missing key-name
+/// translations use the English key name, never a plain command translation.
+pub fn key_name(s: &str) -> &str {
+    current().catalog().contextual("key", s).unwrap_or(s)
+}
+
 /// Translate an English UI string; unknown strings come back unchanged.
 pub fn tr(lang: Lang, s: &str) -> &str {
     lang.catalog().plain(s).unwrap_or(s)
@@ -484,6 +502,26 @@ mod tests {
     use super::*;
 
     const JA: fn() -> Lang = || Lang::from_code("ja").expect("ja registered");
+    // These physical key-cap names remain English in several keyboard layouts. Only their
+    // dedicated key context may use them unchanged; ordinary command labels still translate.
+    const KEY_CAP_NAMES: &[&str] = &["Ctrl", "Shift", "Delete", "Esc", "Home", "End"];
+
+    #[test]
+    fn keyboard_key_names_have_a_separate_context_and_english_fallback() {
+        for lang in Lang::all().filter(|l| *l != Lang::EN) {
+            for key in ["Ctrl", "Shift", "Delete", "Esc", "Home", "End", "Space"] {
+                assert!(lang.catalog().contextual("key", key).is_some(), "{}: {key}", lang.code());
+            }
+        }
+        let previous = current();
+        set_current(Lang::from_code("de").unwrap());
+        assert_eq!(key_name("Delete"), "Entf");
+        assert_eq!(t("Delete"), "Löschen");
+        assert_eq!(key_name("Open"), "Open", "a missing key name must not borrow a command translation");
+        set_current(Lang::EN);
+        assert_eq!(key_name("Delete"), "Delete");
+        set_current(previous);
+    }
 
     #[test]
     fn tags_map_to_languages() {
@@ -1165,7 +1203,8 @@ mod tests {
         const KEEP_AS_IS: &[&str] = &["OK"];
         let (entries, _) = parse_entries(cs.0.source, cs.0.plural_forms());
         for e in &entries {
-            assert!(e.source != e.translation || KEEP_AS_IS.contains(&e.source.as_str()), "{:?} is untranslated", e.source);
+            let key_cap = e.context == "key" && KEY_CAP_NAMES.contains(&e.source.as_str());
+            assert!(e.source != e.translation || KEEP_AS_IS.contains(&e.source.as_str()) || key_cap, "{:?} is untranslated", e.source);
             assert!(!e.translation.contains("..."), "use … rather than three dots: {:?}", e.translation);
             assert_eq!(e.translation.trim(), e.translation, "stray whitespace: {:?}", e.translation);
         }
@@ -1990,7 +2029,13 @@ mod tests {
             "+Bin",
             "−Bin",
         ];
-        let unchanged: Vec<_> = entries.iter().filter(|e| e.source == e.translation && !keep.contains(&e.source.as_str())).collect();
+        let unchanged: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                let key_cap = e.context == "key" && KEY_CAP_NAMES.contains(&e.source.as_str());
+                e.source == e.translation && !keep.contains(&e.source.as_str()) && !key_cap
+            })
+            .collect();
         assert!(unchanged.is_empty(), "untranslated Ukrainian catalog entries: {unchanged:#?}");
     }
 

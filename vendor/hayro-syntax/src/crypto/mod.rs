@@ -162,18 +162,27 @@ pub(crate) fn get(
     };
 
     let mut decryption_key = if revision <= 4 {
-        let key = decryption_key_rev1234(
-            password,
-            encrypt_metadata,
-            revision,
-            byte_length,
-            &owner_string,
-            permissions,
-            id,
-        )?;
-        authenticate_user_password_rev234(revision, &key, id, &user_string)?;
-
-        key
+        // PdfCraft patch: (see vendor/README.md hayro-syntax (14)) the password is tried as
+        // given and then in PDFDocEncoding, which revisions 2–4 specify.
+        let mut found = Err(DecryptionError::PasswordProtected);
+        for candidate in legacy_passwords(password) {
+            found = decryption_key_rev1234(
+                &candidate,
+                encrypt_metadata,
+                revision,
+                byte_length,
+                &owner_string,
+                permissions,
+                id,
+            )
+            .and_then(|key| {
+                authenticate_user_password_rev234(revision, &key, id, &user_string).map(|()| key)
+            });
+            if found.is_ok() {
+                break;
+            }
+        }
+        found?
     } else {
         decryption_key_rev56(dict, revision, password, &owner_string, &user_string)?
     };
@@ -448,6 +457,45 @@ fn compute_hash_rev56(
     Ok(result)
 }
 
+/// `PdfCraft` patch: the byte strings to try as a revision 2–4 password. Revisions 2–4 take the
+/// password in `PDFDocEncoding` (ISO 32000-2 §7.6.4.3.2, Algorithm 2 a), but the password arrives
+/// as UTF-8 text: first the bytes as given (what earlier versions used, and what some writers
+/// store), then, for text with characters outside ASCII that `PDFDocEncoding` all has ("ılık€",
+/// "Çok güzel"), its `PDFDocEncoding` bytes.
+fn legacy_passwords(password: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = vec![password.to_vec()];
+    if let Ok(text) = core::str::from_utf8(password)
+        && !text.is_ascii()
+        && let Some(doc) = text.chars().map(pdf_doc_byte).collect::<Option<Vec<u8>>>()
+    {
+        out.push(doc);
+    }
+    out
+}
+
+/// `PdfCraft` patch: `PDFDocEncoding` (ISO 32000-2 Annex D) of `c`, `None` when it has none.
+/// It differs from Latin-1 in 0x18–0x1F and 0x80–0xA0 (0x9F is undefined).
+fn pdf_doc_byte(c: char) -> Option<u8> {
+    const LOW: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
+    const HIGH: [char; 33] = [
+        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚',
+        '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '\u{FFFD}', '€',
+    ];
+    let at = |table: &[char], base: u8| {
+        table
+            .iter()
+            .position(|&t| t == c && t != '\u{FFFD}')
+            .and_then(|i| u8::try_from(i).ok())
+            .map(|i| base + i)
+    };
+    at(&LOW, 0x18)
+        .or_else(|| at(&HIGH, 0x80))
+        .or_else(|| match u32::from(c) {
+            0x18..=0x1F | 0x80..=0xA0 => None,
+            n => u8::try_from(n).ok(),
+        })
+}
+
 /// Algorithm 2: Computing a file encryption key in order to encrypt a document (revision 4 and earlier)
 fn decryption_key_rev1234(
     password: &[u8],
@@ -460,7 +508,7 @@ fn decryption_key_rev1234(
 ) -> Result<Vec<u8>, DecryptionError> {
     let mut md5_input = vec![];
 
-    // TODO: Convert to PDFDocEncoding.
+    // (PDFDocEncoding: see `legacy_passwords`, PdfCraft patch.)
     // a) Pad or truncate password to 32 bytes using PASSWORD_PADDING.
     let mut padded_password = [0_u8; 32];
     let copy_len = password.len().min(32);
@@ -671,4 +719,25 @@ fn decryption_key_rev56(
     // the file encryption key as the key. Verify that bytes 9-11 of the result are the characters "a", "d",
     // "b". Bytes 0-3 of the decrypted Perms entry, treated as a little-endian integer, are the user
     // permissions. They shall match the value in the P key.
+}
+
+#[cfg(test)]
+mod pdfcraft_password_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_passwords_are_tried_as_given_then_in_pdf_doc_encoding() {
+        assert_eq!(legacy_passwords(b"pw"), [b"pw".to_vec()]);
+        assert_eq!(
+            legacy_passwords("ılık€".as_bytes()),
+            ["ılık€".as_bytes().to_vec(), vec![0x9A, b'l', 0x9A, b'k', 0xA0]]
+        );
+        assert_eq!(
+            legacy_passwords("Çok".as_bytes()),
+            ["Çok".as_bytes().to_vec(), vec![0xC7, b'o', b'k']]
+        );
+        // PDFDocEncoding has no ş: only the bytes as given.
+        assert_eq!(legacy_passwords("şifre".as_bytes()), ["şifre".as_bytes().to_vec()]);
+        assert_eq!(legacy_passwords(&[0xFF, 0x00]), [vec![0xFF, 0x00]]);
+    }
 }

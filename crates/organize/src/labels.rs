@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use pdfcraft_cos::page_labels::{MAX_LABEL_BYTES, MAX_LABEL_TOTAL_BYTES, MAX_LABEL_TREE_DEPTH, MAX_LABEL_TREE_WORK, MAX_PREFIX_BYTES, alpha, roman};
+use pdfcraft_cos::page_labels::{MAX_LABEL_BYTES, MAX_LABEL_TREE_DEPTH, MAX_LABEL_TREE_WORK, MAX_PREFIX_BYTES, alpha, roman};
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString};
 
 use crate::{OrganizeError, page_count, pages_root};
@@ -232,40 +232,114 @@ fn checked_ranges(doc: &Document) -> Result<Vec<LabelRange>, OrganizeError> {
     Ok(unique)
 }
 
-/// Every page's label. `lenient` (reading a file): a range whose label can't be formatted
-/// shows physical page numbers for its pages instead of failing every label.
-fn labels_from_ranges(n: usize, ranges: &[LabelRange], lenient: bool) -> Result<Vec<String>, OrganizeError> {
-    let mut labels = Vec::new();
-    let mut total = 0usize;
-    let mut ranges = ranges.iter().peekable();
-    let mut active = None;
-    for p in 0..n {
-        while ranges.peek().is_some_and(|r| r.start <= p) {
-            active = ranges.next();
-        }
-        let label = match active {
-            Some(r) => {
-                let label = match r.label(p) {
-                    Ok(label) => label,
-                    Err(_) if lenient => String::new(),
-                    Err(e) => return Err(e),
-                };
-                total = total.checked_add(label.len()).ok_or_else(|| invalid_label("the total label size overflows"))?;
-                if total > MAX_LABEL_TOTAL_BYTES {
-                    return Err(invalid_label("custom labels exceed 4 MiB in total"));
-                }
-                if label.is_empty() { (p + 1).to_string() } else { label }
-            }
-            None => (p + 1).to_string(),
-        };
-        labels.push(label);
-    }
-    Ok(labels)
+/// A view of every page's label: the sorted ranges and the page count, with no string kept per
+/// page. [`PageLabels::label`] builds one label; [`PageLabels::iter`] builds them one at a time, so
+/// memory follows the ranges, not the pages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageLabels {
+    ranges: Vec<LabelRange>,
+    pages: usize,
 }
 
-/// Every page's label, as a viewer shows it. Resource limits return an actionable error.
+impl PageLabels {
+    /// Reads the document's `/PageLabels` and page count. A tree that is cyclic, too deep or too
+    /// large is an error.
+    pub fn new(doc: &Document) -> Result<Self, OrganizeError> {
+        Ok(Self { ranges: checked_ranges(doc)?, pages: page_count(doc)? })
+    }
+
+    /// The number of pages the labels cover.
+    pub fn pages(&self) -> usize {
+        self.pages
+    }
+
+    /// The label of page `page` (0-based), as a viewer shows it: a page with no range, or with an
+    /// empty range label, shows its physical number. Errors when the range's label cannot be
+    /// formatted (over 1,024 UTF-8 bytes, or a number past 32 bits).
+    pub fn label(&self, page: usize) -> Result<String, OrganizeError> {
+        if page >= self.pages {
+            return Err(OrganizeError::NoSuchPage(page));
+        }
+        let covering = self.ranges.partition_point(|r| r.start <= page);
+        let label = match covering.checked_sub(1).and_then(|i| self.ranges.get(i)) {
+            Some(range) => range.label(page)?,
+            None => String::new(),
+        };
+        Ok(if label.is_empty() { (page + 1).to_string() } else { label })
+    }
+
+    /// Every page's label, in page order, one at a time. Reading is lenient: a label that cannot
+    /// be formatted shows its physical page number, and the other ranges keep their labels.
+    pub fn iter(&self) -> impl Iterator<Item = String> + '_ {
+        (0..self.pages).map(|page| self.label(page).unwrap_or_else(|_| (page + 1).to_string()))
+    }
+}
+
+/// Every page's label, as a viewer shows it. This builds one string per page; for large
+/// documents, read single labels or stream them through [`PageLabels`].
 pub fn page_labels(doc: &Document) -> Result<Vec<String>, OrganizeError> {
-    labels_from_ranges(page_count(doc)?, &checked_ranges(doc)?, true)
+    Ok(PageLabels::new(doc)?.iter().collect())
+}
+
+/// Strict check for an edit: every label that the sorted, unique `ranges` produce over `pages`
+/// pages must fit. A range is checked from its largest number, so the work follows the ranges
+/// (and at most a thousand numbers at each end of a Roman range), not the pages.
+fn check_spans(ranges: &[LabelRange], pages: usize) -> Result<(), OrganizeError> {
+    let Some(last_page) = pages.checked_sub(1) else { return Ok(()) };
+    for (i, r) in ranges.iter().enumerate() {
+        // Prefix-only labels have no number to check; a range past the last page is never shown.
+        if r.start > last_page || r.style == LabelStyle::None {
+            continue;
+        }
+        let end = ranges.get(i + 1).map_or(last_page, |next| next.start.saturating_sub(1).min(last_page));
+        let lo = u64::from(r.first);
+        let hi = lo.saturating_add(u64::try_from(end.saturating_sub(r.start)).unwrap_or(u64::MAX));
+        let prefix = u64::try_from(r.prefix.len()).unwrap_or(u64::MAX);
+        let remaining = (MAX_LABEL_BYTES as u64).checked_sub(prefix).ok_or_else(|| invalid_label("a prefix exceeds 1024 UTF-8 bytes"))?;
+        // Numbers past u32::MAX are never formatted, so a label that is too long comes first.
+        if longest_numeral(r.style, lo, hi.min(u64::from(u32::MAX))) > remaining {
+            return Err(invalid_label("a label exceeds 1024 UTF-8 bytes"));
+        }
+        if hi > u64::from(u32::MAX) {
+            return Err(invalid_label("a page number overflows"));
+        }
+    }
+    Ok(())
+}
+
+/// The longest numeral `style` writes for the numbers `lo..=hi` (`1 <= lo <= hi`), in bytes.
+fn longest_numeral(style: LabelStyle, lo: u64, hi: u64) -> u64 {
+    match style {
+        // Decimal and alphabetic numerals only grow with the number, so the last one is longest.
+        LabelStyle::Decimal => u64::from(hi.checked_ilog10().unwrap_or(0)) + 1,
+        LabelStyle::UpperAlpha | LabelStyle::LowerAlpha => hi.saturating_sub(1) / 26 + 1,
+        LabelStyle::UpperRoman | LabelStyle::LowerRoman => longest_roman(lo, hi),
+        LabelStyle::None => 0,
+    }
+}
+
+/// The byte length of [`roman`]'s numeral for `n`: `n / 1000` copies of `m`, then the hundreds,
+/// tens and units, each a table lookup.
+fn roman_len(n: u64) -> u64 {
+    // Lengths of i, ii, iii, iv, v, vi, vii, viii, ix (and the same pattern for tens and hundreds).
+    const UNITS: [u64; 10] = [0, 1, 2, 3, 2, 1, 2, 3, 4, 2];
+    let digit = |place: u64| UNITS.get(usize::try_from(place % 10).unwrap_or_default()).copied().unwrap_or_default();
+    n / 1000 + digit(n / 100) + digit(n / 10) + digit(n)
+}
+
+/// The longest Roman numeral among `lo..=hi`, in bytes. Within one thousand the longest numeral is
+/// the one ending in 888, and every whole thousand between the ends contains it, so only the
+/// partial thousands at either end are read.
+fn longest_roman(lo: u64, hi: u64) -> u64 {
+    let (first, last) = (lo / 1000, hi / 1000);
+    if first == last {
+        return (lo..=hi).map(roman_len).max().unwrap_or_default();
+    }
+    let head = (lo..=first.saturating_mul(1000).saturating_add(999)).map(roman_len).max().unwrap_or_default();
+    let tail = (last.saturating_mul(1000)..=hi).map(roman_len).max().unwrap_or_default();
+    // Each whole thousand between the ends peaks at its thousand plus 12 (for 888); the last is largest.
+    let middle = if last.saturating_sub(first) >= 2 { last.saturating_sub(1).saturating_add(12) } else { 0 };
+    head.max(tail).max(middle)
 }
 
 /// Replace all label ranges (an empty list removes `/PageLabels`).
@@ -293,7 +367,7 @@ pub fn set_page_label_ranges(doc: &mut Document, ranges: &[LabelRange]) -> Resul
     if sorted.windows(2).any(|pair| pair.first().zip(pair.get(1)).is_some_and(|(a, b)| a.start == b.start)) {
         return Err(invalid_label("range start pages must be unique"));
     }
-    labels_from_ranges(page_count(doc)?, &sorted, false)?;
+    check_spans(&sorted, page_count(doc)?)?;
     let mut nums = Vec::new();
     for r in &sorted {
         let mut spec = Dict::new();
@@ -366,12 +440,77 @@ pub fn number_pages(doc: &mut Document, from: usize, to: usize, style: LabelStyl
 mod tests {
     use super::*;
 
+    /// No limit on the whole sequence: 4,097 labels of 1,024 bytes (over 4 MiB in total) are all
+    /// readable, one at a time or by page.
     #[test]
-    fn page_label_limits_bound_organizer_total_output() {
+    fn label_view_has_no_aggregate_limit() {
         let range = LabelRange { start: 0, style: LabelStyle::None, prefix: "x".repeat(MAX_LABEL_BYTES), first: u32::MAX };
-        let count = MAX_LABEL_TOTAL_BYTES / MAX_LABEL_BYTES;
-        assert_eq!(labels_from_ranges(count, std::slice::from_ref(&range), false).unwrap().len(), count);
-        assert!(labels_from_ranges(count + 1, &[range], false).unwrap_err().to_string().contains("4 MiB"));
+        let view = PageLabels { ranges: vec![range], pages: 4_097 };
+        assert_eq!(view.iter().map(|label| label.len()).sum::<usize>(), 4_097 * MAX_LABEL_BYTES);
+        assert_eq!(view.label(4_096).unwrap(), "x".repeat(MAX_LABEL_BYTES));
+    }
+
+    /// The view keeps the ranges, not one label per page: a billion-page document costs no more to
+    /// view than a short one, and a late label is built without the labels before it.
+    #[test]
+    fn label_view_does_not_grow_with_the_page_count() {
+        let prefix = "x".repeat(1000);
+        let range = LabelRange { start: 0, style: LabelStyle::Decimal, prefix: prefix.clone(), first: 1 };
+        let view = PageLabels { ranges: vec![range], pages: 1_000_000_000 };
+        assert_eq!(view.label(999_999_999).unwrap(), format!("{prefix}1000000000"));
+        assert_eq!(view.iter().take(2).collect::<Vec<_>>(), [format!("{prefix}1"), format!("{prefix}2")]);
+        assert_eq!(view.label(1_000_000_000), Err(OrganizeError::NoSuchPage(1_000_000_000)));
+    }
+
+    /// The numeral length formula and the bounded Roman search agree with the formatter.
+    #[test]
+    fn numeral_bounds_match_the_formatters() {
+        for n in (1..=3_000u64).chain([9_999, 10_000, 999_999, 1_000_000, 1_012_888, 1_013_888, u64::from(u32::MAX)]) {
+            match roman(n, MAX_LABEL_BYTES) {
+                Some(numeral) => assert_eq!(roman_len(n), numeral.len() as u64, "{n}"),
+                None => assert!(roman_len(n) > MAX_LABEL_BYTES as u64, "{n}"),
+            }
+        }
+        assert_eq!(longest_numeral(LabelStyle::UpperRoman, 888, 888), 12);
+        assert_eq!(longest_numeral(LabelStyle::Decimal, 1, 1_000), 4);
+        assert_eq!(longest_numeral(LabelStyle::LowerAlpha, 1, 27), 2);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..400 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let lo = 1 + (seed >> 33) % 3_000_000;
+            let hi = lo + (seed >> 40) % 2_500;
+            assert_eq!(longest_roman(lo, hi), (lo..=hi).map(roman_len).max().unwrap_or_default(), "{lo}..={hi}");
+        }
+    }
+
+    /// The edit check accepts exactly the ranges whose every label the per-page check accepts,
+    /// including spans that cross a thousand, numbers past 32 bits and long prefixes.
+    #[test]
+    fn span_check_agrees_with_per_label_checks() {
+        let styles = [LabelStyle::None, LabelStyle::Decimal, LabelStyle::UpperRoman, LabelStyle::LowerAlpha];
+        let firsts = [1, 3, 990, 999, 1_012_880, 1_013_990, 1_014_000, u32::MAX - 30, u32::MAX];
+        let prefixes = [0, 500, 1000, 1010, 1020, 1024];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from((seed >> 33) % bound as u64).unwrap_or_default()
+        };
+        for _ in 0..3_000 {
+            let pages = next(60);
+            let count = 1 + next(3);
+            let mut starts: Vec<usize> = (0..count).map(|_| next(pages + 3)).collect();
+            starts.sort_unstable();
+            starts.dedup();
+            let mut ranges = Vec::new();
+            for start in starts {
+                let style = styles[next(styles.len())];
+                let prefix = "p".repeat(prefixes[next(prefixes.len())]);
+                let first = firsts[next(firsts.len())];
+                ranges.push(LabelRange { start, style, prefix, first });
+            }
+            let per_label = (0..pages).all(|p| ranges.iter().rev().find(|r| r.start <= p).is_none_or(|r| r.label(p).is_ok()));
+            assert_eq!(check_spans(&ranges, pages).is_ok(), per_label, "{ranges:?} over {pages} pages");
+        }
     }
 
     #[test]

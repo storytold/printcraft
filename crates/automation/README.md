@@ -60,6 +60,14 @@ Implemented: `initialize` (protocol 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
 4. Add an end-to-end test in `tests/automation.rs`. `tool_table_is_well_formed` checks names, schemas and command links.
 
 
+## Moving several page objects
+
+`object_list {doc, page}` inventories recognised paragraphs, Image/Form artwork and added items
+with generation-scoped kind/index references. `object_move {doc, page, objects, offset, generation?}`
+moves 1–1000 references atomically in displayed points (right/down), preserving source glyph bytes
+and fonts. A refusal changes nothing; success is one undo step. See
+[the selection and movement guide](../../docs/editing-multiple-objects.md) for limits and examples.
+
 ## Common command tools
 
 Following FilmCraft's MCP conventions, `command_list {doc?, filter?, enabled_only?}` keeps its

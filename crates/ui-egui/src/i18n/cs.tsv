@@ -24,6 +24,9 @@
 	Preferences	Předvolby
 	Preferences…	Předvolby…
 	Interface language	Jazyk rozhraní
+	Interface size	Velikost rozhraní
+	Auto ({percent}%)	Automaticky ({percent} %)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	Automaticky se řídí velikostí textu v systému. Stránky se vždy vykreslují v plném rozlišení displeje.
 	Identity	Identita
 	Name on new comments	Jméno autora nových komentářů
 	Enable Acrobat JavaScript	Povolit Acrobat JavaScript
@@ -51,6 +54,8 @@
 	Document properties…	Vlastnosti dokumentu…
 	Export to image…	Exportovat jako obrázek…
 	Reduce file size…	Zmenšit velikost souboru…
+	This file is already as small as it can be made ({size}). No copy was saved.	Soubor je už tak malý, jak to jde ({size}). Žádná kopie nebyla uložena.
+	Saved {place}: {before} → {after} (not smaller){detail}	Uloženo {place}: {before} → {after} (není menší){detail}
 	Optimize PDF…	Optimalizovat PDF…
 	Export to text…	Exportovat jako text…
 	Export to Word…	Exportovat do formátu Word…
@@ -65,6 +70,7 @@
 	Find…	Najít…
 	Advanced search…	Rozšířené hledání…
 	Take a snapshot	Pořídit snímek
+	Column select	Výběr sloupce
 	Clear form	Vymazat formulář
 	Copy pages	Kopírovat stránky
 	Cut pages	Vyjmout stránky
@@ -145,3 +151,24 @@
 	Import list…	Importovat seznam…
 	{n} word(s) or phrase(s)	Slova nebo fráze: {n}
 	{name} is too large for a word list (at most 1 MB).	{name} je pro seznam slov příliš velký (nejvýše 1 MB).
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	Vybrán {n} objekt|Vybrány {n} objekty|Vybráno {n} objektů
+	Drag the selection to move it. Esc clears the selection.	Přetažením výběr přesunete. Esc zruší výběr.
+	Shift-click to select several objects. Drag empty space to select an area.	Kliknutím se Shiftem vyberete více objektů. Tažením v prázdném místě vyberete oblast.
+	Select at most 1000 objects at a time.	Vyberte nejvýše 1000 objektů najednou.
+	Finish or discard the text being edited before selecting several objects.	Před výběrem více objektů dokončete nebo zahoďte úpravu textu.
+	Move object	Přesunout objekt
+	Move objects	Přesunout objekty
+	Vertical text cannot be moved with this selection.	Svislý text nelze přesunout s tímto výběrem.
+	Text used as a clipping path cannot be moved with this selection.	Text použitý jako ořezová cesta nelze přesunout s tímto výběrem.
+	These objects could not be moved. Select them again and try a smaller move.	Tyto objekty se nepodařilo přesunout. Vyberte je znovu a zkuste menší posun.
+	This page contains objects that cannot be selected together.	Tato stránka obsahuje objekty, které nelze vybrat společně.
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	Mezerník

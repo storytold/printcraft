@@ -60,7 +60,7 @@ pub enum OptimizeKind {
 
 impl OptimizeKind {
     /// The suffix of the saved copy's name ("notes (reduced).pdf").
-    fn suffix(self) -> &'static str {
+    pub(crate) fn suffix(self) -> &'static str {
         match self {
             OptimizeKind::Reduce => "reduced",
             OptimizeKind::Advanced => "optimized",
@@ -282,7 +282,7 @@ impl PdfCraftApp {
         }
         let job = match self.session.optimize_job(id, settings, discard) {
             Ok(job) => job,
-            Err(e) => return self.save_optimized(id, kind.suffix(), Err(e)),
+            Err(e) => return self.save_optimized(id, kind, Err(e)),
         };
         let progress = Arc::new(Mutex::new(OptimizeProgress::default()));
         let p = progress.clone();
@@ -352,7 +352,7 @@ impl PdfCraftApp {
                     let detail = if kind == OptimizeKind::Advanced { summary(&r) } else { String::new() };
                     (b, detail)
                 });
-                self.save_optimized(doc, kind.suffix(), result);
+                self.save_optimized(doc, kind, result);
             }
         }
     }

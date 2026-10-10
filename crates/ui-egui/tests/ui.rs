@@ -511,6 +511,7 @@ fn pdfs_dropped_on_the_combine_tab_join_its_list() {
         app
     });
     h.run_steps(3);
+    h.state_mut().set_option("combine-view", "list").unwrap();
     h.state_mut().execute("page.combine");
     h.run_steps(2);
     // An absolute path is read from disk, with its modified time.

@@ -4,13 +4,15 @@
 //!
 //! Binding is the default "normal" one: a field's data node is named after the field and nested
 //! under nodes named after its named ancestor subforms, repeated instances as repeated sibling
-//! elements. Explicit `bind ref` expressions are not followed.
+//! elements. Areas are named in SOM expressions but are not data scopes, so their contents bind
+//! under the area's parent ([`data_path`]). Explicit `bind ref` expressions are not followed.
 
 use std::collections::HashMap;
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 
 use crate::XfaError;
+use crate::model::{Node, Template};
 use crate::packets::{Encoding, encode};
 
 const XFA_DATA_NS: &str = "http://www.xfa.org/schema/xfa-data/1.0/";
@@ -94,6 +96,62 @@ pub fn som_to_path(som: &str) -> DataPath {
             Some((name.to_string(), idx.min(100_000)))
         })
         .collect()
+}
+
+/// The data path the object at `som` binds to: [`som_to_path`] without the areas on the way.
+/// An area is a named container in the form, so it is part of SOM expressions, but only
+/// subforms, exclusion groups and fields are data scopes: what an area holds binds under the
+/// area's parent, as Adobe's viewers write it. The template tells which segments are areas;
+/// segments it doesn't have (page-set objects, or a SOM from another template) are kept.
+pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+    let mut out = DataPath::new();
+    // The template children the next segment is looked up in; `None` until the root matched,
+    // and again once a segment is not a container the template has.
+    let mut level: Option<&[Node]> = None;
+    for (i, (name, index)) in som_to_path(som).into_iter().enumerate() {
+        let found = match level {
+            None if i == 0 && tpl.root.common.name.as_deref() == Some(name.as_str()) => Some(Container::Children(&tpl.root.children)),
+            None => None,
+            Some(children) => match named(children, &name, 0) {
+                Some(Node::Subform(sf)) => Some(Container::Children(&sf.children)),
+                Some(Node::Area(a)) => Some(Container::Area(&a.children)),
+                _ => None,
+            },
+        };
+        match found {
+            Some(Container::Area(children)) => level = Some(children),
+            Some(Container::Children(children)) => {
+                level = Some(children);
+                out.push((name, index));
+            }
+            None => {
+                level = None;
+                out.push((name, index));
+            }
+        }
+    }
+    out
+}
+
+enum Container<'a> {
+    Children(&'a [Node]),
+    /// Contents bind under the area's parent.
+    Area(&'a [Node]),
+}
+
+/// The child of `nodes` named `name`, looking through unnamed subforms and areas (which have no
+/// SOM segment of their own).
+fn named<'a>(nodes: &'a [Node], name: &str, depth: usize) -> Option<&'a Node> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    nodes.iter().find(|n| n.common().name.as_deref() == Some(name)).or_else(|| {
+        nodes.iter().find_map(|n| match n {
+            Node::Subform(sf) if sf.common.name.is_none() => named(&sf.children, name, depth + 1),
+            Node::Area(a) if a.common.name.is_none() => named(&a.children, name, depth + 1),
+            _ => None,
+        })
+    })
 }
 
 /// What a field holds, for writing the datasets.
@@ -342,11 +400,30 @@ struct Want {
     ensure: bool,
 }
 
-fn wanted(doc: &Document, fields: &[FieldDatum]) -> Vec<Want> {
+/// `tpl`, or the document's own template when none is given (parsed once).
+fn with_template<T>(doc: &Document, tpl: Option<&Template>, f: impl FnOnce(Option<&Template>) -> T) -> T {
+    match tpl {
+        Some(t) => f(Some(t)),
+        None => {
+            let parsed = crate::script::template_of(doc).ok();
+            f(parsed.as_ref())
+        }
+    }
+}
+
+/// [`data_path`] when the template is known, else [`som_to_path`].
+fn path_of(tpl: Option<&Template>, som: &str) -> DataPath {
+    match tpl {
+        Some(t) => data_path(t, som),
+        None => som_to_path(som),
+    }
+}
+
+fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Template>) -> Vec<Want> {
     let mut out = Vec::new();
     for f in fields {
         let som = som_of(doc, f);
-        let path = som_to_path(&som);
+        let path = path_of(tpl, &som);
         if path.is_empty() {
             continue;
         }
@@ -415,7 +492,8 @@ fn build_children(wants: &[Want], warnings: &mut Vec<String>) -> String {
 
 /// The `xfa:data` element for `fields`, built afresh.
 pub fn build_data(doc: &Document, fields: &[FieldDatum]) -> String {
-    format!("<xfa:data>{}</xfa:data>", build_children(&wanted(doc, fields), &mut Vec::new()))
+    let wants = with_template(doc, None, |t| wanted(doc, fields, t));
+    format!("<xfa:data>{}</xfa:data>", build_children(&wants, &mut Vec::new()))
 }
 
 fn fresh_datasets(data_children: &str) -> String {
@@ -749,7 +827,18 @@ pub fn write_datasets(doc: &mut Document, fields: &[FieldDatum]) -> Result<Datas
 /// [`write_datasets`], replacing the stream `reuse` in place when the packet is that stream
 /// (written earlier in the same edit) rather than adding another.
 pub fn write_datasets_reusing(doc: &mut Document, fields: &[FieldDatum], reuse: Option<ObjRef>) -> Result<DatasetsWrite, XfaError> {
-    let wants = wanted(doc, fields);
+    write_datasets_with(doc, None, fields, reuse)
+}
+
+/// [`write_datasets_reusing`] with the form's parsed template when the caller has it (it says
+/// which SOM segments are areas, see [`data_path`]); `None` parses the document's.
+pub fn write_datasets_with(
+    doc: &mut Document,
+    tpl: Option<&Template>,
+    fields: &[FieldDatum],
+    reuse: Option<ObjRef>,
+) -> Result<DatasetsWrite, XfaError> {
+    let wants = with_template(doc, tpl, |t| wanted(doc, fields, t));
     rewrite(doc, &[Op::Values(&wants)], reuse)
 }
 
@@ -980,11 +1069,21 @@ fn rewrite(doc: &mut Document, ops: &[Op], reuse: Option<ObjRef>) -> Result<Data
 /// The values the datasets hold for `fields`: `(field name, what it should hold)`, only for
 /// fields the data mentions.
 pub fn read_values(doc: &Document, fields: &[FieldDatum]) -> Vec<(String, FieldData)> {
+    read_values_with(doc, None, fields)
+}
+
+/// [`read_values`] with the form's parsed template when the caller has it; `None` parses the
+/// document's.
+pub fn read_values_with(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum]) -> Vec<(String, FieldData)> {
+    with_template(doc, tpl, |t| values_at(doc, t, fields))
+}
+
+fn values_at(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum]) -> Vec<(String, FieldData)> {
     let Ok(Some(p)) = crate::read_packets(doc) else { return Vec::new() };
     let Some(data) = parse_datasets(&p.xdp) else { return Vec::new() };
     let mut out = Vec::new();
     for f in fields {
-        let path = som_to_path(&som_of(doc, f));
+        let path = path_of(tpl, &som_of(doc, f));
         let Some(text) = data.text_at(&path) else { continue };
         let value = match &f.data {
             FieldData::Text(_) => FieldData::Text(match date_pattern_of(doc, f) {

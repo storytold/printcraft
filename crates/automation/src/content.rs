@@ -200,3 +200,71 @@ impl Automation {
         self.apply(a, Edit::DeleteContent { page, index })
     }
 }
+
+impl Automation {
+    /// One mixed inventory, with exact source references and the current document generation.
+    pub(crate) fn object_list(&self, a: &Args) -> Result<Value> {
+        let page = self.page(a)?;
+        let doc = self.doc(a)?;
+        let info = doc.info.pages.get(page).ok_or_else(|| bad("the page no longer exists"))?;
+        let objects = doc.editable_objects(page).map_err(failed)?;
+        let items = objects
+            .iter()
+            .map(|o| {
+                let rect = crate::comments::rect_to_view(info, o.rect.map(|v| v as f32));
+                json!({"kind":o.target.kind.as_str(),"index":o.target.index.saturating_add(1),"type":o.content_type,
+                "rect":rect.map(|v|(f64::from(v)*100.0).round()/100.0),"text":o.text})
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({"page":page+1,"generation":doc.edit_generation(),"count":items.len(),"objects":items}))
+    }
+
+    pub(crate) fn object_move(&mut self, a: &Args) -> Result<Value> {
+        use pdfcraft_engine::{MAX_MOVE_OBJECTS, ObjectKind, ObjectTarget};
+        let page = self.page(a)?;
+        let rows = a
+            .get("objects")
+            .and_then(Value::as_array)
+            .filter(|r| !r.is_empty() && r.len() <= MAX_MOVE_OBJECTS)
+            .ok_or_else(|| bad("objects must contain 1–1000 references from object_list"))?;
+        let mut targets = Vec::with_capacity(rows.len());
+        for row in rows {
+            let row = row.as_object().ok_or_else(|| bad("each object must contain kind and index"))?;
+            if row.keys().any(|k| k != "kind" && k != "index") {
+                return Err(bad("an object reference accepts only kind and index"));
+            }
+            let kind = match row.get("kind").and_then(Value::as_str) {
+                Some("added") => ObjectKind::Added,
+                Some("text") => ObjectKind::Text,
+                Some("image") => ObjectKind::Image,
+                _ => return Err(bad("object kind must be added, text or image (see object_list)")),
+            };
+            let index = row
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| bad("object index must be a positive integer from object_list"))?;
+            targets.push(ObjectTarget { kind, index });
+        }
+        let delta = a
+            .get("offset")
+            .and_then(Value::as_array)
+            .filter(|v| v.len() == 2)
+            .and_then(|v| Some([v.first()?.as_f64()?, v.get(1)?.as_f64()?]))
+            .filter(|v| v.iter().all(|n| n.is_finite() && n.abs() <= 1e9))
+            .ok_or_else(|| bad("offset must contain two finite numbers [dx, dy] in displayed points"))?;
+        let doc = self.doc(a)?;
+        if let Some(g) = a.get("generation") {
+            let g = g.as_u64().ok_or_else(|| bad("generation must be a non-negative integer from object_list"))?;
+            if g != doc.edit_generation() {
+                return Err(failed("the document changed; call object_list again before moving"));
+            }
+        }
+        let offset = doc.object_move_offset(page, delta).map_err(failed)?;
+        let count = targets.len();
+        let mut result = self.apply(a, Edit::MoveObjects { page, objects: targets, offset })?;
+        result["moved"] = json!(count);
+        Ok(result)
+    }
+}

@@ -1646,3 +1646,385 @@ fn hostile_form_xobjects_are_read_once() {
     assert_eq!(texts, ["once", "from b", "from a", "inherited", "bad matrix"]);
     assert!(images::reading_images(&doc, 0).unwrap().is_empty());
 }
+
+#[test]
+fn group_moves_preserve_glyph_bytes_and_unselected_text_state() {
+    for content in [
+        "BT /F1 12 Tf 1.3 Tc 2 Tw 80 Tz 14 TL 1 0.2 -0.1 1 50 600 Tm (A\\101) Tj 1 0 0 rg (Neighbour) Tj T* (Next) Tj ET",
+        "BT /F1 12 Tf 14 TL 50 600 Td (Before) Tj 0 0 1 rg (Quoted) ' 1 0 0 rg (After) Tj ET",
+        "BT /F1 12 Tf 14 TL 50 600 Td (Before) Tj 0 0 1 rg 2 1 (Quoted) \" 1 0 0 rg [(After) -120 (wards)] TJ T* (Last) Tj ET",
+        "q 1.2 0.3 -0.1 0.9 20 30 cm BT /F1 12 Tf 50 600 Td [(A) -120 (B)] TJ 1 0 0 rg (After) Tj ET Q %keep-this-comment\n",
+        "BT /F1 12.3456789 Tf 81.23456789 Tz 0.123456789 Ts 14 TL 50 600 Td (Before) Tj 0 0 1 rg 2.123456789 1.987654321 (Quoted) \" 1 0 0 rg (After) Tj ET",
+    ] {
+        let mut doc = text_page(content);
+        let before = text::text_lines(&doc, 0).unwrap();
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        let index = blocks.iter().position(|b| b.text.contains("Quoted")).unwrap_or(0);
+        let selected: Vec<_> = blocks[index].lines.iter().map(|i| before[*i].text.clone()).collect();
+        let glyph_bytes = |doc: &Document| {
+            pdfcraft_content::parse(&page_content_bytes(doc, 0))
+                .ops
+                .iter()
+                .flat_map(|op| {
+                    op.operands
+                        .iter()
+                        .flat_map(|o| match o {
+                            Object::String(s) => vec![s.bytes.clone()],
+                            Object::Array(a) => a.iter().filter_map(|v| v.as_string().map(|s| s.bytes.clone())).collect(),
+                            _ => Vec::new(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let original_bytes = glyph_bytes(&doc);
+        let target = ObjectTarget { kind: ObjectKind::Text, index };
+        move_objects(&mut doc, 0, &[target], [35.0, -27.0]).unwrap();
+        let doc = reopen(&doc);
+        assert_eq!(glyph_bytes(&doc), original_bytes, "original codes and kerning strings survive");
+        let after = text::text_lines(&doc, 0).unwrap();
+        assert_eq!(after.len(), before.len(), "{content}");
+        for old in before {
+            let new = after.iter().find(|l| l.text == old.text).unwrap();
+            let expected = if selected.contains(&old.text) {
+                [old.rect[0] + 35.0, old.rect[1] - 27.0, old.rect[2] + 35.0, old.rect[3] - 27.0]
+            } else {
+                old.rect
+            };
+            assert!(new.rect.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{}: {:?} != {:?}", old.text, new.rect, expected);
+            assert_eq!((new.font.clone(), new.color), (old.font, old.color));
+        }
+        if content.contains("%keep-this-comment") {
+            assert!(String::from_utf8_lossy(&page_content_bytes(&doc, 0)).contains("%keep-this-comment"));
+        }
+    }
+}
+
+#[test]
+fn group_moves_preserve_small_offsets_under_large_transforms() {
+    let mut doc = image_page();
+    let page = pdfcraft_model::pages(&doc)[0].obj;
+    let content = doc.add(Object::Stream(Stream::flate(
+        Dict::new(),
+        b"q 100000 0 0 100000 100 100 cm /Im0 Do Q q 10000 0 0 10000 0 0 cm BT /F1 0.00123456789 Tf 0.02 0.06 Td (Small) Tj 1 0 0 rg (Neighbour) Tj ET Q",
+    )));
+    doc.update_dict(page, |d| d.set(b"Contents".to_vec(), Object::Ref(content))).unwrap();
+    let before = editable_objects(&doc, 0).unwrap();
+    let targets = before.iter().filter(|o| o.text.as_deref() != Some("Neighbour")).map(|o| o.target).collect::<Vec<_>>();
+    assert_eq!(targets.len(), 2);
+    let offset = [0.00123456789, -0.00987654321];
+    move_objects(&mut doc, 0, &targets, offset).unwrap();
+    let after = editable_objects(&reopen(&doc), 0).unwrap();
+    for old in before {
+        let new = after.iter().find(|o| o.target == old.target).unwrap();
+        let [dx, dy] = if targets.contains(&old.target) { offset } else { [0.0, 0.0] };
+        assert!(close(new.rect, [old.rect[0] + dx, old.rect[1] + dy, old.rect[2] + dx, old.rect[3] + dy]), "{old:?}: {new:?}");
+    }
+}
+
+#[test]
+fn mixed_object_inventory_does_not_select_added_content_twice() {
+    let mut doc = image_page();
+    add_content(&mut doc, 0, &Content::Text(AddedText { text: "Added label".into(), rect: [50.0, 350.0, 200.0, 380.0], ..AddedText::default() }))
+        .unwrap();
+    let before = editable_objects(&doc, 0).unwrap();
+    assert_eq!(before.len(), 3, "one native paragraph, one native image, one added text");
+    let targets = before.iter().map(|o| o.target).collect::<Vec<_>>();
+    let image = images::page_images(&doc, 0).unwrap()[0].object.unwrap();
+    let original_image = doc.get(image).clone();
+    move_objects(&mut doc, 0, &targets, [20.0, -15.0]).unwrap();
+    let doc = reopen(&doc);
+    let after = editable_objects(&doc, 0).unwrap();
+    assert_eq!(after.len(), before.len());
+    for old in before {
+        let new = after.iter().find(|o| o.target == old.target).unwrap();
+        assert!(close(new.rect, [old.rect[0] + 20.0, old.rect[1] - 15.0, old.rect[2] + 20.0, old.rect[3] - 15.0]));
+        assert_eq!(new.text, old.text);
+    }
+    assert_eq!(doc.get(image).clone(), original_image, "pixel data is shared, not recompressed");
+}
+
+#[test]
+fn group_move_refusals_leave_the_object_graph_untouched() {
+    let mut doc = image_page();
+    let target = editable_objects(&doc, 0).unwrap()[0].target;
+    let original = pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap();
+    for (targets, offset) in [
+        (vec![], [1.0, 2.0]),
+        (vec![target, target], [1.0, 2.0]),
+        (vec![target, ObjectTarget { kind: ObjectKind::Image, index: usize::MAX }], [1.0, 2.0]),
+        (vec![target], [f64::NAN, 2.0]),
+        (vec![target], [f64::INFINITY, 2.0]),
+        (vec![target], [0.0, 0.0]),
+        (vec![target], [1e300, 2.0]),
+        (vec![target; MAX_MOVE_OBJECTS + 1], [1.0, 2.0]),
+    ] {
+        assert!(move_objects(&mut doc, 0, &targets, offset).is_err());
+        assert_eq!(pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap(), original);
+    }
+    let mut clipped = text_page("BT /F1 12 Tf 50 600 Td (Ordinary) Tj ET BT /F1 12 Tf 4 Tr 50 400 Td (Clipping) Tj ET");
+    let targets = editable_objects(&clipped, 0).unwrap().iter().map(|o| o.target).collect::<Vec<_>>();
+    let original = pdfcraft_cos::write_full(&clipped, &SaveOptions::default()).unwrap();
+    assert!(move_objects(&mut clipped, 0, &targets, [10.0, 5.0]).unwrap_err().to_string().contains("clipping"));
+    assert_eq!(pdfcraft_cos::write_full(&clipped, &SaveOptions::default()).unwrap(), original);
+}
+
+#[test]
+fn added_and_native_objects_move_together_on_cropped_rotated_user_unit_pages() {
+    for rotation in [0, 90, 180, 270] {
+        let mut doc = image_page();
+        let page = pdfcraft_model::pages(&doc)[0].obj;
+        doc.update_dict(page, |d| {
+            d.set(b"CropBox".to_vec(), Object::Array([10, 20, 500, 750].map(Object::Int).to_vec()));
+            d.set(b"Rotate".to_vec(), Object::Int(rotation));
+            d.set(b"UserUnit".to_vec(), Object::Int(2));
+        })
+        .unwrap();
+        add_content(&mut doc, 0, &Content::Text(AddedText { text: "Added".into(), rect: [60.0, 100.0, 180.0, 125.0], ..AddedText::default() }))
+            .unwrap();
+        let before = editable_objects(&doc, 0).unwrap();
+        move_objects(&mut doc, 0, &before.iter().map(|o| o.target).collect::<Vec<_>>(), [12.0, -8.0]).unwrap();
+        let after = editable_objects(&reopen(&doc), 0).unwrap();
+        for (a, b) in before.iter().zip(after) {
+            assert!(
+                close(b.rect, [a.rect[0] + 12.0, a.rect[1] - 8.0, a.rect[2] + 12.0, a.rect[3] - 8.0]),
+                "rotation {rotation}: {:?} -> {:?}",
+                a.rect,
+                b.rect
+            );
+        }
+    }
+}
+
+#[test]
+fn group_moves_keep_split_stream_tokens_and_shared_form_resources() {
+    let mut doc = split_streams_page();
+    let before = text::text_lines(&doc, 0).unwrap();
+    let objects: Vec<_> = editable_objects(&doc, 0).unwrap().iter().map(|o| o.target).collect();
+    move_objects(&mut doc, 0, &objects, [30.0, -20.0]).unwrap();
+    let doc = reopen(&doc);
+    let after = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(before.len(), after.len());
+    for (a, b) in before.iter().zip(&after) {
+        assert_eq!(a.text, b.text);
+        assert!(close(b.rect, [a.rect[0] + 30.0, a.rect[1] - 20.0, a.rect[2] + 30.0, a.rect[3] - 20.0]));
+    }
+    let joined = page_content_bytes(&doc, 0);
+    let ops = pdfcraft_content::parse(&joined).ops;
+    assert_eq!(ops.iter().find(|o| o.is("BDC")).unwrap().operands.len(), 2);
+    assert!(ops.iter().any(|o| o.is("EMC")));
+    // Two pages share a content stream and a Form; only one placement on one page moves.
+    let mut doc = fixture();
+    let mut form = Dict::new();
+    form.set(b"Subtype".to_vec(), Object::name("Form"));
+    form.set(b"BBox".to_vec(), Object::Array([0, 0, 60, 30].map(Object::Int).to_vec()));
+    form.set(b"PrivateData".to_vec(), Object::String(pdfcraft_cos::PdfString::literal(b"retain this".to_vec())));
+    let artwork = doc.add(Object::Stream(Stream::flate(form, b"1 0 0 rg 0 0 60 30 re f")));
+    doc.update_dict(pdfcraft_cos::ObjRef::new(6, 0), |d| {
+        let mut xo = Dict::new();
+        xo.set(b"Figure".to_vec(), Object::Ref(artwork));
+        d.set(b"XObject".to_vec(), Object::Dict(xo));
+    })
+    .unwrap();
+    doc.set(
+        pdfcraft_cos::ObjRef::new(7, 0),
+        Object::Stream(Stream::flate(
+            Dict::new(),
+            b"q 1 0 0 1 40 80 cm /Figure Do Q q 1 0 0 1 300 400 cm /Figure Do Q BT /F1 9 Tf 40 160 Td (Caption) Tj ET",
+        )),
+    );
+    let original_form = doc.get(artwork);
+    let source_page = page_content_bytes(&doc, 1);
+    let images = images::page_images(&doc, 0).unwrap();
+    move_objects(
+        &mut doc,
+        0,
+        &[ObjectTarget { kind: ObjectKind::Image, index: 0 }, ObjectTarget { kind: ObjectKind::Text, index: 0 }],
+        [15.0, -10.0],
+    )
+    .unwrap();
+    let after = images::page_images(&doc, 0).unwrap();
+    assert!(close(after[0].rect, [55.0, 70.0, 115.0, 100.0]));
+    assert_eq!(after[1].rect, images[1].rect);
+    assert_eq!(*doc.get(artwork), *original_form);
+    assert_eq!(page_content_bytes(&doc, 1), source_page);
+}
+
+#[test]
+fn group_moves_preserve_encoded_glyphs_and_refuse_vertical_cmaps() {
+    let mut doc = text_page("BT /F1 12 Tf 40 400 Td <004100420043> Tj ET");
+    let mut font = Dict::from_iter([
+        (b"Type".to_vec(), Object::name("Font")),
+        (b"Subtype".to_vec(), Object::name("Type0")),
+        (b"BaseFont".to_vec(), Object::name("SyntheticCID")),
+        (b"Encoding".to_vec(), Object::name("Identity-H")),
+    ]);
+    let unicode = doc.add(Object::Stream(Stream::flate(
+        Dict::new(),
+        b"1 begincodespacerange <0000> <ffff> endcodespacerange 3 beginbfchar <0041> <0041> <0042> <0042> <0043> <0043> endbfchar",
+    )));
+    font.set(b"ToUnicode".to_vec(), Object::Ref(unicode));
+    font.set(
+        b"DescendantFonts".to_vec(),
+        Object::Array(vec![Object::Dict(Dict::from_iter([(b"Subtype".to_vec(), Object::name("CIDFontType2")), (b"DW".to_vec(), Object::Int(600))]))]),
+    );
+    // No external font asset: this synthetic font is enough to exercise raw CID bytes.
+    let p = pdfcraft_model::pages(&doc)[0].obj;
+    let mut resources = Dict::new();
+    let mut fonts = Dict::new();
+    fonts.set(b"F1".to_vec(), Object::Dict(font.clone()));
+    resources.set(b"Font".to_vec(), Object::Dict(fonts));
+    doc.update_dict(p, |d| d.set(b"Resources".to_vec(), Object::Dict(resources.clone()))).unwrap();
+    let original = text::text_lines(&doc, 0).unwrap();
+    assert!(!original.is_empty());
+    move_objects(&mut doc, 0, &[ObjectTarget { kind: ObjectKind::Text, index: 0 }], [25.0, 15.0]).unwrap();
+    let encoded =
+        |doc: &Document| pdfcraft_content::parse(&page_content_bytes(doc, 0)).ops.into_iter().find(|o| o.is("Tj")).unwrap().operands[0].clone();
+    assert_eq!(encoded(&doc).as_string().unwrap().bytes, [0, 65, 0, 66, 0, 67]);
+    let after = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(original[0].text, after[0].text);
+    for encoding in [
+        Object::name("Identity-V"),
+        Object::Stream(Stream::flate(Dict::new(), b"/WMode 1 def")),
+        Object::Stream(Stream::flate(Dict::from_iter([(b"WMode".to_vec(), Object::Int(1))]), b"")),
+    ] {
+        let mut f = font.clone();
+        f.set(b"Encoding".to_vec(), encoding);
+        let mut fonts = Dict::new();
+        fonts.set(b"F1".to_vec(), Object::Dict(f));
+        resources.set(b"Font".to_vec(), Object::Dict(fonts));
+        doc.update_dict(p, |d| d.set(b"Resources".to_vec(), Object::Dict(resources.clone()))).unwrap();
+        let before = pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap();
+        assert!(move_objects(&mut doc, 0, &[ObjectTarget { kind: ObjectKind::Text, index: 0 }], [5.0, 5.0]).is_err());
+        assert_eq!(pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap(), before);
+    }
+}
+
+#[test]
+fn moving_added_content_after_page_rotation_preserves_streams_and_resources() {
+    let mut doc = text_page("BT /F1 12 Tf 40 400 Td (Native) Tj ET");
+    added::add_content(
+        &mut doc,
+        0,
+        &Content::Text(added::AddedText { text: "Added label".into(), rect: [50.0, 300.0, 200.0, 330.0], ..Default::default() }),
+    )
+    .unwrap();
+    let p = pdfcraft_model::pages(&doc)[0].obj;
+    let resources = pdfcraft_model::pages(&doc)[0].dict.get(b"Resources").cloned();
+    let item = added::list_added(&doc)[0].clone();
+    let source = stream_bytes(&doc, &Object::Ref(item.obj)).unwrap();
+    let content_after_cm = |bytes: &[u8]| {
+        let ops = pdfcraft_content::parse(bytes).ops;
+        bytes[ops[1].span.end..].to_vec()
+    };
+    for rotation in [90, 180, 270, 0] {
+        doc.update_dict(p, |d| d.set(b"Rotate".to_vec(), Object::Int(rotation))).unwrap();
+        let before_lines = text::text_lines(&doc, 0).unwrap();
+        let before_objects = editable_objects(&doc, 0).unwrap();
+        let a = before_objects.iter().find(|o| o.target.kind == ObjectKind::Added).unwrap();
+        // The logical added box must contain the actual source glyph geometry after rotation.
+        let label = before_lines.iter().find(|l| l.text == "Added label").unwrap();
+        assert!(
+            label.rect[0] >= a.rect[0] - 0.01
+                && label.rect[2] <= a.rect[2] + 0.01
+                && label.rect[1] >= a.rect[1] - 0.01
+                && label.rect[3] <= a.rect[3] + 0.01
+        );
+        move_objects(&mut doc, 0, &[a.target], [13.0, -17.0]).unwrap();
+        let after_lines = text::text_lines(&doc, 0).unwrap();
+        for (old, new) in before_lines.iter().zip(&after_lines) {
+            let delta = if old.text == "Added label" { [13.0, -17.0] } else { [0.0, 0.0] };
+            assert_eq!(old.text, new.text);
+            assert!(close(new.rect, [old.rect[0] + delta[0], old.rect[1] + delta[1], old.rect[2] + delta[0], old.rect[3] + delta[1]]));
+        }
+        let current = added::list_added(&doc)[0].clone();
+        let bytes = stream_bytes(&doc, &Object::Ref(current.obj)).unwrap();
+        assert_eq!(content_after_cm(&bytes), content_after_cm(&source), "all drawing bytes after the placement, including glyphs, remain identical");
+        assert_eq!(pdfcraft_model::pages(&doc)[0].dict.get(b"Resources").cloned(), resources);
+        doc = reopen(&doc);
+    }
+}
+
+#[test]
+fn group_moves_of_shared_added_streams_change_only_the_selected_page() {
+    let mut doc = fixture();
+    added::add_content(
+        &mut doc,
+        0,
+        &Content::Text(added::AddedText { text: "Shared added label".into(), rect: [40.0, 400.0, 240.0, 420.0], ..Default::default() }),
+    )
+    .unwrap();
+    let pages = pdfcraft_model::pages(&doc);
+    let contents = pages[0].dict.get(b"Contents").cloned().unwrap();
+    doc.update_dict(pages[1].obj, |d| d.set(b"Contents".to_vec(), contents)).unwrap();
+    let doc = reopen(&doc);
+    let mut doc = doc;
+    let other = page_content_bytes(&doc, 1);
+    let before = editable_objects(&doc, 0).unwrap();
+    let target = before.iter().find(|o| o.target.kind == ObjectKind::Added).unwrap().target;
+    move_objects(&mut doc, 0, &[target], [15.0, -20.0]).unwrap();
+    assert_eq!(page_content_bytes(&doc, 1), other, "a shared stream is copied on write");
+    assert_ne!(added::list_added(&doc).iter().find(|a| a.page == 0).unwrap().obj, added::list_added(&doc).iter().find(|a| a.page == 1).unwrap().obj);
+}
+
+#[test]
+fn group_moves_handle_added_content_under_inherited_graphics_state() {
+    let mut doc = text_page("2 0 0 2 10 20 cm BT /F1 12 Tf 40 250 Td (Native) Tj ET");
+    added::add_content(
+        &mut doc,
+        0,
+        &Content::Text(added::AddedText { text: "Added label".into(), rect: [50.0, 100.0, 200.0, 130.0], ..Default::default() }),
+    )
+    .unwrap();
+    let before = text::text_lines(&doc, 0).unwrap();
+    let target = editable_objects(&doc, 0).unwrap().iter().find(|o| o.target.kind == ObjectKind::Added).unwrap().target;
+    move_objects(&mut doc, 0, &[target], [30.0, -20.0]).unwrap();
+    let after = text::text_lines(&doc, 0).unwrap();
+    for (old, new) in before.iter().zip(&after) {
+        let delta = if old.text == "Added label" { [30.0, -20.0] } else { [0.0, 0.0] };
+        assert!(close(new.rect, [old.rect[0] + delta[0], old.rect[1] + delta[1], old.rect[2] + delta[0], old.rect[3] + delta[1]]));
+    }
+}
+
+#[test]
+fn group_selection_refuses_incomplete_content_and_resource_budget_overruns() {
+    for data in [
+        format!("{} BT /F1 12 Tf 40 400 Td (Target) Tj ET", "q ".repeat(1025)),
+        format!("{} BT /F1 12 Tf 40 400 Td (Target) Tj ET", "n ".repeat(100001)),
+    ] {
+        let mut doc = text_page(&data);
+        let before = pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap();
+        assert!(editable_objects(&doc, 0).is_err());
+        assert!(move_objects(&mut doc, 0, &[ObjectTarget { kind: ObjectKind::Text, index: 0 }], [10.0, 10.0]).is_err());
+        assert_eq!(pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap(), before);
+    }
+    let mut doc = text_page("BT /F1 12 Tf 40 400 Td (Target) Tj ET");
+    let page = pdfcraft_model::pages(&doc)[0].obj;
+    doc.update_dict(page, |d| d.set(b"Contents".to_vec(), Object::Ref(pdfcraft_cos::ObjRef::new(999999, 0)))).unwrap();
+    assert!(editable_objects(&doc, 0).is_err(), "a missing stream cannot produce a partial inventory");
+    let mut filter = Dict::new();
+    filter.set(b"Filter".to_vec(), Object::name("NotAFilter"));
+    let broken = doc.add(Object::Stream(Stream::from_raw(filter, vec![1, 2, 3])));
+    doc.update_dict(page, |d| d.set(b"Contents".to_vec(), Object::Ref(broken))).unwrap();
+    assert!(editable_objects(&doc, 0).is_err(), "an undecodable stream is refused");
+}
+
+#[test]
+fn group_move_budget_refusals_keep_the_original_page_selectable() {
+    let text = text_page(&format!("{} BT /F1 12 Tf 40 400 Td (Target) Tj ET", "n ".repeat(99_995)));
+    assert_eq!(pdfcraft_content::parse(&page_content_bytes(&text, 0)).ops.len(), 100_000);
+    let mut image = image_page();
+    let page = pdfcraft_model::pages(&image)[0].obj;
+    let bytes = format!("{} /Im0 Do {}", "q ".repeat(1024), "Q ".repeat(1024));
+    let content = image.add(Object::Stream(Stream::flate(Dict::new(), bytes.as_bytes())));
+    image.update_dict(page, |d| d.set(b"Contents".to_vec(), Object::Ref(content))).unwrap();
+    for mut doc in [text, image] {
+        let objects = editable_objects(&doc, 0).unwrap();
+        assert_eq!(objects.len(), 1);
+        let before = pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap();
+        let error = move_objects(&mut doc, 0, &[objects[0].target], [10.0, 5.0]).unwrap_err();
+        assert!(error.to_string().contains("too many content operations") || error.to_string().contains("nested too deeply"), "{error}");
+        assert_eq!(pdfcraft_cos::write_full(&doc, &SaveOptions::default()).unwrap(), before);
+        assert_eq!(editable_objects(&doc, 0).unwrap(), objects, "refusal retains a usable inventory");
+    }
+}

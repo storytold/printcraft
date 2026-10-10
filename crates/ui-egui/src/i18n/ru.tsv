@@ -17,6 +17,9 @@
 	Preferences	Настройки
 	Preferences…	Настройки…
 	Interface language	Язык интерфейса
+	Interface size	Размер интерфейса
+	Auto ({percent}%)	Авто ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	В режиме «Авто» используется размер текста из настроек системы. Страницы всегда отображаются в полном разрешении экрана.
 	Identity	Идентификация
 	Name on new comments	Имя в новых комментариях
 	Open…	Открыть…
@@ -65,6 +68,7 @@
 	Fit visible	По видимой области
 	Marquee zoom	Масштаб выделением
 	Take a snapshot	Сделать снимок
+	Column select	Выделение столбца
 	Full screen mode	Полноэкранный режим
 	Read mode	Режим чтения
 	Switch light / dark theme	Переключить светлую / тёмную тему
@@ -1095,6 +1099,7 @@
 	Dates	Даты
 	Text in images isn't found; recognise text (OCR) first.	Текст в изображениях не находится; сначала распознайте текст (OCR).
 	No matches.	Совпадений нет.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Некоторые закладки здесь не показаны: панель показывает ограниченное число закладок с ограниченной глубиной вложенности.
 	{n} match(es) marked for redaction.	Отмечено для сокрытия: {n} совпад.
 	Multiple words or phrases	Несколько слов или фраз
 	One word or phrase per line	По одному слову или фразе в строке
@@ -1497,6 +1502,8 @@
 	Right Edge	Правый край
 	Language	Язык
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	Сохранено {place}: {before} → {after} (на {pct}% меньше){detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	Этот файл уже минимального размера ({size}). Копия не сохранена.
+	Saved {place}: {before} → {after} (not smaller){detail}	Сохранено {place}: {before} → {after} (не меньше){detail}
 	Couldn't save the image: {e}	Не удалось сохранить изображение: {e}
 	Adding images arrives on the web with file pickers for images	Добавление изображений появится в веб-версии с выбором файлов изображений
 	Replacing images on page {p} arrives on the web with image pickers ({i})	Замена изображений на стр. {p} появится в веб-версии с выбором изображений ({i})
@@ -2054,3 +2061,39 @@
 	The field {name} no longer exists.	Поле {name} больше не существует.
 	A selected field has no widget on any page, so the fields can't be edited together.	У одного из выбранных полей нет виджета ни на одной странице, поэтому поля нельзя изменить вместе.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} — с разрешением {dpi} dpi, максимальным, с каким их можно отрисовать)
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	Выделен {n} объект|Выделено {n} объекта|Выделено {n} объектов
+	Drag the selection to move it. Esc clears the selection.	Перетащите выделение, чтобы переместить его. Esc снимает выделение.
+	Shift-click to select several objects. Drag empty space to select an area.	Щёлкните с Shift, чтобы выбрать несколько объектов. Протяните рамку на пустом месте, чтобы выделить область.
+	Select at most 1000 objects at a time.	Выбирайте не более 1000 объектов одновременно.
+	Finish or discard the text being edited before selecting several objects.	Завершите или отмените редактирование текста, прежде чем выбирать несколько объектов.
+	Move object	Переместить объект
+	Move objects	Переместить объекты
+	Vertical text cannot be moved with this selection.	Вертикальный текст нельзя переместить вместе с этим выделением.
+	Text used as a clipping path cannot be moved with this selection.	Текст, используемый как обтравочный контур, нельзя переместить вместе с этим выделением.
+	These objects could not be moved. Select them again and try a smaller move.	Не удалось переместить эти объекты. Выберите их снова и попробуйте меньшее смещение.
+	This page contains objects that cannot be selected together.	На этой странице есть объекты, которые нельзя выделить вместе.
+	Fill colour	Цвет заливки
+	No fill	Без заливки
+	Fill colour: none	Цвет заливки: нет
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	Пробел
+	Grid view	Вид сеткой
+	List view	Вид списком
+	Files are combined in the order shown. Drag them to change it.	Файлы объединяются в показанном порядке. Перетащите их, чтобы изменить его.
+	Preview unavailable: {e}	Предпросмотр недоступен: {e}
+	Pages: {k} of {n}	Страницы: {k} из {n}
+	Check the pages	Проверьте страницы
+	Switch to List view to change the pages it takes.	Переключитесь на вид списком, чтобы изменить, какие страницы взять.
+	Expand all	Развернуть все
+	Collapse all	Свернуть все
+	Remove page	Удалить страницу
+	Remove {n} pages	Удалить страницы: {n}

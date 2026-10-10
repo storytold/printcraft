@@ -493,6 +493,10 @@ pub const MAX_BRACKET: usize = 100;
 
 pub const MAX_NESTING_DEPTH: usize = 100;
 
+/// PdfCraft patch: a valid stream /Length resolves in at most three lookups (the length, the object stream holding
+/// it, and that stream's own /Length); longer lookup chains overflowed the stack.
+const MAX_LOOKUP_DEPTH: usize = 16;
+
 /// Cap on reconstructed cross-reference entries, bounding memory on hostile inputs.
 const MAX_RECONSTRUCTED_OBJECTS: usize = 1_000_000;
 
@@ -1149,7 +1153,7 @@ impl Reader<'_> {
     }
 
     /// Load a compressed object from an object stream (for lightweight metadata extraction)
-    fn get_compressed_object(&self, id: ObjectId) -> Result<Object> {
+    fn get_compressed_object(&self, id: ObjectId, already_seen: &mut HashSet<ObjectId>) -> Result<Object> {
         let entry = self.document.reference_table.get(id.0).ok_or(Error::MissingXrefEntry)?;
 
         let container_id = match entry {
@@ -1157,15 +1161,30 @@ impl Reader<'_> {
             _ => return Err(Error::MissingXrefEntry),
         };
 
+        // PdfCraft patch: require an in-file container (PDF 7.5.7) and retain the caller's cycle history through
+        // indirect stream /Length lookups; `get_object` caps the depth of that history.
+        if !matches!(
+            self.document.reference_table.get(container_id),
+            Some(XrefEntry::Normal { .. })
+        ) {
+            return Err(Error::InvalidObjectStream(
+                "Object stream container must be an ordinary in-file object".into(),
+            ));
+        }
         let container_id = (container_id, 0);
-        let mut already_seen = HashSet::new();
-        let container_obj = self.get_object(container_id, &mut already_seen)?;
+        let container_obj = self.get_object(container_id, already_seen)?;
         let container_stream = container_obj.as_stream()?;
         let object_stream = ObjectStream::new_with_limit(container_stream, self.max_decompressed_size)?;
         object_stream.objects.get(&id).cloned().ok_or(Error::MissingXrefEntry)
     }
 
     pub fn get_object(&self, id: ObjectId, already_seen: &mut HashSet<ObjectId>) -> Result<Object> {
+        // PdfCraft patch: each top-level lookup starts with an empty set and every nested lookup adds one object, so
+        // the set's size is the depth of the lookup chain.
+        if already_seen.len() >= MAX_LOOKUP_DEPTH {
+            warn!("lookup chain deeper than {MAX_LOOKUP_DEPTH} at object {} {}", id.0, id.1);
+            return Err(Error::ReferenceLimit);
+        }
         if already_seen.contains(&id) {
             warn!("reference cycle detected resolving object {} {}", id.0, id.1);
             return Err(Error::ReferenceCycle(id));
@@ -1175,7 +1194,7 @@ impl Reader<'_> {
         if let Some(entry) = self.document.reference_table.get(id.0)
             && matches!(entry, XrefEntry::Compressed { .. })
         {
-            return self.get_compressed_object(id);
+            return self.get_compressed_object(id, already_seen);
         }
 
         let offset = self.get_offset(id)?;

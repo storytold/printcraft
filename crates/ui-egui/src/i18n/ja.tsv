@@ -24,6 +24,9 @@
 	Preferences	環境設定
 	Preferences…	環境設定…
 	Interface language	表示言語
+	Interface size	表示サイズ
+	Auto ({percent}%)	自動 ({percent}%)
+	Auto follows the system's text size. Pages always render at the display's full resolution.	自動にすると、システムの文字サイズに合わせます。ページは常にディスプレイの最大解像度で描画されます。
 	Identity	個人情報
 	Name on new comments	新しい注釈の作成者名
 	Open…	開く…
@@ -73,6 +76,7 @@
 	Fit visible	表示範囲に合わせる
 	Marquee zoom	範囲指定ズーム
 	Take a snapshot	スナップショットを作成
+	Column select	列の選択
 	Full screen mode	全画面表示
 	Read mode	閲覧モード
 	Switch light / dark theme	明るい／暗いテーマを切り替え
@@ -1094,6 +1098,7 @@
 	Dates	日付
 	Text in images isn't found; recognise text (OCR) first.	画像内のテキストは検索できません。先に OCR でテキストを認識してください。
 	No matches.	一致する項目はありません。
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	一部のしおりはここに表示されません。パネルに表示できる数と階層の深さには上限があります。
 	{n} match(es) marked for redaction.	{n} 件の一致項目に墨消しマークを付けました。
 	Multiple words or phrases	複数の単語または語句
 	One word or phrase per line	1 行に 1 つの単語または語句
@@ -1496,6 +1501,8 @@
 	Right Edge	右端
 	Language	言語
 	Saved {place}: {before} → {after} ({pct}% smaller){detail}	{place} に保存: {before} → {after}（{pct}% 削減）{detail}
+	This file is already as small as it can be made ({size}). No copy was saved.	このファイルはすでに最小のサイズです（{size}）。コピーは保存されませんでした。
+	Saved {place}: {before} → {after} (not smaller){detail}	{place} に保存: {before} → {after}（縮小なし）{detail}
 	Couldn't save the image: {e}	画像を保存できませんでした: {e}
 	Adding images arrives on the web with file pickers for images	Web 版の画像追加は画像ファイル選択に対応した際に利用可能になります
 	Replacing images on page {p} arrives on the web with image pickers ({i})	ページ {p} の画像置換は Web 版の画像選択に対応した際に利用可能になります（{i}）
@@ -2141,3 +2148,39 @@ signature pad	Type	入力
 	The field {name} no longer exists.	フィールド {name} はもう存在しません。
 	A selected field has no widget on any page, so the fields can't be edited together.	選択したフィールドの一つがどのページにもウィジェットを持たないため、まとめて編集できません。
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	（{n} 件は描画できる最大サイズの {dpi} dpi で書き出しました）
+
+# Multi-object selection and movement (#844)
+@plural	{n} object selected|{n} objects selected	{n}個のオブジェクトを選択中
+	Drag the selection to move it. Esc clears the selection.	選択範囲をドラッグして移動します。Escで選択を解除します。
+	Shift-click to select several objects. Drag empty space to select an area.	Shiftを押しながらクリックすると複数のオブジェクトを選択できます。空白をドラッグすると範囲選択できます。
+	Select at most 1000 objects at a time.	一度に選択できるオブジェクトは1000個までです。
+	Finish or discard the text being edited before selecting several objects.	複数のオブジェクトを選択する前に、テキストの編集を完了するか破棄してください。
+	Move object	オブジェクトを移動
+	Move objects	複数のオブジェクトを移動
+	Vertical text cannot be moved with this selection.	この選択範囲では縦書きのテキストを移動できません。
+	Text used as a clipping path cannot be moved with this selection.	この選択範囲ではクリッピングパスとして使われているテキストを移動できません。
+	These objects could not be moved. Select them again and try a smaller move.	これらのオブジェクトを移動できませんでした。選択し直し、移動量を小さくして試してください。
+	This page contains objects that cannot be selected together.	このページには一緒に選択できないオブジェクトがあります。
+	Fill colour	塗りつぶし色
+	No fill	塗りつぶしなし
+	Fill colour: none	塗りつぶし色: なし
+
+# Keyboard key names, distinct from command labels.
+key	Ctrl	Ctrl
+key	Shift	Shift
+key	Delete	Delete
+key	Esc	Esc
+key	Home	Home
+key	End	End
+key	Space	スペース
+	Grid view	グリッド表示
+	List view	リスト表示
+	Files are combined in the order shown. Drag them to change it.	ファイルは表示されている順に結合されます。ドラッグして順番を変更できます。
+	Preview unavailable: {e}	プレビューを表示できません: {e}
+	Pages: {k} of {n}	ページ: {k}/{n}
+	Check the pages	ページ指定を確認してください
+	Switch to List view to change the pages it takes.	使用するページを変更するには、リスト表示に切り替えてください。
+	Expand all	すべて展開
+	Collapse all	すべて折りたたむ
+	Remove page	ページを削除
+	Remove {n} pages	{n} ページを削除

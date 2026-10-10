@@ -163,3 +163,75 @@ fn owner_authentication_recovers_the_user_password() {
     let d = new(Algorithm::Rc4_128, "", "owner", -1).dict().clone();
     assert_eq!(SecurityHandler::open(d, ID, Some("owner")).unwrap().recovered_user_password().as_deref(), Some(&b""[..]));
 }
+
+/// /O, /U and the first /ID of files qpdf 12.4.2 wrote (`--static-id`), with the file keys
+/// `qpdf --show-encryption-key` reports.
+fn qpdf_file(r: i64, o: &str, u: &str) -> EncryptDict {
+    let mut d = EncryptDict {
+        filter: b"Standard".to_vec(),
+        v: if r == 4 { 4 } else { 2 },
+        r,
+        length_bits: 128,
+        o: hex(o),
+        u: hex(u),
+        p: -4,
+        encrypt_metadata: true,
+        ..Default::default()
+    };
+    if r == 4 {
+        d.crypt_filters = vec![(b"StdCF".to_vec(), Method::Aes128)];
+        d.stm_f = b"StdCF".to_vec();
+        d.str_f = b"StdCF".to_vec();
+    }
+    d
+}
+
+const QPDF_ID: &str = "56b57383aafa8314f3f98222995f5604";
+
+#[test]
+fn legacy_passwords_are_pdfdoc_encoded_with_a_utf8_fallback() {
+    let id = hex(QPDF_ID);
+    // R3 RC4: user "ılık€" in PDFDocEncoding (ı = 0x9A, € = 0xA0); owner "Öğretmen", which
+    // PDFDocEncoding can't hold, so qpdf wrote its UTF-8 bytes.
+    let r3 = qpdf_file(
+        3,
+        "d519aa8120ce8c54812b45e5391916fed167b1c84961d90c4ee4c182ad83534b",
+        "4985c03ddfa3eeb8a90c343512913ec40021446990b9e4114071a4d9104984c1",
+    );
+    let user = SecurityHandler::open(r3.clone(), &id, Some("ılık€")).unwrap();
+    assert_eq!((user.auth(), user.file_key().to_vec()), (Auth::User, hex("3564ffcea186122595ad55ee157da71f")));
+    let owner = SecurityHandler::open(r3.clone(), &id, Some("Öğretmen")).unwrap();
+    assert_eq!((owner.auth(), owner.file_key().to_vec()), (Auth::Owner, hex("3564ffcea186122595ad55ee157da71f")));
+    assert_eq!(owner.recovered_user_password(), Some(vec![0x9A, b'l', 0x9A, b'k', 0xA0]));
+    // Dropping ı and € (the old Latin-1 conversion) or a near miss doesn't open it.
+    for wrong in ["lk", "ilik€", "ılık", "Ogretmen"] {
+        assert_eq!(SecurityHandler::open(r3.clone(), &id, Some(wrong)).unwrap_err(), CryptError::WrongPassword, "{wrong}");
+    }
+    // R4 AES-128: user "şifre" (UTF-8 bytes), owner "owner".
+    let r4 = qpdf_file(
+        4,
+        "bb4f8f4bd2236569e765906caf64e4429a4c20d6e996fdef963e9b5080f9e083",
+        "4a965fb91882772cd09ce8bbff2c33270021446990b9e4114071a4d9104984c1",
+    );
+    let user = SecurityHandler::open(r4.clone(), &id, Some("şifre")).unwrap();
+    assert_eq!((user.auth(), user.file_key().to_vec()), (Auth::User, hex("9f19d465cfd8e525d32aa0bdf10acd06")));
+    assert_eq!(SecurityHandler::open(r4.clone(), &id, Some("owner")).unwrap().auth(), Auth::Owner);
+    assert_eq!(SecurityHandler::open(r4, &id, Some("ifre")).unwrap_err(), CryptError::WrongPassword);
+}
+
+#[test]
+fn pdfdoc_encoding_round_trips() {
+    for b in 0..=255u8 {
+        if b != 0x9F {
+            assert_eq!(pdfdoc_byte(pdfdoc_char(b)), Some(b), "{b:#04x}");
+        }
+    }
+    assert_eq!(pdfdoc_byte('ı'), Some(0x9A));
+    assert_eq!(pdfdoc_byte('€'), Some(0xA0));
+    assert_eq!(pdfdoc_byte('ç'), Some(0xE7));
+    for c in ['ğ', 'ş', 'İ', '\u{A0}', '\u{85}', 'Ж', '日'] {
+        assert_eq!(pdfdoc_byte(c), None, "{c}");
+    }
+    assert_eq!(legacy_candidates("Çok"), [vec![0xC7, b'o', b'k']]);
+    assert_eq!(legacy_candidates("şifre"), [b"ifre".to_vec(), "şifre".as_bytes().to_vec()]);
+}

@@ -1,5 +1,5 @@
 //! Comment Properties (Acrobat: right-click a comment ▸ Properties…; audit "Comment
-//! properties"): Appearance (colour, opacity, line thickness, note icon), General (author,
+//! properties"): Appearance (colour, fill, opacity, line thickness, note icon), General (author,
 //! subject, modified) and Review History (status changes), with Acrobat's Locked box.
 
 use egui::{Align, Layout};
@@ -100,6 +100,9 @@ impl PdfCraftApp {
         if let Some(w) = p.width {
             style.width = w;
         }
+        if p.fillable && tool.has_fill() {
+            style.fill = p.fill;
+        }
         self.comment_prefs.set_style(tool, style);
         self.notify_fmt("New {tool} comments will look like this one", &[("tool", &crate::i18n::in_sentence(tl!(tool.label())))]);
     }
@@ -127,6 +130,9 @@ pub fn edits(d: &PropsDraft) -> Vec<Edit> {
     let endings = (e.endings != o.endings).then(|| e.endings.clone()).flatten();
     if e.restylable && (color.is_some() || opacity.is_some() || width.is_some() || endings.is_some()) {
         out.push(Edit::StyleAnnotation { page: d.page, index: d.index, color, opacity, width, endings });
+    }
+    if e.restylable && e.fillable && e.fill != o.fill {
+        out.push(Edit::FillAnnotation { page: d.page, index: d.index, fill: e.fill });
     }
     let author = (e.author != o.author).then(|| e.author.clone());
     let subject = (e.subject != o.subject).then(|| e.subject.clone());
@@ -194,6 +200,13 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
                         e.color = Some(c);
                     }
                     ui.end_row();
+                    if e.fillable {
+                        ui.label(tl!("Fill colour"));
+                        if let Some(f) = crate::comments::fill_picker(ui, e.fill) {
+                            e.fill = f;
+                        }
+                        ui.end_row();
+                    }
                     ui.label(tl!("Opacity"));
                     let mut pct = e.opacity * 100.0;
                     if ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%")).changed() {

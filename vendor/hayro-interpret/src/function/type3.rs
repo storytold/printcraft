@@ -174,8 +174,10 @@ mod tests {
             Some(smallvec![0.5])
         );
         let data = function_limits_stitching(65);
-        let object = Object::from_bytes(data.as_bytes()).unwrap();
-        assert!(Function::new(&object).is_none());
+        // Direct nesting beyond the hayro-syntax cap (PdfCraft patch) is refused while parsing,
+        // before this guard; the guard is tested with indirect references in pdfcraft-render
+        // (`function_limits_depth_guard_refuses_a_chain_of_references`).
+        assert!(Object::from_bytes(data.as_bytes()).is_none());
     }
 
     fn function_limits_fanout(children: usize) -> String {

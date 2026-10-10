@@ -455,7 +455,9 @@ Use the MSI for your architecture. Per-user installation overrides are not suppo
 | Tarball | `pdfcraft-<ver>-linux-x86_64.tar.gz` | `pdfcraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
 | Command-line tool | `pdfcraft-cli-<ver>-linux-x86_64.tar.gz` | `pdfcraft-cli-<ver>-linux-aarch64.tar.gz` | `pdfcraft-cli` alone (and its opt-in MCP server), for servers, CI and agents |
 
-Every Linux build needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, RHEL 10).
+RISC-V (riscv64) builds come as tarballs only: `pdfcraft-<ver>-linux-riscv64.tar.gz` and `pdfcraft-cli-<ver>-linux-riscv64.tar.gz`. They are cross-compiled and need glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+).
+
+Every other Linux build needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, RHEL 10).
 
 ### FreeBSD
 

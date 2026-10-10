@@ -193,6 +193,110 @@ fn invisible_signatures_and_refusals() {
     assert_eq!(pdfcraft_sign::pdf::display_date("D:20261002120000+01'00'"), "2026.10.02 12:00:00 +01'00'");
 }
 
+/// The normal appearance of the signature field `name`: its decoded content and resources.
+fn appearance_of(bytes: &[u8], name: &str) -> (String, pdfcraft_cos::Dict) {
+    appearance_in(&open(bytes), name)
+}
+
+fn appearance_in(doc: &Document, name: &str) -> (String, pdfcraft_cos::Dict) {
+    let catalog = doc.get(doc.root().unwrap()).as_dict().cloned().unwrap();
+    let form = doc.resolve(catalog.get(b"AcroForm").unwrap()).as_dict().cloned().unwrap();
+    let fields = doc.resolve(form.get(b"Fields").unwrap()).as_array().cloned().unwrap();
+    let field = fields
+        .iter()
+        .filter_map(|f| doc.resolve(f).as_dict().cloned())
+        .find(|f| matches!(f.get(b"T"), Some(Object::String(s)) if s.bytes == name.as_bytes()))
+        .unwrap();
+    let ap = doc.resolve(field.get(b"AP").unwrap()).as_dict().cloned().unwrap();
+    let Object::Stream(s) = &*doc.resolve(ap.get(b"N").unwrap()) else { panic!("no normal appearance") };
+    let res = doc.resolve(s.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+    (String::from_utf8_lossy(&s.decoded().unwrap()).into_owned(), res)
+}
+
+/// A 40 x 10 image, opaque or with one translucent pixel.
+fn picture(translucent: bool) -> pdfcraft_sign::Graphic {
+    let mut rgba: Vec<u8> = (0..400).flat_map(|_| [10, 20, 30, 255]).collect();
+    if translucent {
+        rgba[3] = 128;
+    }
+    pdfcraft_sign::Graphic::Image { width: 40, height: 10, rgba: Arc::new(rgba) }
+}
+
+#[test]
+fn visible_signatures_show_a_drawn_typed_or_image_graphic() {
+    use pdfcraft_sign::{Appearance, Graphic};
+    let id = pkcs12::open(&data("rsa-aes.p12"), "test").unwrap();
+    let name = format!("({})", id.certificate.display_name());
+    let plain = pdfcraft_sign::sign(&open(&fixture()), &id, &opts()).unwrap();
+    // Without a graphic the name is large on the left and in the details.
+    assert_eq!(appearance_of(&plain, "Signature1").0.matches(&name).count(), 2);
+    let strokes = Graphic::Strokes(vec![vec![[0.0, 0.0], [0.3, 0.2], [0.6, 0.0], [1.0, 0.2]], vec![[0.5, 0.1]]]);
+    let typed = Graphic::Outlines(vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 0.5], [0.0, 0.5]], vec![[0.2, 0.1], [0.8, 0.1], [0.5, 0.4]]]);
+    for (graphic, drawn) in [
+        (strokes, " c\n"),
+        (typed, "f*\n"),
+        // 40 x 10 in the left half (94 x 44 inside the padding): 94 wide, centred vertically.
+        (picture(true), "q 94 0 0 23.5 3 13.25 cm /Im1 Do Q"),
+    ] {
+        let signed = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { graphic: Some(graphic.clone()), ..opts() }).unwrap();
+        let s = signatures(&open(&signed), &signed, &TrustStore::default()).into_iter().find(|s| s.signed).unwrap();
+        assert_eq!((s.status, s.modification), (Status::Unknown, Modification::None), "{graphic:?}: {:?}", s.details);
+        let (content, res) = appearance_of(&signed, "Signature1");
+        assert!(content.contains(drawn), "{graphic:?}: {content}");
+        // The graphic takes the name's place on the left; the details still name the signer.
+        assert_eq!(content.matches(&name).count(), 1, "{content}");
+        assert_eq!(res.get(b"XObject").is_some(), matches!(graphic, Graphic::Image { .. }));
+    }
+    // Translucent images keep their alpha as a soft mask; opaque ones need none.
+    for translucent in [true, false] {
+        let signed = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { graphic: Some(picture(translucent)), ..opts() }).unwrap();
+        let doc = open(&signed);
+        let (_, res) = appearance_of(&signed, "Signature1");
+        let xobjects = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
+        let Object::Stream(im) = &*doc.resolve(xobjects.get(b"Im1").unwrap()) else { panic!() };
+        assert_eq!((im.dict.int(b"Width"), im.dict.int(b"Height")), (Some(40), Some(10)));
+        assert_eq!(im.decoded().unwrap().len(), 40 * 10 * 3);
+        assert_eq!(im.dict.get(b"SMask").is_some(), translucent);
+    }
+    // With no text at all, the graphic has the whole box (194 x 44): 176 x 44, centred.
+    let bare = Appearance { name: false, date: false, reason: false, location: false, distinguished_name: false, labels: false };
+    let signed = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { graphic: Some(picture(false)), appearance: bare, ..opts() }).unwrap();
+    assert!(appearance_of(&signed, "Signature1").0.contains("q 176 0 0 44 12 3 cm /Im1 Do Q"));
+    // An invisible signature has nothing to show: no image is embedded.
+    let invisible = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { rect: None, graphic: Some(picture(false)), ..opts() }).unwrap();
+    assert!(!invisible.windows(6).any(|w| w == b"/Image"));
+}
+
+#[test]
+fn malformed_signature_graphics_are_refused_not_drawn() {
+    use pdfcraft_sign::Graphic;
+    let id = pkcs12::open(&data("ec-p256.p12"), "test").unwrap();
+    let huge = vec![vec![[0.0, 0.0]; 300_001]];
+    for graphic in [
+        Graphic::Strokes(vec![]),
+        Graphic::Strokes(vec![vec![]]),
+        Graphic::Strokes(vec![vec![[0.0, 0.0], [f64::NAN, 1.0]]]),
+        Graphic::Strokes(vec![vec![[-1e308, 0.0], [1e308, 1.0]]]),
+        Graphic::Strokes(huge),
+        // Outlines need three points to enclose anything.
+        Graphic::Outlines(vec![vec![[0.0, 0.0], [1.0, 1.0]]]),
+        Graphic::Outlines(vec![vec![[0.0, 0.0], [1.0, f64::INFINITY], [1.0, 0.0]]]),
+        Graphic::Image { width: 40, height: 10, rgba: Arc::new(vec![0; 399]) },
+        Graphic::Image { width: 0, height: 10, rgba: Arc::new(vec![]) },
+        Graphic::Image { width: u32::MAX, height: u32::MAX, rgba: Arc::new(vec![]) },
+    ] {
+        let what = format!("{graphic:?}");
+        assert!(what.len() < 200, "Debug never dumps pixels or points: {what}");
+        let r = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { graphic: Some(graphic), ..opts() });
+        assert!(matches!(r, Err(SignError::Pdf(ref m)) if m.contains("signature graphic")), "{what}: {r:?}");
+    }
+    // A single dot is a (tiny) drawing, not an error.
+    let dot = Graphic::Strokes(vec![vec![[0.5, 0.5]]]);
+    let signed = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { graphic: Some(dot), ..opts() }).unwrap();
+    let (content, _) = appearance_of(&signed, "Signature1");
+    assert!(!content.contains("NaN") && !content.contains("inf"), "{content}");
+}
+
 /// A deterministic TSA: signs an RFC 3161 response locally with a test digital ID at a fixed
 /// time. No sockets; the whole stamping path runs in-process.
 struct TestTsa {
@@ -1449,6 +1553,28 @@ fn encrypted_documents_are_signed_with_an_unencrypted_contents() {
         tampered[at] ^= 1;
         let tampered_sigs = signatures(&open_pw(&tampered, None), &tampered, &trust);
         assert!(tampered_sigs.iter().filter(|s| s.signed).all(|s| s.status == Status::Invalid), "{alg:?}");
+    }
+}
+
+#[test]
+fn an_encrypted_documents_signature_graphic_is_encrypted_with_it() {
+    let id = pkcs12::open(&data("ec-p256.p12"), "test").unwrap();
+    let trust = TrustStore { certs: vec![id.certificate.clone()] };
+    for alg in ALL_ALGORITHMS {
+        let base = protected(alg, -1);
+        let signed = pdfcraft_sign::sign(&open_pw(&base, None), &id, &SignOptions { graphic: Some(picture(true)), ..opts() }).unwrap();
+        let doc = open_pw(&signed, None);
+        let s = signatures(&doc, &signed, &trust).into_iter().find(|s| s.signed).unwrap();
+        assert_eq!((s.status, s.modification), (Status::Valid, Modification::None), "{alg:?}");
+        // Read back through the security handler, the pixels and their mask are exact; a stream
+        // written in the clear would be "decrypted" into noise and fail to inflate.
+        let (content, res) = appearance_in(&doc, "Signature1");
+        assert!(content.contains("/Im1 Do"), "{alg:?}: {content}");
+        let xobjects = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
+        let Object::Stream(im) = &*doc.resolve(xobjects.get(b"Im1").unwrap()) else { panic!() };
+        assert_eq!(im.decoded().unwrap()[..3], [10, 20, 30], "{alg:?}");
+        let Object::Stream(mask) = &*doc.resolve(im.dict.get(b"SMask").unwrap()) else { panic!() };
+        assert_eq!(mask.decoded().unwrap()[..2], [128, 255], "{alg:?}");
     }
 }
 

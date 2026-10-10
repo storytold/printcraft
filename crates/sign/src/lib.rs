@@ -11,6 +11,7 @@ pub mod cms;
 pub mod der;
 pub mod dss;
 mod ec512;
+pub mod graphic;
 #[cfg(target_os = "macos")]
 pub mod keychain;
 pub mod keys;
@@ -24,6 +25,7 @@ pub mod windows;
 pub mod x509;
 
 pub use der::Time;
+pub use graphic::Graphic;
 pub use keys::{DigestAlg, PrivateKey, PublicKey};
 pub use pdf::{
     Appearance, DigestCache, Modification, SignOptions, SignatureInfo, Status, TrustStore, list as signatures, sign, sign_with_timestamp,

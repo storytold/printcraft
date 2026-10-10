@@ -171,6 +171,11 @@ impl Automation {
             }),
             Some(v) => Some(v.as_u64().filter(|n| (1..=3).contains(n)).ok_or_else(|| bad("certify must be 1, 2 or 3"))? as u8),
         };
+        let graphic = match a.get("graphic") {
+            None | Some(Value::Null) => None,
+            Some(g) if rect.is_none() && field.is_none() => return Err(bad(format!("graphic {g} needs a visible signature: pass rect or field"))),
+            Some(g) => Some(self.signature_graphic(g)?),
+        };
         let out = self.resolve(a.str("out")?, true)?;
         let opts = SignOptions {
             field,
@@ -180,15 +185,47 @@ impl Automation {
             location: a.opt_str("location")?.map(str::to_string),
             contact: a.opt_str("contact")?.map(str::to_string),
             certify,
+            graphic,
             ..SignOptions::default()
         };
-        let signed = self.session.sign(doc_id, &id, opts).map_err(failed)?;
+        let signed = self.session.sign(doc_id, &id, opts).map_err(|e| match e {
+            // A graphic the signer refuses is the caller's to fix.
+            pdfcraft_engine::EditError::Sign(m) if m.starts_with("the signature graphic") => bad(m),
+            e => failed(e),
+        })?;
         write_atomic(&out, &signed)?;
         let path = out.to_string_lossy().into_owned();
         self.session.mark_signed(doc_id, signed.clone(), Some(path.clone())).map_err(failed)?;
         let doc = self.doc(a)?;
         let newest = doc.signatures.iter().filter(|s| s.signed).max_by_key(|s| s.revision).cloned();
         Ok(json!({ "path": path, "bytes": signed.len(), "signature": newest.map(|s| self.sig_json(a, &s)).transpose()? }))
+    }
+
+    /// `{"image": path}` (PNG or JPEG), `{"text": name}` (typed in the script font) or
+    /// `{"strokes": [[[x, y], …], …]}` (y up; the drawing pad is 1 wide).
+    fn signature_graphic(&self, g: &Value) -> Result<sign::Graphic> {
+        let kinds = "graphic must be an object with exactly one of image (a PNG or JPEG path), text, or strokes";
+        let Some(o) = g.as_object().filter(|o| o.len() == 1) else { return Err(bad(kinds)) };
+        if let Some(path) = o.get("image") {
+            let path = self.resolve(path.as_str().ok_or_else(|| bad("graphic.image must be a path"))?, false)?;
+            let file = std::fs::File::open(&path).map_err(|e| bad(format!("graphic.image {}: {e}", path.display())))?;
+            return Ok(pdfcraft_engine::SignatureImage::read(file).map_err(|e| bad(e.to_string()))?.graphic());
+        }
+        if let Some(text) = o.get("text") {
+            let text = text.as_str().ok_or_else(|| bad("graphic.text must be a string"))?;
+            return pdfcraft_engine::typed_signature_graphic(text).ok_or_else(|| {
+                bad(format!(
+                    "graphic.text {text:?} has nothing the script font can draw (at most {} characters)",
+                    pdfcraft_engine::MAX_SIGNATURE_CHARS
+                ))
+            });
+        }
+        if let Some(strokes) = o.get("strokes") {
+            let strokes: Vec<Vec<[f64; 2]>> =
+                serde_json::from_value(strokes.clone()).map_err(|e| bad(format!("graphic.strokes must be strokes of [x, y] points: {e}")))?;
+            return Ok(sign::Graphic::Strokes(strokes));
+        }
+        Err(bad(kinds))
     }
 
     pub(crate) fn sign_trust(&mut self, a: &Args) -> Result<Value> {

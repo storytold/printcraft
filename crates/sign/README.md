@@ -20,7 +20,9 @@ for s in signatures(&doc, &bytes, &trust) {                                // li
   no fix, so `rsa` is only used to verify). ECDSA signs with deterministic nonces (RFC 6979).
 - **Signing:** PAdES B-B (`ETSI.CAdES.detached`, signing-certificate-v2, SHA-256/384, no SHA-1).
   An existing unsigned field or a new one (visible with Acrobat's name-and-details appearance,
-  or invisible); certification with DocMDP P=1/2/3. The document is written incrementally
+  or invisible); certification with DocMDP P=1/2/3. A visible signature can show a `Graphic`
+  where the large name would be: drawn strokes, filled outlines (a typed signature) or RGBA
+  pixels (an image XObject with a soft mask), checked and size-capped first. The document is written incrementally
   with a zero-filled `/Contents` and fixed-width `/ByteRange`, which are then patched in
   place. Encrypted documents are refused for now.
 - **Timestamps (PAdES B-T):** the `timestamp` module builds and parses RFC 3161 requests,

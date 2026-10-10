@@ -2816,6 +2816,74 @@ fn drawing_comments_through_tools() {
 }
 
 #[test]
+fn signing_with_an_image_typed_or_drawn_graphic_through_tools() {
+    let dir = workdir("signing-graphic");
+    // A solid red 120 x 40 picture.
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 120, 40);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let rgba: Vec<u8> = (0..120 * 40).flat_map(|_| [220, 0, 0, 255]).collect();
+        encoder.write_header().unwrap().write_image_data(&rgba).unwrap();
+    }
+    std::fs::write(dir.join("logo.png"), png).unwrap();
+    std::fs::write(dir.join("broken.png"), b"broken").unwrap();
+    let mut a = auto(&dir);
+    ok(&mut a, "sign_id_create", json!({ "name": "Ada Lovelace", "key": "p256", "password": "secret1", "path": "ada.p12" }));
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    let sign = |a: &mut Automation, rect: [f64; 4], graphic: Value, out: &str| {
+        a.call(
+            "sign_document",
+            &json!({ "doc": doc, "id": "ada.p12", "password": "secret1", "page": 1, "rect": rect, "graphic": graphic, "out": out }),
+        )
+    };
+    for (graphic, why) in [
+        (json!({ "image": "logo.png", "text": "Ada" }), "two kinds"),
+        (json!({}), "no kind"),
+        (json!({ "picture": "logo.png" }), "unknown key"),
+        (json!("logo.png"), "not an object"),
+        (json!({ "image": "broken.png" }), "not an image"),
+        (json!({ "text": "   " }), "nothing to draw"),
+        (json!({ "strokes": [[[0, 0], ["x", 1]]] }), "malformed strokes"),
+        (json!({ "strokes": [] }), "empty strokes"),
+    ] {
+        let r = sign(&mut a, [20.0, 200.0, 180.0, 250.0], graphic, "bad.pdf");
+        assert!(matches!(r, Err(ToolError::InvalidArgs(_))), "{why}: {r:?}");
+    }
+    // A missing file fails as it does for every tool that reads one.
+    assert!(matches!(sign(&mut a, [20.0, 200.0, 180.0, 250.0], json!({ "image": "missing.png" }), "bad.pdf"), Err(ToolError::Failed(_))));
+    // An invisible signature shows nothing, so a graphic for one is a mistake.
+    let r = a.call("sign_document", &json!({ "doc": doc, "id": "ada.p12", "password": "secret1", "graphic": { "text": "Ada" }, "out": "bad.pdf" }));
+    assert!(matches!(r, Err(ToolError::InvalidArgs(_))), "{r:?}");
+    assert!(!dir.join("bad.pdf").exists());
+
+    // Image, typed and drawn graphics, each a signature of its own, all intact.
+    sign(&mut a, [20.0, 200.0, 180.0, 250.0], json!({ "image": "logo.png" }), "s1.pdf").unwrap();
+    sign(&mut a, [20.0, 130.0, 180.0, 180.0], json!({ "text": "Ada Lovelace" }), "s2.pdf").unwrap();
+    sign(&mut a, [20.0, 60.0, 180.0, 110.0], json!({ "strokes": [[[0, 0], [0.3, 0.2], [0.6, 0], [1, 0.2]]] }), "s3.pdf").unwrap();
+    let list = ok(&mut a, "sign_list", json!({ "doc": doc }));
+    assert_eq!(list["count"], 3);
+    for s in list["signatures"].as_array().unwrap() {
+        assert_eq!((s["status"].as_str(), s["visible"].as_bool()), (Some("unknown"), Some(true)), "{s}");
+    }
+    // At 72 dpi a pixel is a point. Each graphic is in the left half of its box (x 23–97), the
+    // details on the right.
+    let png = a.call("page_render", &json!({ "doc": doc, "page": 1, "dpi": 72 })).unwrap();
+    let Content::Png { data, width, .. } = &png[0] else { panic!("expected an image") };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(data.as_slice())).read_info().unwrap();
+    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut buf).unwrap();
+    let channels = frame.line_size / *width as usize;
+    let px = |x: usize, y: usize| buf[y * frame.line_size + x * channels..][..3].to_vec();
+    assert_eq!(px(60, 225), [220, 0, 0], "the image fills the left half's middle");
+    assert_ne!(px(150, 225), [220, 0, 0], "and not the details");
+    let inked = |y0: usize, y1: usize| (y0..y1).any(|y| (23..97).any(|x| px(x, y).iter().all(|c| *c < 100)));
+    assert!(inked(130, 180), "the typed name is drawn");
+    assert!(inked(60, 110), "the strokes are drawn");
+}
+
+#[test]
 fn digital_ids_signing_and_validation_through_tools() {
     let dir = workdir("signing");
     let mut a = auto(&dir);

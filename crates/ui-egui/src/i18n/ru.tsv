@@ -843,6 +843,10 @@
 	The signature will be invisible.	Подпись будет невидимой.
 	Distinguished name	Уникальное имя
 	Labels	Метки
+	Graphic	Графика
+	Signer's name	Имя подписывающего
+	Fill & Sign signature	Подпись из «Заполнить и подписать»
+	Choose image…	Выбрать изображение…
 	Permitted actions after certifying	Разрешённые действия после сертификации
 	No changes allowed	Изменения не разрешены
 	Annotations, form fill-in, and digital signatures	Аннотации, заполнение форм и цифровые подписи

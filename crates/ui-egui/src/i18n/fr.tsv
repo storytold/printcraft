@@ -822,6 +822,10 @@
 	The signature will be invisible.	La signature sera invisible.
 	Distinguished name	Nom distinctif
 	Labels	Étiquettes
+	Graphic	Graphique
+	Signer's name	Nom du signataire
+	Fill & Sign signature	Signature de Remplir et signer
+	Choose image…	Choisir une image…
 	Permitted actions after certifying	Actions autorisées après certification
 	No changes allowed	Aucune modification autorisée
 	Annotations, form fill-in, and digital signatures	Annotations, remplissage de formulaire et signatures numériques

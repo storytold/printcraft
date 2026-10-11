@@ -49,7 +49,9 @@ pub fn find(reference_or_name: &str) -> Result<DigitalId, SignError> {
 }
 
 /// The signing identities in the user's keychains (or only in the keychain file `keychain`).
-/// Identities with keys PdfCraft can't use (other curves, Ed25519) are left out.
+/// Without a keychain file, smart cards macOS reads through CryptoTokenKit (a CAC or PIV card
+/// in a reader) are searched too; their keys stay on the card, which asks for its PIN when
+/// signing. Identities with keys PdfCraft can't use (other curves, Ed25519) are left out.
 pub fn identities(keychain: Option<&Path>) -> Result<Vec<DigitalId>, SignError> {
     let mut search = ItemSearchOptions::new();
     search.class(ItemClass::identity()).load_refs(true).limit(Limit::All);
@@ -58,7 +60,25 @@ pub fn identities(keychain: Option<&Path>) -> Result<Vec<DigitalId>, SignError> 
         kc = SecKeychain::open(p).map_err(|e| SignError::Crypto(format!("{}: {e}", p.display())))?;
         search.keychains(std::slice::from_ref(&kc));
     }
-    let found = match search.search() {
+    let mut out = collect(search.search(), false)?;
+    if keychain.is_none() {
+        let mut tokens = ItemSearchOptions::new();
+        tokens.class(ItemClass::identity()).load_refs(true).limit(Limit::All).access_group_token();
+        // A smart card that can't be searched (none inserted, reader unplugged) only means
+        // there are no card identities; the Keychain's own identities still count.
+        for id in collect(tokens.search(), true).unwrap_or_default() {
+            if !out.iter().any(|o| o.certificate.raw == id.certificate.raw) {
+                out.push(id);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The usable identities in one search's results. `card` marks them as smart card identities
+/// in their friendly name.
+fn collect(found: Result<Vec<SearchResult>, security_framework::base::Error>, card: bool) -> Result<Vec<DigitalId>, SignError> {
+    let found = match found {
         Ok(f) => f,
         // "The specified item could not be found in the keychain."
         Err(e) if e.code() == -25300 => return Ok(Vec::new()),
@@ -69,9 +89,16 @@ pub fn identities(keychain: Option<&Path>) -> Result<Vec<DigitalId>, SignError> 
         let SearchResult::Ref(Reference::Identity(id)) = r else { continue };
         let (Ok(cert), Ok(key)) = (id.certificate(), id.private_key()) else { continue };
         let Ok(certificate) = Certificate::parse(&cert.to_der()) else { continue };
+        // A CAC carries an encryption-only certificate beside its signing ones; a signature
+        // made with it would fail validation, so only offer certificates allowed to sign
+        // (key usage digitalSignature or nonRepudiation).
+        if card && certificate.key_usage.is_some_and(|u| u & 0b11 == 0) {
+            continue;
+        }
         let rsa = matches!(certificate.public_key, PublicKey::Rsa { .. });
         let key = PrivateKey::external(certificate.public_key.clone(), Arc::new(KeychainKey { key, rsa }));
-        let friendly_name = Some(certificate.display_name());
+        let name = certificate.display_name();
+        let friendly_name = Some(if card { format!("{name} (smart card)") } else { name });
         out.push(DigitalId { key, certificate, chain: Vec::new(), friendly_name });
     }
     Ok(out)

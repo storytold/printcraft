@@ -259,7 +259,12 @@ impl PdfCraftApp {
             match sign::keychain::identities(None) {
                 Ok(ids) => {
                     for id in ids {
-                        self.digital_ids.push(entry_for(&sign::keychain::reference(&id.certificate), &id.certificate));
+                        let mut entry = entry_for(&sign::keychain::reference(&id.certificate), &id.certificate);
+                        // Smart card identities say so ("… (smart card)").
+                        if let Some(name) = id.friendly_name {
+                            entry.name = name;
+                        }
+                        self.digital_ids.push(entry);
                     }
                 }
                 Err(e) => self.notify_fmt("The Keychain's digital IDs couldn't be listed: {e}", &[("e", &e.to_string())]),

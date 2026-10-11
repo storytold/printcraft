@@ -5,6 +5,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, GlyphId, MetadataProvider};
 
 static FONT: &[u8] = include_bytes!("../../../assets/fonts/DancingScript.ttf");
+static FALLBACK_FONT: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
 
 /// Bound signature work while allowing long personal names.
 pub const MAX_SIGNATURE_CHARS: usize = 256;
@@ -178,13 +179,24 @@ pub(crate) fn bounded_outline(font: &FontRef, gid: GlyphId, width: f64) -> Resul
     Ok(GlyphOutline { contours: pen.contours, width, bbox })
 }
 
-/// The outlines of `text` in the script font (characters it lacks are skipped).
+/// The outlines of `text` in Dancing Script, or Inter Regular when only Inter covers the line.
+/// Characters neither complete face choice covers retain the existing skipped-glyph behavior.
 /// Over-limit input returns an empty outline instead of a silently truncated signature.
 pub fn script_outline(text: &str) -> ScriptOutline {
     if text.chars().take(MAX_SIGNATURE_CHARS + 1).count() > MAX_SIGNATURE_CHARS {
         return ScriptOutline::default();
     }
-    let Ok(font) = FontRef::new(FONT) else { return ScriptOutline::default() };
+    let Ok(mut font) = FontRef::new(FONT) else { return ScriptOutline::default() };
+    let covered = {
+        let charmap = font.charmap();
+        text.chars().all(|ch| charmap.map(ch).is_some())
+    };
+    if !covered && let Ok(fallback) = FontRef::new(FALLBACK_FONT) {
+        let charmap = fallback.charmap();
+        if text.chars().all(|ch| charmap.map(ch).is_some()) {
+            font = fallback;
+        }
+    }
     let loc = LocationRef::default();
     let metrics = font.metrics(Size::unscaled(), loc);
     let scale = 1.0 / metrics.units_per_em.max(1) as f64;
@@ -213,6 +225,20 @@ pub fn script_outline(text: &str) -> ScriptOutline {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn serbian_cyrillic_typed_signatures_keep_every_letter() {
+        for ch in "АБВГДЂЕЖЗИЈКЛЉМНЊОПРСТЋУФХЦЧЏШабвгдђежзијклљмнњопрстћуфхцчџш".chars() {
+            let outline = super::script_outline(&ch.to_string());
+            assert!(!outline.contours.is_empty(), "typed signature is missing {ch} (U+{:04X})", ch as u32);
+            assert!(outline.width.is_finite() && outline.width > 0.0, "the letter must advance the signature");
+        }
+        let outline = super::script_outline("Ђорђе Љиљана");
+        assert!(!outline.contours.is_empty(), "a Serbian name must produce signature ink");
+        assert!(outline.bounds().iter().all(|value| value.is_finite()));
+        assert!(!super::script_outline(&"Ђ".repeat(super::MAX_SIGNATURE_CHARS)).contours.is_empty());
+        assert!(super::script_outline(&"Ђ".repeat(super::MAX_SIGNATURE_CHARS + 1)).contours.is_empty());
+    }
+
+    #[test]
     fn long_names_keep_every_glyph_with_bounded_outline_work() {
         let text = "Alexandria Catherine Elizabeth Montgomery-Wellington";
         let o = super::script_outline(text);
@@ -222,6 +248,19 @@ mod tests {
         assert!(max_x > o.width - 0.5, "ink reaches the last letter: {max_x} / {}", o.width);
         assert!(!super::script_outline(&"W".repeat(super::MAX_SIGNATURE_CHARS)).contours.is_empty());
         assert!(super::script_outline(&"W".repeat(super::MAX_SIGNATURE_CHARS + 1)).contours.is_empty());
+    }
+
+    #[test]
+    fn mixed_cyrillic_names_use_one_complete_face_and_latin_keeps_script() {
+        // Independent FontTools cmap/hmtx and decomposed-contour measurements of the
+        // attributed font files: Inter covers the entire mixed name; Dancing Script
+        // covers the Latin name. These checks catch dropping letters or mixing metrics.
+        let mixed = super::script_outline("Ada Ђорђе");
+        assert_eq!(mixed.contours.len(), 15);
+        assert!((mixed.width - 5.37255859375).abs() < 1e-6, "{}", mixed.width);
+        let latin = super::script_outline("Ada L.");
+        assert_eq!(latin.contours.len(), 8);
+        assert!((latin.width - 2.545).abs() < 1e-6, "{}", latin.width);
     }
 
     #[test]

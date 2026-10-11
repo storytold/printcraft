@@ -2674,6 +2674,31 @@ fn typed_signatures_stay_upright_on_rotated_pages() {
     check(&mut a, reopened);
 }
 
+/// #846: Cyrillic typed signatures and initials produce ink that survives saving.
+#[test]
+fn cyrillic_typed_signatures_and_initials_render_after_reopen() {
+    let dir = workdir("cyrillic-signatures");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_create", json!({ "from": "blank", "width": 300, "height": 200 }))["doc"].as_u64().unwrap();
+    for (kind, text, y) in [("signature", "Ђорђе Љиљана", 60), ("initials", "ЂЉ", 140)] {
+        ok(&mut a, "fill_sign_add", json!({ "doc": doc, "page": 1, "type": kind, "at": [30, y], "text": text }));
+    }
+    let render = |a: &mut Automation, doc: u64| {
+        let output = a.call("page_render", &json!({ "doc": doc, "page": 1, "dpi": 72 })).unwrap();
+        let Content::Png { data, .. } = &output[0] else { panic!() };
+        let pixels = image::load_from_memory(data).unwrap().to_rgba8();
+        for y in [60_u32, 140] {
+            let ink = pixels.enumerate_pixels().filter(|(_, py, p)| py.abs_diff(y) < 35 && p.0[..3].iter().all(|v| *v < 128)).count();
+            assert!(ink > 30, "{y}: Cyrillic signature/initials must produce visible ink, got {ink}");
+        }
+        pixels
+    };
+    let before = render(&mut a, doc);
+    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "cyrillic.pdf" }));
+    let reopened = ok(&mut a, "doc_open", json!({ "path": "cyrillic.pdf" }))["doc"].as_u64().unwrap();
+    assert_eq!(before, render(&mut a, reopened), "saved outline appearances must render identically");
+}
+
 #[test]
 fn comment_checkmarks_locks_hiding_and_summaries_through_tools() {
     let dir = workdir("comment-polish");

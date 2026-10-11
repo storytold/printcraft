@@ -26,7 +26,8 @@ pub const FILL_TOOLS: [FillTool; 8] =
     [FillTool::Text, FillTool::Cross, FillTool::Check, FillTool::Dot, FillTool::Line, FillTool::Date, FillTool::Signature, FillTool::Initials];
 
 /// A saved signature or initials: drawn strokes (normalised to the pad width, y up) or typed
-/// text (drawn in the script font), or a locally imported image.
+/// text (drawn in the script font, or Inter when it covers characters the script face lacks),
+/// or a locally imported image.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SavedSig {
     Drawn(Vec<Vec<[f32; 2]>>),
@@ -726,7 +727,8 @@ impl crate::PdfCraftApp {
 mod tests {
     #[test]
     fn long_signature_previews_have_clear_margins() {
-        for text in ["Alexandria Catherine Elizabeth Montgomery-Wellington", "Jg Jg Jg Jg Jg Jg Jg Jg Jg Jg Jg"] {
+        for text in ["Alexandria Catherine Elizabeth Montgomery-Wellington", "Jg Jg Jg Jg Jg Jg Jg Jg Jg Jg Jg", "Ђорђе Љиљана", "Ada Ђорђе"]
+        {
             for [w, h] in [[920, 300], [480, 104]] {
                 let image = super::script_preview(text, w, h);
                 assert!(image.pixels.iter().any(|p| p.a() > 0));

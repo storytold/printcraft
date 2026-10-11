@@ -158,7 +158,7 @@ fn drawing_a_signature_creating_an_id_signing_and_trusting() {
     let mut fresh = PdfCraftApp::new();
     fresh.set_option("language", "en").unwrap();
     fresh.restore(&saved);
-    assert_eq!((fresh.digital_ids.len(), fresh.session.trusted_certificates().len()), (1, 1));
+    assert_eq!((fresh.digital_ids.len(), fresh.session.trusted_certificates().len()), (1, 3), "Grace plus the 2 bundled CCA roots");
 }
 
 #[test]

@@ -568,6 +568,7 @@ impl Automation {
             "comment_reply" => self.comment_reply(&a)?,
             "comment_set_status" => self.comment_set_status(&a)?,
             "sign_list" => self.sign_list(&a)?,
+            "sign_verify" => self.sign_verify(&a)?,
             "accessibility_check" => self.a11y_check(&a)?,
             "ocr_recognize" => self.ocr_recognize(&a)?,
             "js_run" => self.js_run(&a)?,

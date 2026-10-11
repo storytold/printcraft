@@ -4,9 +4,13 @@
 //!   primitives (RSA private-key operations use aws-lc-rs on native targets, ADR-0009).
 //! - [`pdf`]: signature fields in a document — listing and validating them, and signing
 //!   (PAdES B-B, `ETSI.CAdES.detached`) with an incremental save.
+//! - [`cca`]: India's CCA roots bundled for e-Aadhaar verification (offline trust).
+//! - [`verify`]: per-signature reports that keep integrity, trust, certificate
+//!   validity, revocation and later changes as separate verdicts.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod cca;
 pub mod cms;
 pub mod der;
 pub mod dss;
@@ -19,6 +23,7 @@ pub mod pkcs12;
 pub mod revocation;
 mod rsa_pad;
 pub mod timestamp;
+pub mod verify;
 #[cfg(target_os = "windows")]
 pub mod windows;
 pub mod x509;

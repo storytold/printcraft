@@ -622,6 +622,10 @@ pub fn tools() -> Vec<ToolDef> {
         t("sign_list", "List and validate signatures", "Every signature field with its validation: status (valid, unknown = intact but the signer isn't trusted, invalid, unsigned), signer and certificate, date, reason, location, certification level, page and rect, the revision it covers and changes made after signing (none, allowed, disallowed), with Acrobat-style explanations.")
             .ro()
             .with(schema(json!({ "doc": doc() }), &["doc"])),
+        t("sign_verify", "Verify digital signatures", "Verify a document's digital signatures with separated verdicts: cryptographic integrity (intact, altered, unknown when the algorithm or structure is unsupported), certificate trust (trusted or untrusted, and whether the anchor is a bundled CCA India root), certificate validity at signing time, revocation from embedded evidence (good, revoked, or unknown — offline verification cannot check further), and changes after signing (none, allowed, disallowed). trust: \"both\" (default) consults the session trust plus the bundled CCA India 2022 roots for e-Aadhaar PDFs without changing the session trust; \"session\" uses only the session trust; \"cca\" uses only the bundled roots. Entirely local: nothing is uploaded. Unsigned documents report no-signatures.")
+            .ro()
+            .cmd("sign.validate")
+            .with(schema(json!({ "doc": doc(), "trust": { "type": "string", "enum": ["both", "session", "cca"], "description": "Trust anchors to consult (default both)." } }), &["doc"])),
         t("sign_id_create", "Create a digital ID", "Create a self-signed digital ID and save it as a password-protected .p12 file (Acrobat: Configure a new digital ID ▸ Create a new digital ID ▸ Save to file). Default key: 2048-bit RSA, valid 5 years.").with(schema(
             json!({
                 "name": { "type": "string", "minLength": 1 },
@@ -662,7 +666,7 @@ pub fn tools() -> Vec<ToolDef> {
                 }),
                 &["doc", "id", "out"],
             )),
-        t("sign_trust", "Trust certificates", "Add certificates (.cer/.crt/.pem/.der, or the certificates in a .p12 with `password`) to the trusted certificates used to validate signatures, or clear the list (clear: true). Every open document is revalidated. Returns the trusted list.").with(schema(
+        t("sign_trust", "Trust certificates", "Add certificates (.cer/.crt/.pem/.der, or the certificates in a .p12 with `password`) to the trusted certificates used to validate signatures, or clear the list (clear: true). New sessions already trust the 2 bundled CCA India 2022 roots for e-Aadhaar PDFs; clear removes those too. Every open document is revalidated. Returns the trusted list.").with(schema(
             json!({ "paths": { "type": "array", "items": { "type": "string" } }, "password": { "type": "string" }, "clear": { "type": "boolean" } }),
             &[],
         )),

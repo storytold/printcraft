@@ -49,6 +49,7 @@ mod ocr_ui;
 mod optimize_ui;
 mod search_ui;
 mod sign_ui;
+mod stamp;
 mod stamps_ui;
 mod standards_ui;
 mod zoom_snap;

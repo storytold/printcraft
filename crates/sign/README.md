@@ -108,3 +108,39 @@ needs a prompt to open is listed and asks at signing (issue #179).
 
 Oracles: poppler's `pdfsig` reports our signatures valid; OpenSSL reads our `.p12` files and
 verifies our CMS; `tests/data/openssl-signed.pdf` is a signature OpenSSL made, which we validate.
+
+## e-Aadhaar verification (`cca`, `verify`)
+
+Official e-Aadhaar PDFs carry a UIDAI signature that chains to India's Controller of
+Certifying Authorities (CCA) roots. Most viewers show `?` for it because they do not ship
+those roots. PdfCraft bundles them and verifies natively — no separate app, no upload:
+
+- **Trust bundle** (`cca`): `CCA India 2022` (2022-02-02 – 2042-02-02, SHA-256
+  `9A:3F:D3:17:…:A9:4C:D8`) and `CCA India 2022 SPL` (2022-09-20 – 2042-09-20, SHA-256
+  `B7:24:68:9B:…:D8:C9:1A`), public roots from <https://cca.gov.in/root_certificate.html>,
+  cross-checked against the MIT-licensed `eaadhaar-pdf-signature-verifier` repository's
+  copies (only the certificates are reused; the check itself is this crate's own
+  validation, the same family as that tool's pyHanko checks).
+- **Reports** (`verify`): one per signature field with *separate* verdicts — integrity
+  (intact / altered / unknown-unsupported), trust (trusted, incl. whether the anchor is
+  a CCA root, or untrusted), certificate validity at the signing time, revocation from
+  embedded evidence (good / revoked / **unknown**: offline verification cannot fetch
+  CRLs/OCSP), signing-time source (signer's clock claim vs validated timestamp), later
+  changes (none / allowed / disallowed), and recommended next steps. A matching subject
+  name alone never counts as trusted (tested with a spoofed `CN=CCA India 2022`).
+- **Use it:** fresh sessions already trust the bundle, so genuine e-Aadhaar PDFs
+  validate green on open. The Signatures panel shows *CCA India roots trusted*, or
+  *Verify with CCA India roots* to re-add them after the store was cleared; headless
+  `sign_verify` takes `trust: "both"` (default), `"session"`, or `"cca"` — see
+  `Session::verify_signatures` and `VerifyTrust`. Encrypted e-Aadhaar PDFs open with
+  their user password first.
+- **Canvas stamp:** a successfully verified, trusted signature gets the reference
+  verifier's Adobe-style stamp as a viewer-only overlay: opaque white cover over the
+  widget's baked appearance, the green tick ribbon (#00a651 with black shadow and
+  outline, triangulated from the reference polygon), the "Signature valid" title, and
+  signer identity + signing-date lines scaled to the widget. Anything else keeps a
+  distinct warning plate (untrusted, invalid, modified, or not yet checkable).
+
+Limitations: revocation needs evidence embedded in the file (`/DSS`); without it the
+report says unknown and suggests an online OCSP/CRL check for high assurance.
+Timestamps from untrusted authorities are reported but never used as validation time.

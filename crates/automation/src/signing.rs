@@ -2,8 +2,9 @@
 //! document, and manage trusted certificates. Rectangles are points from the top-left of the
 //! displayed page.
 
+use pdfcraft_engine::sign::verify::{CertValidity, Integrity, Revocation, TimeSource, Trust};
 use pdfcraft_engine::sign::{self, Certificate, DigitalId, Modification, Name, PrivateKey};
-use pdfcraft_engine::{SignOptions, SignatureInfo, SignatureStatus};
+use pdfcraft_engine::{SignOptions, SignatureInfo, SignatureReport, SignatureStatus, VerifyTrust};
 use serde_json::{Value, json};
 
 use crate::{Args, Automation, Result, ToolError, failed, write_atomic};
@@ -80,6 +81,114 @@ impl Automation {
         let signed = doc.signatures.iter().filter(|s| s.signed).count();
         let all_valid = signed > 0 && doc.signatures.iter().filter(|s| s.signed).all(|s| s.status == SignatureStatus::Valid);
         Ok(json!({ "count": list.len(), "signed": signed, "all_valid": all_valid, "signatures": list }))
+    }
+
+    fn report_json(r: &SignatureReport) -> Value {
+        let (integrity, integrity_reason) = match &r.integrity {
+            Integrity::Intact => ("intact", None),
+            Integrity::Altered { reason } => ("altered", Some(reason.clone())),
+            Integrity::Unknown { reason } => ("unknown", Some(reason.clone())),
+            Integrity::NotApplicable => ("not-applicable", None),
+        };
+        let (trust, anchor, via_cca) = match &r.trust {
+            Trust::Trusted { anchor, via_cca } => ("trusted", Some(anchor.clone()), Some(*via_cca)),
+            Trust::Untrusted => ("untrusted", None, None),
+        };
+        let (cert_state, cert_detail) = match &r.cert_validity {
+            CertValidity::Valid => ("valid", None),
+            CertValidity::NotValidAtSigning { detail } => ("not-valid-at-signing", Some(detail.clone())),
+            CertValidity::NoSigningTime => ("no-signing-time", None),
+            CertValidity::NoCertificate => ("no-certificate", None),
+        };
+        let (revocation, revocation_detail) = match &r.revocation {
+            Revocation::Good => ("good", None),
+            Revocation::Revoked { detail } => ("revoked", Some(detail.clone())),
+            Revocation::Unknown => ("unknown", None),
+        };
+        let (modification, changes) = match &r.modification {
+            Modification::None => ("none", Vec::new()),
+            Modification::Allowed(c) => ("allowed", c.clone()),
+            Modification::Disallowed(c) => ("disallowed", c.clone()),
+        };
+        let time_source = match &r.time_source {
+            TimeSource::TrustedTimestamp => "trusted-timestamp",
+            TimeSource::SignerClaim => "signer-claim",
+            TimeSource::None => "none",
+        };
+        json!({
+            "field": r.field,
+            "signed": r.signed,
+            "status": if !r.signed { "unsigned" } else { match r.status { SignatureStatus::Valid => "valid", SignatureStatus::Unknown => "unknown", SignatureStatus::Invalid => "invalid" } },
+            "summary": r.summary,
+            "integrity": integrity,
+            "integrity_reason": integrity_reason,
+            "trust": trust,
+            "trust_anchor": anchor,
+            "trust_via_cca": via_cca,
+            "certificate_validity": cert_state,
+            "certificate_validity_detail": cert_detail,
+            "revocation": revocation,
+            "revocation_detail": revocation_detail,
+            "revocation_note": r.revocation_note,
+            "modification": modification,
+            "changes": changes,
+            "time_source": time_source,
+            "signing_time": r.signing_time,
+            "signer": r.signer,
+            "subject": r.subject,
+            "issuer": r.issuer,
+            "valid_from": r.cert_valid_from,
+            "valid_to": r.cert_valid_to,
+            "serial": r.serial,
+            "key": r.key,
+            "digest": r.digest,
+            "algorithm": r.algorithm,
+            "sub_filter": r.sub_filter,
+            "reason": r.reason,
+            "location": r.location,
+            "page": r.page.map(|p| p + 1),
+            "visible": r.visible,
+            "revision": r.revision,
+            "signed_len": r.signed_len,
+            "doc_timestamp": r.doc_timestamp,
+            "details": r.details,
+            "next_steps": r.next_steps,
+        })
+    }
+
+    pub(crate) fn sign_verify(&self, a: &Args) -> Result<Value> {
+        let mode = match a.opt_str("trust")?.unwrap_or("both") {
+            "both" => VerifyTrust::Both,
+            "session" => VerifyTrust::Session,
+            "cca" => VerifyTrust::Cca,
+            other => return Err(bad(format!("unknown trust {other:?} (both, session, cca)"))),
+        };
+        let id = self.doc(a)?.id;
+        let v = self.session.verify_signatures(id, mode).map_err(failed)?;
+        let mode_name = match v.trust_mode {
+            VerifyTrust::Session => "session",
+            VerifyTrust::Cca => "cca",
+            VerifyTrust::Both => "both",
+        };
+        Ok(json!({
+            "overall": v.summary.overall,
+            "overall_text": v.summary.overall_text,
+            "fields": v.summary.fields,
+            "signed": v.summary.signed,
+            "valid": v.summary.valid,
+            "invalid": v.summary.invalid,
+            "untrusted": v.summary.untrusted,
+            "unsupported": v.summary.unsupported,
+            "altered": v.summary.altered,
+            "expired_or_invalid_cert": v.summary.expired_or_invalid_cert,
+            "revocation_unknown": v.summary.revocation_unknown,
+            "modified_disallowed": v.summary.modified_disallowed,
+            "trust": mode_name,
+            "trust_roots": v.trust_roots,
+            "cca_trusted": v.cca_trusted,
+            "revocation_limitation": "Offline verification only checks revocation evidence embedded in the document (/DSS); fetching CRLs or OCSP responses is not performed.",
+            "signatures": v.reports.iter().map(Self::report_json).collect::<Vec<_>>(),
+        }))
     }
 
     pub(crate) fn sign_id_create(&mut self, a: &Args) -> Result<Value> {

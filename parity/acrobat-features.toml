@@ -4327,7 +4327,7 @@ status = "shipped"
 commands = ["form.fields"]
 tools = ["doc_info"]
 evidence = ["crates/ui-egui/tests/view.rs::field_list_jumps_to_a_fields_page", "crates/render/src/inspect.rs::fields_listed_only_on_the_pages_are_listed", "crates/ui-egui/tests/bulk_fields.rs::fields_panel_selects_multiple_fields_and_opens_their_shared_properties", "crates/ui-egui/tests/bulk_fields.rs::double_clicking_a_field_in_the_panel_opens_its_individual_properties"]
-notes = "list with jump-to-field; in Prepare a form, Shift/Ctrl/Command-click selects several fields and Properties edits their shared properties; double-click opens field properties; fields a file lists only as page widgets (empty /Fields) are adopted too"
+
 
 [[feature]]
 id = "form.highlight-fields"
@@ -6125,6 +6125,18 @@ commands = ["sign.validate"]
 tools = ["sign_list"]
 evidence = ["crates/sign/tests/pdf.rs::signing_then_validating_with_and_without_trust", "crates/automation/tests/automation.rs::digital_ids_signing_and_validation_through_tools", "crates/sign/tests/chain.rs::a_trusted_signer_whose_certificate_may_not_sign_is_not_valid"]
 notes = "The signer's key usage, extended key usage and critical extensions are checked; name constraints are not"
+
+[[feature]]
+id = "sign.eaadhaar-verify"
+title = "Verify digital signatures with separated verdicts and CCA India roots (e-Aadhaar)"
+area = "H"
+tier = "P1"
+milestone = "M9"
+status = "shipped"
+commands = ["sign.validate"]
+tools = ["sign_verify"]
+evidence = ["crates/sign/tests/verify.rs::intact_but_untrusted_signature_reports_separate_verdicts", "crates/sign/tests/verify.rs::subject_name_spoof_does_not_gain_cca_trust", "crates/automation/tests/automation.rs::signature_verification_with_cca_through_tools", "crates/engine/src/tests.rs::cca_roots_verify_with_separated_verdicts"]
+notes = "sign_verify reports integrity, trust (incl. CCA anchor), certificate validity at signing time, revocation from embedded evidence (unknown when offline), and later changes separately; the Signatures panel shows the same rows plus Verify with CCA India roots; the canvas paints the reference verifier's valid stamp (opaque cover, green tick ribbon, 'Signature valid', signer/date lines, no outer border) only for verified-and-trusted signatures, warning plates otherwise, without touching document bytes"
 
 [[feature]]
 id = "sign.signatures-panel"

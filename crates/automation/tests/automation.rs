@@ -2858,9 +2858,9 @@ fn digital_ids_signing_and_validation_through_tools() {
     assert!((rect[0] - 20.0).abs() < 0.5 && (rect[3] - 250.0).abs() < 0.5, "{rect:?}");
     assert!(dir.join("signed.pdf").exists());
 
-    // Trust the ID: valid; comment afterwards: still valid, change allowed.
+    // Trust the ID alongside the bundled CCA roots: valid; the CCA view stays untrusted.
     let t = ok(&mut a, "sign_trust", json!({ "paths": ["ada.p12"], "password": "secret1" }));
-    assert_eq!(t["trusted"].as_array().unwrap().len(), 1);
+    assert_eq!(t["trusted"].as_array().unwrap().len(), 3, "the 2 bundled CCA roots plus Ada");
     let list = ok(&mut a, "sign_list", json!({ "doc": doc }));
     assert_eq!((list["all_valid"].as_bool(), list["signatures"][0]["status"].as_str()), (Some(true), Some("valid")));
     ok(&mut a, "comment_add", json!({ "doc": doc, "page": 1, "type": "note", "at": [20, 20], "contents": "ok" }));
@@ -2879,6 +2879,62 @@ fn digital_ids_signing_and_validation_through_tools() {
     assert!(matches!(a.call("doc_open_revision", &json!({ "doc": doc, "revision": 4 })), Err(ToolError::Failed(_))));
     assert_eq!(ok(&mut a, "sign_trust", json!({ "clear": true }))["trusted"].as_array().unwrap().len(), 0);
     assert_eq!(ok(&mut a, "sign_list", json!({ "doc": doc }))["signatures"][0]["status"], "unknown");
+}
+
+#[test]
+fn signature_verification_with_cca_through_tools() {
+    let dir = workdir("verify");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    // No signatures yet: reported, not an error.
+    let v = ok(&mut a, "sign_verify", json!({ "doc": doc }));
+    assert_eq!((v["overall"].as_str(), v["signed"].as_u64()), (Some("no-signatures"), Some(0)));
+    assert_eq!(v["trust"].as_str(), Some("both"));
+    assert!(v["revocation_limitation"].as_str().unwrap().contains("Offline"), "{v}");
+    assert_eq!(ok(&mut a, "sign_verify", json!({ "doc": doc, "trust": "cca" }))["overall"].as_str(), Some("no-signatures"));
+    // Sign with a fresh self-signed ID.
+    ok(
+        &mut a,
+        "sign_id_create",
+        json!({ "name": "Ada Lovelace", "organization": "Analytical Engines", "email": "ada@example.com", "country": "GB", "key": "p256", "password": "secret1", "path": "ada.p12" }),
+    );
+    let r = ok(
+        &mut a,
+        "sign_document",
+        json!({ "doc": doc, "id": "ada.p12", "password": "secret1", "page": 1, "rect": [20, 200, 180, 250], "out": "signed.pdf" }),
+    );
+    assert_eq!(r["signature"]["status"], "unknown");
+    // Default (both): intact but untrusted — the test ID is not CCA-anchored.
+    let v = ok(&mut a, "sign_verify", json!({ "doc": doc }));
+    assert_eq!(v["overall"].as_str(), Some("untrusted"), "{v}");
+    let s = &v["signatures"][0];
+    assert_eq!(s["integrity"].as_str(), Some("intact"));
+    assert_eq!(s["trust"].as_str(), Some("untrusted"));
+    assert_eq!(s["certificate_validity"].as_str(), Some("valid"));
+    assert_eq!(s["revocation"].as_str(), Some("unknown"));
+    assert!(s["revocation_note"].as_str().unwrap().contains("offline"));
+    assert_eq!(s["time_source"].as_str(), Some("signer-claim"));
+    assert_eq!(s["modification"].as_str(), Some("none"));
+    assert!(s["next_steps"].as_array().unwrap().len() >= 2, "{s}");
+    // CCA-only and session-only agree while the ID is untrusted.
+    assert_eq!(ok(&mut a, "sign_verify", json!({ "doc": doc, "trust": "cca" }))["overall"].as_str(), Some("untrusted"));
+    assert_eq!(ok(&mut a, "sign_verify", json!({ "doc": doc, "trust": "session" }))["overall"].as_str(), Some("untrusted"));
+    // Trusting the ID makes the session view valid; the CCA view stays untrusted.
+    ok(&mut a, "sign_trust", json!({ "paths": ["ada.p12"], "password": "secret1" }));
+    let v = ok(&mut a, "sign_verify", json!({ "doc": doc, "trust": "session" }));
+    assert_eq!(v["overall"].as_str(), Some("valid"));
+    assert_eq!(v["signatures"][0]["trust"].as_str(), Some("trusted"));
+    assert_eq!(ok(&mut a, "sign_verify", json!({ "doc": doc, "trust": "cca" }))["overall"].as_str(), Some("untrusted"));
+    // Tampering with a signed byte is detected as invalid.
+    let mut bytes = std::fs::read(dir.join("signed.pdf")).unwrap();
+    let i = bytes.windows(6).position(|w| w == b"Page 1").unwrap();
+    bytes[i] = b'Q';
+    std::fs::write(dir.join("tampered.pdf"), &bytes).unwrap();
+    let t = ok(&mut a, "doc_open", json!({ "path": "tampered.pdf" }))["doc"].as_u64().unwrap();
+    let v = ok(&mut a, "sign_verify", json!({ "doc": t }));
+    assert_eq!(v["overall"].as_str(), Some("invalid"), "{v}");
+    assert_eq!(v["signatures"][0]["integrity"].as_str(), Some("altered"));
+    assert!(matches!(a.call("sign_verify", &json!({ "doc": doc, "trust": "bogus" })), Err(ToolError::InvalidArgs(_))));
 }
 
 #[test]

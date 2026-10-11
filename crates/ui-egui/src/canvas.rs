@@ -1961,6 +1961,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let mut open_signature = false;
     let mut hover_text: Option<(Pos2, String)> = None;
     let mut clicked_link: Option<LinkTarget> = None;
+    let mut clicked_signature_badge = false;
     let mut canvas_action: Option<comments::CanvasAction> = None;
     let mut field_menu: Option<FieldMenu> = None;
     let mut open_props: Option<(usize, usize)> = None;
@@ -2446,6 +2447,30 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             } else {
                 crate::forms_ui::paint_page(ui, painter, &xf, i, info, &form, view);
             }
+            // Verification plates on signed signature widgets: one coherent viewer-only
+            // component per widget, reflecting the current validation state (recomputed
+            // whenever trust settings change or signatures revalidate). The baked widget
+            // appearance stays in the document bytes; the opaque plate hides it on screen
+            // so a stale "not verified" look can never sit beside the live verdict.
+            if !view.errors.contains_key(&i) {
+                for plate in crate::sign_ui::widget_plates(&doc.signatures, i, &xf, info) {
+                    crate::sign_ui::paint_widget_plate(ui, painter, &plate);
+                    if let Some(p) = pointer.filter(|p| plate.cover.contains(*p)) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if hover_text.is_none() {
+                            let mut text = plate.badge.label.clone();
+                            if let Some(signer) = plate.signer.as_ref().filter(|s| !s.trim().is_empty()) {
+                                text.push('\n');
+                                text.push_str(signer);
+                            }
+                            hover_text = Some((p, text));
+                        }
+                        if resp.clicked() && !consumed {
+                            clicked_signature_badge = true;
+                        }
+                    }
+                }
+            }
 
             // Form-field highlight (Acrobat's "Highlight existing fields"); required fields get a
             // red border. Radio buttons are round, and so is theirs (as in Acrobat).
@@ -2715,6 +2740,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         Some(LinkTarget::SetLayers { changes, preserve_rb }) => set_layers(app, index, &changes, preserve_rb),
         Some(LinkTarget::Other(s)) => app.notify_fmt("{s} actions run in the JavaScript engine (M6)", &[("s", &s)]),
         None => {}
+    }
+    if clicked_signature_badge {
+        app.right = Some(RightPanel::Signatures);
     }
     if tool == QuickTool::Crop && cropped {
         tool = QuickTool::Select;

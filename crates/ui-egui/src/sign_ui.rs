@@ -4,9 +4,10 @@
 
 use std::path::PathBuf;
 
-use egui::{Align, Color32, CornerRadius, Layout, Pos2, Rect, Stroke, vec2};
+use egui::{Align, Color32, CornerRadius, Layout, Pos2, Rect, Stroke, pos2, vec2};
 use pdfcraft_engine::sign::{self, Appearance, Certificate, DigitalId, Modification, Name, PrivateKey};
-use pdfcraft_engine::{SignOptions, SignatureInfo, SignatureStatus};
+use pdfcraft_engine::{SignOptions, SignatureInfo, SignatureReport, SignatureStatus};
+use pdfcraft_render::DocInfo;
 
 use crate::canvas::{DocView, PageXform};
 use crate::theme::{self, Tokens};
@@ -426,6 +427,19 @@ impl PdfCraftApp {
             certs.push(cert);
         }
         self.session.set_trusted_certificates(certs);
+    }
+
+    /// Trust the bundled CCA India roots (Signatures panel ▸ Verify with CCA India
+    /// roots) and revalidate every open document.
+    pub fn trust_cca_roots(&mut self) {
+        match self.session.trust_cca_roots() {
+            Ok(0) => self.notify_tr("The CCA India roots are already trusted."),
+            Ok(_) => {
+                self.right = Some(crate::RightPanel::Signatures);
+                self.notify_tr("The CCA India roots are now trusted. Signatures were revalidated.");
+            }
+            Err(e) => self.notify(e.to_string()),
+        }
     }
 
     /// Open saved revision `n` (1 = the oldest) of the active document as a new document.
@@ -857,12 +871,199 @@ fn status_icon(s: &SignatureInfo) -> (&'static str, Color32) {
     }
 }
 
+/// Viewer-only verification badge for a signed signature widget on the canvas.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct WidgetBadge {
+    pub icon: &'static str,
+    pub color: Color32,
+    /// Tooltip text: the icon never stands alone.
+    pub label: String,
+}
+
+/// Map a signature to its canvas badge. `None` for empty fields: nothing to verify.
+/// This mirrors the engine verdict without re-checking it — invalid stays invalid and
+/// unknown stays unknown — so the widget reflects verification instead of forcing green.
+pub(crate) fn widget_badge(s: &SignatureInfo) -> Option<WidgetBadge> {
+    if !s.signed {
+        return None;
+    }
+    const GREEN: Color32 = Color32::from_rgb(0x2D, 0x9D, 0x78);
+    const AMBER: Color32 = Color32::from_rgb(0xE6, 0x86, 0x19);
+    const RED: Color32 = Color32::from_rgb(0xD7, 0x37, 0x3F);
+    const GRAY: Color32 = Color32::from_gray(0x6E);
+    if matches!(s.modification, Modification::Disallowed(_)) {
+        return Some(WidgetBadge {
+            icon: "circle-x",
+            color: RED,
+            label: tl!("Signature is invalid: the document was modified after signing.").to_string(),
+        });
+    }
+    match s.status {
+        SignatureStatus::Valid => Some(WidgetBadge { icon: "circle-check", color: GREEN, label: tl!("Signature valid").to_string() }),
+        SignatureStatus::Invalid => Some(WidgetBadge { icon: "circle-x", color: RED, label: tl!("Signature is invalid.").to_string() }),
+        SignatureStatus::Unknown if s.details.iter().any(|d| d.to_lowercase().contains("can't check")) => Some(WidgetBadge {
+            icon: "circle-help",
+            color: GRAY,
+            label: tl!("Signature cannot be checked yet: unsupported algorithm or structure.").to_string(),
+        }),
+        SignatureStatus::Unknown => Some(WidgetBadge {
+            icon: "triangle-alert",
+            color: AMBER,
+            label: tl!("Signature validity is unknown: the signer is not trusted.").to_string(),
+        }),
+    }
+}
+
+/// A coherent on-canvas presentation of one signed widget: an opaque plate covering
+/// the widget's baked appearance plus the live verification verdict. The baked
+/// appearance (e.g. the signer's own "not verified" look) is document content and is
+/// never edited — it is hidden behind viewer-only paint so it cannot contradict the
+/// verdict beside a green tick.
+pub(crate) struct WidgetPlate {
+    /// The widget's screen rect, painted opaquely.
+    pub cover: Rect,
+    pub badge: WidgetBadge,
+    pub signer: Option<String>,
+    /// Signing time for the details line, where available.
+    pub date: Option<String>,
+    /// Present only when validation justifies the valid state: painted as the
+    /// reference-style stamp instead of the generic plate.
+    pub stamp: Option<crate::stamp::ValidStamp>,
+}
+
+/// Screen-space plates for the signed, visible widgets on `page`. Viewer-only: the
+/// document bytes are untouched.
+pub(crate) fn widget_plates(sigs: &[SignatureInfo], page: usize, xf: &PageXform, info: &DocInfo) -> Vec<WidgetPlate> {
+    let mut out = Vec::new();
+    // A corrupt file can name a page that does not exist: show nothing, never panic.
+    if info.pages.get(page).is_none() {
+        return out;
+    }
+    for s in sigs {
+        if s.page != Some(page) || !s.visible {
+            continue;
+        }
+        let (Some(rect), Some(badge)) = (s.rect, widget_badge(s)) else { continue };
+        if rect[2] <= rect[0] || rect[3] <= rect[1] {
+            continue;
+        }
+        let cover = xf.user_rect(info, page, [rect[0] as f32, rect[1] as f32, rect[2] as f32, rect[3] as f32]);
+        let date = s.signing_time.map(|t| t.to_string()).or_else(|| s.date.clone());
+        let stamp = crate::stamp::valid_stamp_for(s);
+        out.push(WidgetPlate { cover, badge, signer: s.signer.clone(), date, stamp });
+    }
+    out
+}
+
+/// Design box the plate typography is laid out for, in screen points: the reference
+/// viewer scales its 50x30pt stamp form to the widget box the same way.
+const PLATE_DESIGN_W: f32 = 220.0;
+const PLATE_DESIGN_H: f32 = 64.0;
+
+/// Scale + geometry for one plate's content. Pure so the complete visual state is
+/// unit-testable: the status line must survive (scaled to fit), never be dropped.
+#[derive(Clone, Debug)]
+pub(crate) struct PlateLayout {
+    pub icon_rect: Rect,
+    pub icon_size: f32,
+    /// Absolute x where text starts, and how wide the text column is.
+    pub text_x: f32,
+    pub text_w: f32,
+    pub status_size: f32,
+    pub sub_size: f32,
+    pub line_gap: f32,
+}
+
+/// Compute the plate content layout for `cover`. `status_w_at_base` is the measured
+/// width of the status label at 12pt. Returns `None` for degenerate covers (paint the
+/// cover only). The status line always fits: the layout shrinks uniformly to fit it,
+///
+/// mirroring how the reference viewer scales its stamp to the widget box.
+pub(crate) fn plate_layout(cover: Rect, status_w_at_base: f32) -> Option<PlateLayout> {
+    let pad = 4.0;
+    if cover.width() < pad * 2.0 + 8.0 || cover.height() < pad * 2.0 + 8.0 {
+        return None;
+    }
+    // Uniform scale from the box, like the reference stampScale from the widget box.
+    let mut k = ((cover.width() - pad * 2.0) / PLATE_DESIGN_W).min((cover.height() - pad * 2.0) / PLATE_DESIGN_H).clamp(0.3, 1.25);
+    let scaled = |k: f32| {
+        let icon = (22.0 * k).clamp(8.0, 24.0);
+        let text_x = cover.left() + pad * 2.0 + icon;
+        (icon, text_x, cover.right() - pad - text_x)
+    };
+    let (mut icon, mut text_x, mut available) = scaled(k);
+    // Shrink-to-fit so the required status line is always drawn, never dropped.
+    let need = status_w_at_base * k;
+    if need > available && available > 0.0 {
+        k = (k * available / need).max(0.25);
+        (icon, text_x, available) = scaled(k);
+    }
+    let status_size = 12.0 * k;
+    let sub_size = 10.5 * k;
+    Some(PlateLayout {
+        icon_rect: Rect::from_center_size(pos2(cover.left() + pad + icon / 2.0, cover.center().y), vec2(icon, icon)),
+        icon_size: icon,
+        text_x,
+        text_w: available.max(0.0),
+        status_size,
+        sub_size,
+        line_gap: 1.0,
+    })
+}
+/// Paint one plate. A plate carrying a valid stamp is painted exactly as the
+/// reference valid stamp (opaque cover, tick, title, body — no outer border, which
+/// the reference stamp does not have). Anything else keeps the warning-plate
+/// presentation so untrusted, invalid and modified states stay distinct.
+pub(crate) fn paint_widget_plate(ui: &egui::Ui, painter: &egui::Painter, plate: &WidgetPlate) {
+    if let Some(stamp) = &plate.stamp {
+        crate::stamp::paint_valid_stamp(ui, painter, plate.cover, stamp);
+        return;
+    }
+    let r = plate.cover;
+    painter.rect_filled(r, CornerRadius::same(2), Color32::WHITE);
+    painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, plate.badge.color), egui::StrokeKind::Inside);
+    let ink = Color32::from_gray(0x20);
+    let status_w = painter.layout_no_wrap(plate.badge.label.clone(), theme::semibold(12.0), ink).size().x;
+    let Some(l) = plate_layout(r, status_w) else {
+        return; // degenerate on screen: the cover alone hides the stale appearance
+    };
+    let painter = painter.with_clip_rect(r);
+    icons::paint(ui, l.icon_rect, plate.badge.icon, l.icon_size, plate.badge.color);
+    // Status line first (always fits by construction), then signer and date while the
+    // measured widths and the vertical room allow.
+    let mut lines = vec![(plate.badge.label.clone(), l.status_size, true)];
+    for (text, size) in [plate.signer.clone().map(|s| (s, l.sub_size)), plate.date.clone().map(|s| (s, l.sub_size))].into_iter().flatten() {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let w = painter.layout_no_wrap(text.clone(), theme::regular(size), Color32::from_gray(0x5A)).size().x;
+        if w <= l.text_w {
+            lines.push((text, size, false));
+        }
+    }
+    let heights: Vec<f32> = lines.iter().map(|(_, s, _)| s * 1.25).collect();
+    let mut shown = lines.len();
+    while shown > 1 && heights[..shown].iter().sum::<f32>() + (shown as f32 - 1.0) * l.line_gap + 6.0 > r.height() {
+        shown -= 1;
+    }
+    let total: f32 = heights[..shown].iter().sum::<f32>() + (shown as f32 - 1.0) * l.line_gap;
+    let mut y = r.center().y - total / 2.0;
+    for (text, size, strong) in &lines[..shown] {
+        let font = if *strong { theme::semibold(*size) } else { theme::regular(*size) };
+        let g = painter.layout_no_wrap(text.clone(), font, ink);
+        painter.galley(pos2(l.text_x, y), g.clone(), ink);
+        y += g.size().y + l.line_gap;
+    }
+}
+
 /// What the Signatures panel asks the app to do.
 #[derive(Clone, Debug)]
 pub enum PanelAction {
     Validate,
     GoTo(usize),
     Trust(Box<Certificate>),
+    /// Trust the bundled CCA India roots (e-Aadhaar) and revalidate.
+    TrustCca,
     ViewSigned(usize),
     Sign(String),
     ExportCertificate(Box<Certificate>),
@@ -870,14 +1071,107 @@ pub enum PanelAction {
     ViewCertificate(Vec<Certificate>),
 }
 
-/// The Signatures panel body.
-pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, sigs: &[SignatureInfo], expanded: &mut Vec<String>) -> Option<PanelAction> {
+fn detail_row(ui: &mut egui::Ui, key: &str, value: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(format!("{}: {value}", tl!(key))).font(theme::regular(11.5))).wrap());
+}
+
+/// The separated verification verdicts for one signed signature: integrity, trust,
+/// certificate validity, revocation, signing-time source, later changes and next steps.
+fn verification_rows(ui: &mut egui::Ui, t: &Tokens, r: &SignatureReport) {
+    use pdfcraft_engine::sign::verify::{CertValidity, Integrity, Revocation, TimeSource, Trust};
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tl!("Verification")).font(theme::semibold(12.0)));
+    detail_row(
+        ui,
+        "Integrity",
+        &match &r.integrity {
+            Integrity::Intact => tl!("Intact: the digest and the signature value verify.").to_string(),
+            Integrity::Altered { reason } => format!("{} {reason}", tl!("Altered:")),
+            Integrity::Unknown { reason } => format!("{} {reason}", tl!("Unknown:")),
+            Integrity::NotApplicable => tl!("No signature to check.").to_string(),
+        },
+    );
+    detail_row(
+        ui,
+        "Trust",
+        &match &r.trust {
+            Trust::Trusted { anchor, via_cca: true } => format!("{} ({anchor})", tl!("Trusted through the bundled CCA India roots")),
+            Trust::Trusted { anchor, .. } => format!("{} ({anchor})", tl!("Trusted")),
+            Trust::Untrusted => tl!("Not trusted: the signer is unknown.").to_string(),
+        },
+    );
+    detail_row(
+        ui,
+        "Certificate",
+        &match &r.cert_validity {
+            CertValidity::Valid => tl!("Valid at the signing time.").to_string(),
+            CertValidity::NotValidAtSigning { detail } => detail.clone(),
+            CertValidity::NoSigningTime => tl!("No signing time recorded, so validity then cannot be judged.").to_string(),
+            CertValidity::NoCertificate => tl!("No signer certificate in the signature.").to_string(),
+        },
+    );
+    detail_row(
+        ui,
+        "Revocation",
+        &match &r.revocation {
+            Revocation::Good => tl!("Not revoked: embedded evidence was checked.").to_string(),
+            Revocation::Revoked { detail } => detail.clone(),
+            Revocation::Unknown => tl!("Unknown: offline verification only checks evidence embedded in the document.").to_string(),
+        },
+    );
+    detail_row(
+        ui,
+        "Signing time",
+        &match (&r.signing_time, &r.time_source) {
+            (Some(when), TimeSource::TrustedTimestamp) => format!("{when} ({})", tl!("from a validated timestamp of a trusted authority")),
+            (Some(when), _) => format!("{when} ({})", tl!("from the signer's computer clock, not independently validated")),
+            (None, _) => tl!("Not recorded.").to_string(),
+        },
+    );
+    detail_row(
+        ui,
+        "Changes after signing",
+        &match &r.modification {
+            Modification::None => tl!("None.").to_string(),
+            Modification::Allowed(kinds) => format!("{} ({})", tl!("Permitted"), kinds.join(", ")),
+            Modification::Disallowed(kinds) => format!("{} ({})", tl!("Not permitted"), kinds.join(", ")),
+        },
+    );
+    if !r.next_steps.is_empty() {
+        ui.label(egui::RichText::new(tl!("Recommended next steps")).font(theme::semibold(12.0)));
+        for step in &r.next_steps {
+            ui.add(egui::Label::new(egui::RichText::new(format!("• {step}")).font(theme::regular(11.5)).color(t.text_muted)).wrap());
+        }
+    }
+}
+
+/// The Signatures panel body. `reports` holds one [`SignatureReport`] per field in
+/// `sigs` (see [`pdfcraft_engine::sign::verify`]); `cca_trusted` says whether the
+/// bundled CCA India roots are in the session trust store.
+pub(crate) fn panel(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    sigs: &[SignatureInfo],
+    reports: &[SignatureReport],
+    cca_trusted: bool,
+    expanded: &mut Vec<String>,
+) -> Option<PanelAction> {
     let mut action = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if widgets::pill_button(ui, tl!("Validate all"), false).clicked() {
             action = Some(PanelAction::Validate);
         }
+        if cca_trusted {
+            ui.label(egui::RichText::new(tl!("CCA India roots trusted")).small().color(t.text_muted));
+        } else if widgets::pill_button(ui, tl!("Verify with CCA India roots"), false).clicked() {
+            action = Some(PanelAction::TrustCca);
+        }
     });
+    ui.label(
+        egui::RichText::new(tl!("e-Aadhaar PDFs chain to India's CCA roots, bundled with PdfCraft and checked on this device. Nothing is uploaded."))
+            .small()
+            .color(t.text_muted),
+    );
     ui.add_space(6.0);
     if sigs.is_empty() {
         ui.add_space(24.0);
@@ -940,6 +1234,9 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, sigs: &[SignatureInfo], expan
             );
             for line in &s.details {
                 ui.add(egui::Label::new(egui::RichText::new(format!("• {line}")).font(theme::regular(11.5)).color(t.text_muted)).wrap());
+            }
+            if let Some(r) = reports.iter().find(|r| r.field == s.field) {
+                verification_rows(ui, t, r);
             }
             ui.add_space(4.0);
             ui.label(egui::RichText::new(tl!("Signature Details")).font(theme::semibold(12.0)));
@@ -1236,5 +1533,289 @@ mod tests {
         let mode = std::fs::metadata(&saved).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "the private key is not readable by others: {mode:o}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A signed signature widget for badge tests: status and modification vary.
+    fn widget_info(status: SignatureStatus, modification: pdfcraft_engine::sign::Modification, details: &[&str]) -> SignatureInfo {
+        SignatureInfo {
+            field: "Sig1".to_string(),
+            signed: true,
+            page: Some(0),
+            rect: Some([20.0, 20.0, 180.0, 60.0]),
+            visible: true,
+            signer: None,
+            certificate: None,
+            chain: Vec::new(),
+            date: None,
+            signing_time: None,
+            reason: None,
+            location: None,
+            contact: None,
+            sub_filter: None,
+            doc_timestamp: false,
+            certify: None,
+            revision: 2,
+            signed_len: 1000,
+            digest: None,
+            algorithm: None,
+            timestamp: false,
+            timestamp_time: None,
+            status,
+            modification,
+            details: details.iter().map(|d| d.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn widget_badges_mirror_the_engine_verdict() {
+        use pdfcraft_engine::sign::Modification;
+        // Valid and trusted: green check, "valid" wording.
+        let b = widget_badge(&widget_info(SignatureStatus::Valid, Modification::None, &["The signer's identity is valid."])).unwrap();
+        assert_eq!((b.icon, b.color), ("circle-check", Color32::from_rgb(0x2D, 0x9D, 0x78)));
+        assert!(b.label.contains("valid") && !b.label.contains("unknown"), "{}", b.label);
+        // Intact but untrusted: yellow, explicitly unknown — never green.
+        let b = widget_badge(&widget_info(SignatureStatus::Unknown, Modification::None, &["The signer's identity is unknown."])).unwrap();
+        assert_eq!((b.icon, b.color), ("triangle-alert", Color32::from_rgb(0xE6, 0x86, 0x19)));
+        assert!(b.label.contains("unknown"), "{}", b.label);
+        // Unsupported: distinct indeterminate state, not red.
+        let b = widget_badge(&widget_info(SignatureStatus::Unknown, Modification::None, &["PdfCraft can't check this signature yet: test seam."]))
+            .unwrap();
+        assert_eq!((b.icon, b.color), ("circle-help", Color32::from_gray(0x6E)));
+        // Invalid: red, "invalid" wording.
+        let b = widget_badge(&widget_info(SignatureStatus::Invalid, Modification::None, &["The signature value does not match."])).unwrap();
+        assert_eq!((b.icon, b.color), ("circle-x", Color32::from_rgb(0xD7, 0x37, 0x3F)));
+        assert!(b.label.contains("invalid"), "{}", b.label);
+        // Modified after signing: red with a modified-document warning.
+        let b = widget_badge(&widget_info(SignatureStatus::Invalid, Modification::Disallowed(vec!["page content".into()]), &["altered"])).unwrap();
+        assert_eq!(b.icon, "circle-x");
+        assert!(b.label.contains("modified"), "{}", b.label);
+    }
+
+    #[test]
+    fn empty_fields_get_no_badge() {
+        let mut unsigned = widget_info(SignatureStatus::Unknown, pdfcraft_engine::sign::Modification::None, &[]);
+        unsigned.signed = false;
+        assert!(widget_badge(&unsigned).is_none());
+    }
+
+    #[test]
+    fn plates_cover_only_signed_visible_widgets_on_the_page() {
+        let xf = crate::canvas::PageXform { rect: Rect::from_min_max(pos2(0.0, 0.0), pos2(600.0, 800.0)), rot: 0, pw: 600.0, ph: 800.0 };
+        let info = badge_doc_info();
+        let mut other_page = widget_info(SignatureStatus::Valid, Modification::None, &[]);
+        other_page.page = Some(1);
+        let mut hidden = widget_info(SignatureStatus::Valid, Modification::None, &[]);
+        hidden.visible = false;
+        let mut no_rect = widget_info(SignatureStatus::Valid, Modification::None, &[]);
+        no_rect.rect = None;
+        let mut unsigned = widget_info(SignatureStatus::Unknown, Modification::None, &[]);
+        unsigned.signed = false;
+        let sigs = vec![
+            widget_info(SignatureStatus::Valid, Modification::None, &[]),
+            widget_info(SignatureStatus::Unknown, Modification::None, &[]),
+            other_page,
+            hidden,
+            no_rect,
+            unsigned,
+        ];
+        let plates = widget_plates(&sigs, 0, &xf, &info);
+        assert_eq!(plates.len(), 2, "only the two signed, visible widgets on page 0");
+        assert_eq!((plates[0].badge.icon, plates[1].badge.icon), ("circle-check", "triangle-alert"));
+        // Geometry follows the widget through the page transform, and the plate covers
+        // the whole widget: the baked appearance underneath cannot show through.
+        let sr = xf.user_rect(&info, 0, [20.0, 20.0, 180.0, 60.0]);
+        assert_eq!(plates[0].cover, sr);
+        assert!(widget_plates(&sigs, 1, &xf, &info).len() == 1);
+        assert!(widget_plates(&[], 0, &xf, &info).is_empty());
+        assert!(widget_plates(&sigs, 9, &xf, &info).is_empty(), "a page that does not exist shows nothing");
+    }
+
+    #[test]
+    fn valid_plate_shows_no_contradictory_indicator() {
+        // Regression test for the green-tick-over-question-mark bug: a valid, trusted
+        // signature yields exactly one plate, carrying the green verdict and covering the
+        // widget — never an unknown/invalid badge alongside it.
+        let xf = crate::canvas::PageXform { rect: Rect::from_min_max(pos2(0.0, 0.0), pos2(600.0, 800.0)), rot: 0, pw: 600.0, ph: 800.0 };
+        let info = badge_doc_info();
+        let sig = widget_info(SignatureStatus::Valid, Modification::None, &["The signer's identity is valid."]);
+        let plates = widget_plates(std::slice::from_ref(&sig), 0, &xf, &info);
+        assert_eq!(plates.len(), 1);
+        let plate = &plates[0];
+        assert_eq!(plate.badge.icon, "circle-check");
+        assert!(plate.badge.label.contains("valid") && !plate.badge.label.contains("unknown"), "{}", plate.badge.label);
+        assert!(!plate.badge.label.contains("Not Verified"), "{}", plate.badge.label);
+        let sr = xf.user_rect(&info, 0, [20.0, 20.0, 180.0, 60.0]);
+        assert!(plate.cover.contains_rect(sr), "the opaque cover hides the whole baked appearance");
+    }
+
+    #[test]
+    fn plate_layout_draws_status_text_for_eaadhaar_sizes() {
+        // A typical e-Aadhaar widget on screen: wide but short. The old fixed-12pt
+        // code dropped the status line here, leaving a tick-only rectangle.
+        let cover = Rect::from_min_max(pos2(0.0, 0.0), pos2(200.0, 53.0));
+        let l = plate_layout(cover, 105.0).expect("content for a normal widget");
+        // The status line fits the text column at the laid-out size.
+        assert!(105.0 * (l.status_size / 12.0) <= l.text_w + 0.01, "{l:?}");
+        assert!((3.0..=15.0).contains(&l.status_size), "{l:?}");
+        assert!(l.text_x > cover.left() && l.text_x < cover.right() - 40.0, "{l:?}");
+        assert!(cover.contains_rect(l.icon_rect), "{l:?}");
+    }
+
+    #[test]
+    fn plate_layout_never_drops_status_on_narrow_widgets() {
+        let cover = Rect::from_min_max(pos2(0.0, 0.0), pos2(70.0, 44.0));
+        let l = plate_layout(cover, 105.0).expect("content even when narrow");
+        // Shrunk uniformly to fit instead of dropped.
+        assert!(l.status_size < 12.0, "{l:?}");
+        assert!(105.0 * (l.status_size / 12.0) <= l.text_w + 0.01, "{l:?}");
+    }
+
+    #[test]
+    fn plate_layout_degenerate_cover_has_no_content() {
+        let tiny = Rect::from_min_max(pos2(0.0, 0.0), pos2(10.0, 10.0));
+        assert!(plate_layout(tiny, 105.0).is_none(), "cover paint alone hides the stale look");
+        let empty = Rect::from_min_max(pos2(0.0, 0.0), pos2(0.0, 0.0));
+        assert!(plate_layout(empty, 105.0).is_none());
+    }
+
+    fn badge_doc_info() -> pdfcraft_render::DocInfo {
+        let page = |label: &str| pdfcraft_render::PageInfo {
+            width: 600.0,
+            height: 800.0,
+            label: label.to_string(),
+            crop: [0.0, 0.0, 600.0, 800.0],
+            rotation: 0,
+        };
+        pdfcraft_render::DocInfo { pages: vec![page("1"), page("2")], ..Default::default() }
+    }
+
+    /// Render the harness frame and count (green-tick, dark-text) pixels inside the
+    /// screen-space `cover` rect. Green ~= Acrobat #00a651 tick fill.
+    fn stamp_pixels(h: &mut egui_kittest::Harness<'static, PdfCraftApp>, cover: Rect) -> (u32, u32) {
+        let image = h.render().expect("a rendered frame");
+        // The builder below uses 1200x800 logical points.
+        let (sx, sy) = (image.width() as f32 / 1200.0, image.height() as f32 / 800.0);
+        let (left, top, right, bottom) =
+            ((cover.left() * sx) as u32, (cover.top() * sy) as u32, (cover.right() * sx) as u32, (cover.bottom() * sy) as u32);
+        let mut green = 0u32;
+        let mut dark = 0u32;
+        for y in top..bottom.min(image.height()) {
+            for x in left..right.min(image.width()) {
+                let p = image.get_pixel(x, y).0;
+                let (r, g, b) = (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]));
+                if g - r > 60 && g > 100 && b < 160 {
+                    green += 1;
+                }
+                if r < 100 && g < 100 && b < 100 {
+                    dark += 1;
+                }
+            }
+        }
+        (green, dark)
+    }
+
+    /// Plate data follows real validation through the app: yellow while the signer is
+    /// untrusted, green once trusted — recomputed, never stored.
+    #[test]
+    fn widget_badges_follow_trust_through_the_app() {
+        use egui_kittest::Harness;
+        const FIXTURE: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length 45 >> stream
+BT /F1 14 Tf 20 150 Td (Please sign below) Tj ET
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+        let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(|_cc| {
+            let mut app = PdfCraftApp::new();
+            app.set_option("language", "en").unwrap();
+            app
+        });
+        h.run_steps(1);
+        // Pin the clock before opening anything: a deterministic signing time.
+        {
+            let st = h.state_mut();
+            let s = std::mem::replace(&mut st.session, pdfcraft_engine::Session::new()).with_clock(|| 1_800_000_000);
+            st.session = s;
+            st.open_bytes("contract.pdf", None, FIXTURE.to_vec()).expect("opens");
+        }
+        h.run_steps(6);
+        let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+        let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
+        let signer = digital_id.certificate.clone();
+        let doc_id = h.state().views[0].id;
+        let opts = SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() };
+        let signed = h.state().session.sign(doc_id, &digital_id, opts).unwrap();
+        h.state_mut().session.mark_signed(doc_id, signed, None).unwrap();
+        h.run_steps(6);
+        // Intact but untrusted: the canvas badge is yellow, like the panel and banner.
+        {
+            let s = h.state();
+            let doc = s.session.get(s.views[0].id).unwrap();
+            assert_eq!(doc.signatures.len(), 1);
+            let sig = &doc.signatures[0];
+            assert!(sig.signed && sig.visible && sig.page == Some(0));
+            let badge = widget_badge(sig).expect("a badge for the signed widget");
+            assert_eq!((badge.icon, badge.color), ("triangle-alert", Color32::from_rgb(0xE6, 0x86, 0x19)));
+            let view = &s.views[0];
+            let xf = view.page_xform(0).expect("a painted page transform");
+            let plates = widget_plates(&doc.signatures, 0, &xf, &doc.info);
+            assert_eq!(plates.len(), 1);
+            let r = sig.rect.unwrap();
+            let sr = xf.user_rect(&doc.info, 0, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]);
+            assert_eq!(plates[0].cover, sr, "the opaque plate hides the whole baked appearance");
+            assert_eq!(plates[0].badge.icon, "triangle-alert");
+            // No green tick pixels while untrusted: the yellow warning plate paints no green.
+            assert_eq!(stamp_pixels(&mut h, sr).0, 0, "no green tick before trust");
+        }
+        // Trusting the signer turns the badge green without touching the document.
+        let before = h.state().session.get(h.state().views[0].id).unwrap().bytes.clone();
+        h.state_mut().trust_certificate(signer);
+        h.run_steps(3);
+        {
+            let s = h.state();
+            let doc = s.session.get(s.views[0].id).unwrap();
+            assert_eq!(*before, *doc.bytes, "revalidation must not rewrite the file");
+            let sig = &doc.signatures[0];
+            let badge = widget_badge(sig).expect("a badge for the signed widget");
+            assert_eq!((badge.icon, badge.color), ("circle-check", Color32::from_rgb(0x2D, 0x9D, 0x78)));
+            assert_eq!(banner(&doc.signatures).map(|b| b.0), Some("circle-check"));
+            // The plate is unchanged geometrically — only the verdict flipped — and it
+            // still covers the widget, so no stale "not verified" look can leak through.
+            let view = &s.views[0];
+            let xf = view.page_xform(0).expect("a painted page transform");
+            let plates = widget_plates(&doc.signatures, 0, &xf, &doc.info);
+            assert_eq!(plates.len(), 1);
+            let r = sig.rect.unwrap();
+            let sr = xf.user_rect(&doc.info, 0, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]);
+            assert_eq!(plates[0].cover, sr);
+            assert!(plates[0].badge.label.contains("valid") && !plates[0].badge.label.contains("unknown"));
+            // The complete visual state travels with the plate: tick + valid text +
+            // signer details, with a signing date for the details line.
+            assert!(plates[0].signer.as_deref().is_some_and(|s| !s.trim().is_empty()));
+            assert!(plates[0].date.as_deref().is_some_and(|s| !s.trim().is_empty()));
+            let status_w = plates[0].badge.label.len() as f32 * 7.0;
+            let layout = plate_layout(sr, status_w).expect("a layout for the real widget");
+            assert!(layout.status_size > 0.0 && layout.text_x < sr.right());
+        }
+        // Actual pixels: the stamp paints green tick pixels and dark title/body text
+        // inside the widget cover — the rendering regression test.
+        let cover = h.state().session.get(h.state().views[0].id).unwrap().signatures[0].rect.map(|r| {
+            let s = h.state();
+            let doc = s.session.get(s.views[0].id).unwrap();
+            let xf = s.views[0].page_xform(0).expect("a painted page transform");
+            xf.user_rect(&doc.info, 0, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32])
+        });
+        let cover = cover.expect("a widget rect");
+        let (green, dark) = stamp_pixels(&mut h, cover);
+        assert!(green >= 40, "the green tick painted only {green} pixels in {cover:?}");
+        assert!(dark >= 15, "the stamp title/body painted only {dark} pixels in {cover:?}");
+        if let Ok(path) = std::env::var("PDFCRAFT_STAMP_SHOT") {
+            let image = h.render().expect("a rendered frame");
+            image.save(&path).unwrap();
+        }
     }
 }

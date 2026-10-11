@@ -594,7 +594,11 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                         }
                     }
                     RightPanel::Signatures => {
-                        sig_action = crate::sign_ui::panel(ui, &t, &doc.signatures, sig_expanded);
+                        let trust = pdfcraft_engine::TrustStore { certs: app.session.trusted_certificates().to_vec() };
+                        let reports: Vec<pdfcraft_engine::SignatureReport> =
+                            doc.signatures.iter().map(|s| pdfcraft_engine::sign::verify::report_for(s, &trust)).collect();
+                        let cca_trusted = app.session.cca_roots_trusted();
+                        sig_action = crate::sign_ui::panel(ui, &t, &doc.signatures, &reports, cca_trusted, sig_expanded);
                     }
                     RightPanel::Accessibility => {
                         a11y_action = crate::a11y_ui::panel(ui, &t, a11y, id);
@@ -662,6 +666,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     }
     match sig_action {
         Some(crate::sign_ui::PanelAction::Validate) => app.run_command("sign.validate"),
+        Some(crate::sign_ui::PanelAction::TrustCca) => app.trust_cca_roots(),
         Some(crate::sign_ui::PanelAction::GoTo(p)) => app.views[index].go_to_page(p),
         Some(crate::sign_ui::PanelAction::Trust(c)) => app.trust_certificate(*c),
         Some(crate::sign_ui::PanelAction::ViewCertificate(chain)) => {

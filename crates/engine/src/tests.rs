@@ -1699,6 +1699,46 @@ fn signing_saving_trusting_and_commenting_afterwards() {
 }
 
 #[test]
+fn cca_roots_verify_with_separated_verdicts() {
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+    let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
+    let mut s = Session::new().with_clock(|| 1_800_000_000);
+    // Fresh sessions already trust the bundled CCA roots, so e-Aadhaar chains validate
+    // without setup; importing them again is a no-op.
+    assert!(s.cca_roots_trusted());
+    assert_eq!(s.trust_cca_roots().unwrap(), 0);
+    assert_eq!(s.trusted_certificates().len(), 2);
+    let id = s.open("fixture.pdf", None, Arc::new(fixture(1)), None).unwrap();
+    // Unsigned: nothing to verify.
+    let v = s.verify_signatures(id, VerifyTrust::Both).unwrap();
+    assert_eq!((v.summary.signed, v.summary.overall.as_str()), (0, "no-signatures"));
+    assert_eq!(v.trust_roots, 2, "the bundled CCA roots are consulted");
+    assert!(v.cca_trusted);
+    // Sign with a test ID: intact but untrusted — the CCA roots do not cover it.
+    let opts = SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() };
+    let signed = s.sign(id, &digital_id, opts).unwrap();
+    s.mark_signed(id, signed, None).unwrap();
+    let v = s.verify_signatures(id, VerifyTrust::Both).unwrap();
+    assert_eq!(v.summary.overall.as_str(), "untrusted");
+    assert_eq!(v.reports.len(), 1);
+    assert!(matches!(v.reports[0].integrity, sign::verify::Integrity::Intact));
+    // The panel's backing store agrees: valid cryptography, unknown identity.
+    let sig = &s.get(id).unwrap().signatures[0];
+    assert_eq!(sig.status, SignatureStatus::Unknown);
+    // Trusting the signer itself makes the signature valid (green).
+    s.set_trusted_certificates(vec![digital_id.certificate.clone()]);
+    assert!(!s.cca_roots_trusted(), "replacing the store drops the CCA roots");
+    let v = s.verify_signatures(id, VerifyTrust::Both).unwrap();
+    assert_eq!(v.summary.overall.as_str(), "valid");
+    assert!(v.reports[0].details.iter().any(|d| d.contains("identity is valid")), "{:?}", v.reports[0].details);
+    assert_eq!(s.get(id).unwrap().signatures[0].status, SignatureStatus::Valid);
+    // Re-adding the CCA roots keeps the signature valid and restores e-Aadhaar trust.
+    assert_eq!(s.trust_cca_roots().unwrap(), 2);
+    assert!(s.cca_roots_trusted());
+    assert_eq!(s.get(id).unwrap().signatures[0].status, SignatureStatus::Valid);
+}
+
+#[test]
 #[ignore = "timing probe"]
 fn probe_edit_latency_on_a_large_signed_document() {
     // ~120 MB: one page whose content stream is large.

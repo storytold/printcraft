@@ -111,6 +111,10 @@ pub use pdfcraft_redact::patterns::{
 };
 pub use pdfcraft_redact::sanitize::{HIDDEN, Hidden};
 pub use pdfcraft_sign as sign;
+pub use pdfcraft_sign::verify::{
+    CertValidity as SignatureCertValidity, DocumentSummary as SignatureDocumentSummary, Integrity as SignatureIntegrity,
+    Revocation as SignatureRevocation, SignatureReport, TimeSource as SignatureTimeSource, Trust as SignatureTrust,
+};
 pub use pdfcraft_sign::{SignOptions, SignatureInfo, Status as SignatureStatus, TrustStore};
 pub use pdfcraft_xfdf::Format as DataFormat;
 
@@ -2032,13 +2036,14 @@ impl From<pdfcraft_sign::SignError> for EditError {
     }
 }
 
-#[derive(Default)]
 pub struct Session {
     docs: Vec<Document>,
     next_id: u64,
     /// Seconds since the Unix epoch, injected so saves are deterministic in tests.
     clock: Option<fn() -> i64>,
-    /// Certificates trusted for signing (Acrobat: Trusted Certificates).
+    /// Certificates trusted for signing (Acrobat: Trusted Certificates). New sessions
+    /// already trust the bundled CCA India roots, so genuine e-Aadhaar signatures
+    /// validate without setup; anything else still needs its root added.
     trust: Arc<TrustStore>,
     /// Preferences ▸ JavaScript ▸ Enable Acrobat JavaScript, inverted (on by default).
     js_off: bool,
@@ -2046,6 +2051,12 @@ pub struct Session {
     date_format: Option<String>,
     /// Preferences ▸ Date format ▸ Language, when not following the interface language.
     date_language: Option<String>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Lay a dynamic XFA form out (pages and fields) and give its widgets appearances.
@@ -2142,14 +2153,53 @@ fn xfa_values_from_datasets(doc: &mut pdfcraft_cos::Document) -> Result<Vec<Stri
     Ok(changed)
 }
 
+/// Which trust anchors signature verification consults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VerifyTrust {
+    /// The session's trusted certificates.
+    Session,
+    /// Only the bundled CCA India roots (e-Aadhaar).
+    Cca,
+    /// Both the session trust and the bundled CCA India roots (default).
+    #[default]
+    Both,
+}
+
+/// Signature verification with separated verdicts (see [`pdfcraft_sign::verify`]).
+pub struct SignatureVerification {
+    /// One report per signature field.
+    pub reports: Vec<SignatureReport>,
+    /// The document-level verdict.
+    pub summary: SignatureDocumentSummary,
+    /// How many trust anchors were consulted.
+    pub trust_roots: usize,
+    /// Which trust anchors were consulted.
+    pub trust_mode: VerifyTrust,
+    /// The bundled CCA India roots are in the session trust store.
+    pub cca_trusted: bool,
+}
+
 /// Validate the signature fields of `cos` (written as `bytes`).
 fn signatures_of(cos: &pdfcraft_cos::Document, bytes: &[u8], trust: &TrustStore, cache: &pdfcraft_sign::DigestCache) -> Arc<Vec<SignatureInfo>> {
     Arc::new(pdfcraft_sign::pdf::list_cached(cos, bytes, trust, cache))
 }
 
 impl Session {
+    /// A new session. The bundled CCA India roots (e-Aadhaar) are trusted out of the
+    /// box, so genuine e-Aadhaar signatures validate green without setup; any other
+    /// signer still needs its root added. The store can be extended or cleared (which
+    /// revalidates open documents), and trust is always by chain to a stored root,
+    /// never by name.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            docs: Vec::new(),
+            next_id: 0,
+            clock: None,
+            trust: Arc::new(pdfcraft_sign::cca::trust_store().unwrap_or_default()),
+            js_off: false,
+            date_format: None,
+            date_language: None,
+        }
     }
 
     /// Use a fixed clock (tests) instead of the system time.
@@ -3170,6 +3220,51 @@ impl Session {
                 doc.signatures = signatures_of(&e.cos, &doc.bytes, &doc.trust, &doc.sig_cache);
             }
         }
+    }
+
+    /// Whether the bundled CCA India roots (e-Aadhaar) are trusted in this session.
+    pub fn cca_roots_trusted(&self) -> bool {
+        pdfcraft_sign::cca::certificates().map(|roots| roots.iter().all(|r| self.trust.certs.iter().any(|c| c.raw == r.raw))).unwrap_or(false)
+    }
+
+    /// Trust the bundled CCA India roots for e-Aadhaar verification and revalidate
+    /// every open document. Returns how many roots were added.
+    pub fn trust_cca_roots(&mut self) -> Result<usize, EditError> {
+        let roots = pdfcraft_sign::cca::certificates()?;
+        let mut certs = self.trust.certs.clone();
+        let mut added = 0;
+        for r in roots {
+            if !certs.iter().any(|c| c.raw == r.raw) {
+                certs.push(r);
+                added += 1;
+            }
+        }
+        self.set_trusted_certificates(certs);
+        Ok(added)
+    }
+
+    /// Verify a document's signatures with separated verdicts (integrity, trust,
+    /// certificate validity, revocation, later changes). The bundled CCA India roots
+    /// are consulted according to `trust_mode` without changing the session trust —
+    /// the e-Aadhaar flow. Everything runs locally.
+    pub fn verify_signatures(&self, id: DocId, trust_mode: VerifyTrust) -> Result<SignatureVerification, EditError> {
+        let doc = self.get(id).ok_or(EditError::NoDocument)?;
+        let editor = doc.editor.as_ref().ok_or_else(|| EditError::ReadOnly(doc.read_only_reason.clone().unwrap_or_default()))?;
+        let mut trust = match trust_mode {
+            VerifyTrust::Session => self.trust.as_ref().clone(),
+            VerifyTrust::Cca => TrustStore { certs: Vec::new() },
+            VerifyTrust::Both => self.trust.as_ref().clone(),
+        };
+        if matches!(trust_mode, VerifyTrust::Cca | VerifyTrust::Both) {
+            for r in pdfcraft_sign::cca::certificates()? {
+                if !trust.certs.iter().any(|c| c.raw == r.raw) {
+                    trust.certs.push(r);
+                }
+            }
+        }
+        let reports = pdfcraft_sign::verify::verify_doc(&editor.cos, &doc.bytes, &trust);
+        let summary = pdfcraft_sign::verify::summarize(&reports);
+        Ok(SignatureVerification { reports, summary, trust_roots: trust.certs.len(), trust_mode, cca_trusted: self.cca_roots_trusted() })
     }
 
     /// The signing time as a PDF date in local time with its offset (`D:…+02'00'`).

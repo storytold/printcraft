@@ -169,6 +169,44 @@ fn read_mode_closes_the_panes_and_leaving_it_brings_them_back() {
     assert_eq!(h.state().right, Some(RightPanel::Pages));
 }
 
+/// A pane closed in Read mode stays closed on the way out: leaving Read mode doesn't bring back the
+/// pane saved on the way in, and closing Comments keeps its close preference.
+#[test]
+fn a_pane_closed_in_read_mode_stays_closed_when_leaving_it() {
+    use pdfcraft_ui_egui::{Mode, RightPanel};
+    let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
+    assert_eq!(h.state().right, Some(RightPanel::Comments));
+    h.get_by_label("Read").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, None);
+    // Open Comments from the rail, then close it again.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, Some(RightPanel::Comments));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, None);
+    assert!(h.state().comments_panel_closed);
+    // Leave Read mode through the toolbar.
+    h.get_by_label("All tools").click();
+    h.run_steps(3);
+    assert_eq!(h.state().mode, Mode::AllTools);
+    assert_eq!(h.state().right, None, "the pane closed in Read mode stays closed");
+    assert!(h.state().comments_panel_closed);
+    // The same through the Read mode command.
+    h.state_mut().choose_right_panel(Some(RightPanel::Comments));
+    h.state_mut().run_command("view.read_mode");
+    h.run_steps(2);
+    assert_eq!(h.state().mode, Mode::Read);
+    h.state_mut().choose_right_panel(Some(RightPanel::Comments));
+    h.state_mut().choose_right_panel(None);
+    h.state_mut().run_command("view.read_mode");
+    h.run_steps(3);
+    assert_ne!(h.state().mode, Mode::Read);
+    assert_eq!(h.state().right, None);
+    assert!(h.state().comments_panel_closed);
+}
+
 /// A right-to-left file name opens, lays out and paints; the tab's accessible name keeps the
 /// logical text (only the painted label is put in visual order).
 #[test]

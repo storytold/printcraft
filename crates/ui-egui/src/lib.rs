@@ -398,7 +398,8 @@ pub struct PdfCraftApp {
     pub left_open: bool,
     pub right: Option<RightPanel>,
     /// The right panel that was open when the user switched to Read mode, which starts with the
-    /// panes closed; leaving Read mode brings it back unless another one was opened meanwhile.
+    /// panes closed; leaving Read mode brings it back unless the user opened or closed a pane in
+    /// Read mode meanwhile.
     right_before_read: Option<RightPanel>,
     /// The user closed the Comments panel, so picking a comment tool leaves it closed until they
     /// open it again (#225). Remembered across restarts.
@@ -1374,8 +1375,12 @@ impl PdfCraftApp {
     }
 
     /// Opens a right panel, or closes it with `None`, because the user chose to. Closing Comments
-    /// keeps comment tools from reopening it; opening it again lets them (#225).
+    /// keeps comment tools from reopening it; opening it again lets them (#225). A choice made in
+    /// Read mode replaces the pane saved on the way in, so leaving Read mode doesn't undo it.
     pub fn choose_right_panel(&mut self, panel: Option<RightPanel>) {
+        if self.mode == Mode::Read {
+            self.right_before_read = None;
+        }
         if panel == Some(RightPanel::Comments) {
             self.comments_panel_closed = false;
         } else if panel.is_none() && self.right == Some(RightPanel::Comments) {

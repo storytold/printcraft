@@ -5,6 +5,10 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, GlyphId, MetadataProvider};
 
 static FONT: &[u8] = include_bytes!("../../../assets/fonts/DancingScript.ttf");
+/// Characters the script face lacks (Cyrillic, Greek, ...) draw in the bundled Inter face
+/// instead of vanishing: it carries Latin, Greek and Cyrillic including the Serbian letters
+/// (#846), and it is already shipped, so AGENTS.md §1.4's no-system-fonts-in-PDFs rule holds.
+static FALLBACK: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
 
 /// Bound signature work while allowing long personal names.
 pub const MAX_SIGNATURE_CHARS: usize = 256;
@@ -178,8 +182,9 @@ pub(crate) fn bounded_outline(font: &FontRef, gid: GlyphId, width: f64) -> Resul
     Ok(GlyphOutline { contours: pen.contours, width, bbox })
 }
 
-/// The outlines of `text` in the script font (characters it lacks are skipped).
-/// Over-limit input returns an empty outline instead of a silently truncated signature.
+/// The outlines of `text` in the script font (characters it lacks draw in the bundled Inter
+/// face, so Cyrillic and Greek signatures stay visible). Over-limit input returns an empty
+/// outline instead of a silently truncated signature.
 pub fn script_outline(text: &str) -> ScriptOutline {
     if text.chars().take(MAX_SIGNATURE_CHARS + 1).count() > MAX_SIGNATURE_CHARS {
         return ScriptOutline::default();
@@ -191,12 +196,32 @@ pub fn script_outline(text: &str) -> ScriptOutline {
     let charmap = font.charmap();
     let glyphs = font.outline_glyphs();
     let advances = font.glyph_metrics(Size::unscaled(), loc);
+    // The fallback face: its glyphs are drawn in its own em scale.
+    let fallback = FontRef::new(FALLBACK).ok();
     let mut pen = Flatten::new(scale);
     // The 4096-point budget is for one untrusted document glyph (japanese_glyph), not a
     // whole signature in our bundled font. Keep a separate bounded budget for the line.
     pen.max_points = 262_144;
     for ch in text.chars() {
-        let Some(gid) = charmap.map(ch) else { continue };
+        let Some(gid) = charmap.map(ch) else {
+            // Not in the script face: draw it in the fallback face, in its own em scale, and
+            // advance by its own width. Characters neither face has are still skipped.
+            let Some(f) = &fallback else { continue };
+            let cm = f.charmap();
+            let Some(gid) = cm.map(ch) else { continue };
+            let gl = f.outline_glyphs();
+            let ad = f.glyph_metrics(Size::unscaled(), loc);
+            let sc = 1.0 / f.metrics(Size::unscaled(), loc).units_per_em.max(1) as f64;
+            if let Some(g) = gl.get(gid) {
+                let line_scale = pen.scale;
+                pen.scale = sc;
+                let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), loc), &mut pen);
+                pen.scale = line_scale;
+                pen.close();
+            }
+            pen.dx += ad.advance_width(gid).unwrap_or(0.0) as f64 * sc;
+            continue;
+        };
         if let Some(g) = glyphs.get(gid) {
             let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), loc), &mut pen);
             pen.close();
@@ -222,6 +247,19 @@ mod tests {
         assert!(max_x > o.width - 0.5, "ink reaches the last letter: {max_x} / {}", o.width);
         assert!(!super::script_outline(&"W".repeat(super::MAX_SIGNATURE_CHARS)).contours.is_empty());
         assert!(super::script_outline(&"W".repeat(super::MAX_SIGNATURE_CHARS + 1)).contours.is_empty());
+    }
+
+    #[test]
+    fn serbian_cyrillic_draws_in_the_fallback_face() {
+        // Dancing Script has no Cyrillic at all (#846): before the fallback, every character
+        // of a Serbian name was skipped and the signature came out empty.
+        let o = super::script_outline("Tamara Ђорђевић");
+        assert!(!o.contours.is_empty(), "the Cyrillic part must draw in the fallback face");
+        assert!(o.width > 2.0, "{}", o.width);
+        // A pure-Cyrillic name is not empty either.
+        assert!(!super::script_outline("Ђорђе Јовановић").contours.is_empty());
+        // Characters neither face has are still skipped, not drawn as boxes.
+        assert_eq!(super::script_outline("\u{1F984}").contours.len(), 0);
     }
 
     #[test]

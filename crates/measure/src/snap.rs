@@ -74,6 +74,20 @@ fn nearest(p: Point, a: Point, b: Point) -> Point {
     let t = (dot(sub(p, a), v) / length).clamp(0.0, 1.0);
     [a[0] + v[0] * t, a[1] + v[1] * t]
 }
+/// Save a subpath's implicit closing edge for fill operations. An unpainted or
+/// stroke-only open path must not gain that edge.
+fn remember_close(closures: &mut Vec<[Point; 2]>, current: Option<Point>, start: Option<Point>) -> bool {
+    if let (Some(a), Some(b)) = (current, start)
+        && distance(a, b) > 1e-9
+    {
+        if closures.len() >= MAX_SEGMENTS {
+            return false;
+        }
+        closures.push([a, b]);
+    }
+    true
+}
+
 impl Geometry {
     /// Dense intersection searches are capped independently from path extraction.
     pub fn intersection_limited(&self, at: Point, tolerance: f64) -> bool {
@@ -233,6 +247,7 @@ impl Walker<'_> {
         let mut stack = Vec::new();
         let mut start = None;
         let mut current = None;
+        let mut closures = Vec::new();
         let mut path = Geometry::default();
         let point = |m: Matrix, x: f64, y: f64| {
             let (x, y) = m.apply(x, y);
@@ -265,6 +280,10 @@ impl Walker<'_> {
                 }
                 "m" => {
                     if let Some([x, y]) = op.nums::<2>() {
+                        if !remember_close(&mut closures, current, start) {
+                            self.geometry.truncated = true;
+                            break;
+                        }
                         let p = point(matrix, x, y);
                         current = Some(p);
                         start = Some(p);
@@ -309,6 +328,10 @@ impl Walker<'_> {
                 }
                 "re" => {
                     if let Some([x, y, w, h]) = op.nums::<4>() {
+                        if !remember_close(&mut closures, current, start) {
+                            self.geometry.truncated = true;
+                            break;
+                        }
                         let a = point(matrix, x, y);
                         let b = point(matrix, x + w, y);
                         let c = point(matrix, x + w, y + h);
@@ -321,8 +344,24 @@ impl Walker<'_> {
                     }
                 }
                 "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => {
-                    // Fills close open subpaths implicitly (ISO 32000-2 8.5.3.3); only a bare stroke leaves the path open.
-                    if String::from_utf8_lossy(&op.op).as_ref() != "S"
+                    let paint = String::from_utf8_lossy(&op.op);
+                    if matches!(paint.as_ref(), "f" | "F" | "f*" | "B" | "B*" | "b" | "b*") {
+                        if !remember_close(&mut closures, current, start) {
+                            self.geometry.truncated = true;
+                            break;
+                        }
+                        // Filling implicitly closes every open subpath, not just the last one.
+                        // Stroke-only S leaves its open subpaths unchanged.
+                        for [a, b] in closures.drain(..) {
+                            if self.geometry.segments.len().saturating_add(path.segments.len()) >= MAX_SEGMENTS
+                                || self.geometry.targets().saturating_add(path.targets()) >= MAX_TARGETS
+                            {
+                                path.truncated = true;
+                                break;
+                            }
+                            path.edge(a, b);
+                        }
+                    } else if paint == "s"
                         && let (Some(a), Some(b)) = (current, start)
                     {
                         path.edge(a, b);
@@ -331,12 +370,14 @@ impl Walker<'_> {
                     self.geometry.endpoints.append(&mut path.endpoints);
                     self.geometry.midpoints.append(&mut path.midpoints);
                     self.geometry.truncated |= path.truncated;
+                    closures.clear();
                     current = None;
                     start = None;
                 }
                 "n" => {
                     self.geometry.truncated |= path.truncated;
                     path = Geometry::default();
+                    closures.clear();
                     current = None;
                     start = None;
                 }

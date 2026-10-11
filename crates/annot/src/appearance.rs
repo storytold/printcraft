@@ -9,8 +9,15 @@
 //! The note icons are PdfCraft's own drawings (AGENTS.md §1). Text boxes use the standard
 //! Helvetica font with WinAnsi encoding; line breaking uses [`text_width`], an approximation of
 //! Helvetica's proportions by character class (no font program or metrics file is bundled).
+//! Text that WinAnsi can't write (Japanese, Czech, Greek, …) is drawn with Type 3 fallback fonts
+//! built from the craft-fonts glyphs, with a ToUnicode map and nothing embedded; without
+//! craft-fonts those characters stay `?`. [`text_measure`] and [`text_wrap`] measure text the way
+//! the box draws it. The fonts' streams are inline here; `set_appearance` makes them indirect.
+
+use std::collections::HashSet;
 
 use pdfcraft_cos::{Dict, Object, PdfString, Stream};
+use pdfcraft_fonts::{MAX_TYPE3_FONTS, MAX_TYPE3_GLYPHS, Type3Plan, build_type3, japanese_type3_plan, win_ansi_encodable, wrap_with};
 pub use pdfcraft_fonts::{helvetica_width as text_width, wrap};
 use pdfcraft_fonts::{literal, win_ansi};
 
@@ -24,6 +31,115 @@ pub fn arrow_size(w: f64) -> f64 {
 /// Nominal radius of a cloudy border's bumps for a line of width `w` (intensity 1).
 pub fn cloud_radius(w: f64) -> f64 {
     6.0 + 1.5 * w.max(0.0)
+}
+
+/// A font a line of FreeText is drawn in: Helvetica with WinAnsi, or one of the Type 3 fallback
+/// fonts (`/PCJp0`, `/PCJp1`, …) that carry what WinAnsi can't.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Face {
+    Helv,
+    Fallback(usize),
+}
+
+impl Face {
+    fn name(self) -> String {
+        match self {
+            Face::Helv => "Helv".into(),
+            Face::Fallback(i) => format!("PCJp{i}"),
+        }
+    }
+}
+
+/// The fallback fonts for the characters of `text` that WinAnsi can't write. `None` when WinAnsi
+/// covers all of it (the text is then written exactly as before) or when this build has no
+/// fallback face (craft-fonts); those characters then show as `?`.
+fn fallback_plan(text: &str) -> Option<Type3Plan> {
+    // The plan itself caps what it draws; this only keeps hostile text from growing the list.
+    const MAX_DISTINCT: usize = MAX_TYPE3_GLYPHS * MAX_TYPE3_FONTS;
+    let mut seen = HashSet::new();
+    let mut chars = Vec::new();
+    for ch in text.chars() {
+        if !matches!(ch, '\n' | '\r') && !win_ansi_encodable(ch) && seen.insert(ch) {
+            chars.push(ch);
+            if chars.len() >= MAX_DISTINCT {
+                break;
+            }
+        }
+    }
+    if chars.is_empty() {
+        return None;
+    }
+    japanese_type3_plan(&chars, false, false)
+}
+
+/// Advance of `s` at `size`: Helvetica's estimate for what WinAnsi writes, the fallback glyph's
+/// own advance for the rest (`?`'s for a character neither can draw).
+fn measure(plan: Option<&Type3Plan>, s: &str, size: f64) -> f64 {
+    let Some(plan) = plan else { return text_width(s, size) };
+    let mut total = 0.0;
+    let mut run = String::new();
+    for ch in s.chars() {
+        if win_ansi_encodable(ch) {
+            run.push(ch);
+            continue;
+        }
+        total += text_width(&run, size);
+        run.clear();
+        total += plan.width(ch).map_or_else(|| text_width("?", size), |w| w * size);
+    }
+    total + text_width(&run, size)
+}
+
+/// [`wrap`] with the advances of [`measure`].
+fn wrap_planned(plan: Option<&Type3Plan>, text: &str, size: f64, width: f64) -> Vec<String> {
+    wrap_with(text, size, width, |s, size| measure(plan, s, size))
+}
+
+/// `line` as runs of string bytes, each for the font that draws it. A character neither font can
+/// draw becomes `?` in Helvetica, as WinAnsi always did.
+fn runs(plan: Option<&Type3Plan>, line: &str) -> Vec<(Face, Vec<u8>)> {
+    let mut out: Vec<(Face, Vec<u8>)> = Vec::new();
+    let mut buf = [0u8; 4];
+    for ch in line.chars() {
+        let (face, byte) = if win_ansi_encodable(ch) {
+            (Face::Helv, win_ansi(ch.encode_utf8(&mut buf)).first().copied().unwrap_or(b'?'))
+        } else if let Some((font, code)) = plan.and_then(|p| p.code(ch)) {
+            (Face::Fallback(font), code)
+        } else {
+            (Face::Helv, b'?')
+        };
+        match out.last_mut() {
+            Some((last, bytes)) if *last == face => bytes.push(byte),
+            _ => out.push((face, vec![byte])),
+        }
+    }
+    if out.is_empty() {
+        out.push((Face::Helv, Vec::new()));
+    }
+    out
+}
+
+fn hex_string(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() * 2 + 2);
+    out.push(b'<');
+    out.extend(bytes.iter().flat_map(|b| format!("{b:02X}").into_bytes()));
+    out.push(b'>');
+    out
+}
+
+/// The width of the widest line of `text` at `size`, measured as [`build`] lays out a FreeText:
+/// Helvetica estimates for what WinAnsi writes and the fallback glyphs' own advances for the rest.
+/// Size a text box with this and [`text_wrap`], not [`text_width`], or text outside WinAnsi
+/// overflows the box that was fitted to it.
+pub fn text_measure(text: &str, size: f64) -> f64 {
+    let plan = fallback_plan(text);
+    text.split(['\n', '\r']).map(|line| measure(plan.as_ref(), line, size)).fold(0.0, f64::max)
+}
+
+/// [`wrap`] for the lines [`build`] draws (one fallback font choice for the whole text, so a
+/// line breaks where it will be drawn).
+pub fn text_wrap(text: &str, size: f64, width: f64) -> Vec<String> {
+    wrap_planned(fallback_plan(text).as_ref(), text, size, width)
 }
 
 /// One of the ten `/LE` names (ISO 32000-2 Table 217). Unknown names are not drawn.
@@ -683,19 +799,36 @@ pub fn build(d: &Dict) -> Option<Stream> {
             ));
             let mut out = c.into_bytes();
             let mut y = rect[3] - pad - size * 0.9;
-            for line in wrap(&text, size, width) {
+            // Text WinAnsi can't write is drawn with a Type 3 font of fallback glyphs (when this
+            // build has them); a text that WinAnsi covers is written exactly as it always was.
+            let plan = fallback_plan(&text);
+            let mut current = Face::Helv;
+            for line in wrap_planned(plan.as_ref(), &text, size, width) {
                 if y < rect[1] - size {
                     break;
                 }
-                let lw = text_width(&line, size);
+                let lw = measure(plan.as_ref(), &line, size);
                 let x = match q {
                     1 => rect[0] + pad + (width - lw) / 2.0,
                     2 => rect[2] - pad - lw,
                     _ => rect[0] + pad,
                 };
                 out.extend(format!("1 0 0 1 {} {} Tm ", n(x), n(y)).bytes());
-                out.extend(literal(&win_ansi(&line)));
-                out.extend_from_slice(b" Tj\n");
+                for (i, (face, bytes)) in runs(plan.as_ref(), &line).into_iter().enumerate() {
+                    if i > 0 {
+                        out.push(b' ');
+                    }
+                    if face != current {
+                        out.extend(format!("/{} {} Tf ", face.name(), n(size)).bytes());
+                        current = face;
+                    }
+                    match face {
+                        Face::Helv => out.extend(literal(&bytes)),
+                        Face::Fallback(_) => out.extend(hex_string(&bytes)),
+                    }
+                    out.extend_from_slice(b" Tj");
+                }
+                out.push(b'\n');
                 y -= size * 1.2;
             }
             out.extend_from_slice(b"ET\n");
@@ -706,6 +839,12 @@ pub fn build(d: &Dict) -> Option<Stream> {
             font.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
             let mut fonts = Dict::new();
             fonts.set(b"Helv".to_vec(), Object::Dict(font));
+            if let Some(plan) = &plan {
+                // Left inline: `set_appearance` makes their streams and descriptors indirect.
+                for (i, f) in build_type3(plan, |o| o).into_iter().enumerate() {
+                    fonts.set(Face::Fallback(i).name().into_bytes(), Object::Dict(f.font));
+                }
+            }
             res.set(b"Font".to_vec(), Object::Dict(fonts));
             return Some(form(full, &out, res));
         }

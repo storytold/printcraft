@@ -25,6 +25,7 @@ mcp = ["dep:base64"]
 
 [dev-dependencies]
 pdfcraft-cos = { workspace = true }
+pdfcraft-fonts = { workspace = true }
 pdfcraft-model = { workspace = true }
 pdfcraft-xfa = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

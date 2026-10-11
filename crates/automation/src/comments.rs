@@ -481,7 +481,7 @@ impl Automation {
         }
         let size = 10.0;
         let text_at = |t: &str| {
-            let w = (pdfcraft_engine::annot_text::text_width(t, size) + 8.0).clamp(20.0, 600.0);
+            let w = (pdfcraft_engine::annot_text::text_measure(t, size) + 8.0).clamp(20.0, 600.0);
             let h = size * 1.2 + 6.0;
             Shape::Typewriter { rect: [at[0], at[1] - h, at[0] + w, at[1]], font_size: size }
         };

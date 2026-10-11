@@ -1096,3 +1096,307 @@ fn drawings_resize_by_scaling_their_strokes() {
     // Too small to hold the stroke margin.
     assert!(matches!(set_rect(&mut doc, 0, i, [100.0, 400.0, 101.0, 401.0], &meta("")), Err(AnnotError::Invalid(_))));
 }
+
+// --- Text outside WinAnsi (#506) ---
+
+/// The Japanese fallback face comes from craft-fonts, an optional build input.
+fn without_craft_fonts(test: &str) -> bool {
+    if pdfcraft_fonts::document_japanese_font().is_some() {
+        return false;
+    }
+    eprintln!("skipping {test}: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+    true
+}
+
+fn free_text(text: &str, q: i64) -> Dict {
+    let mut d = Dict::new();
+    d.set(b"Subtype".to_vec(), Object::name("FreeText"));
+    d.set(b"Rect".to_vec(), Object::Array([100.0, 100.0, 220.0, 150.0].iter().map(|x| Object::Real(*x)).collect()));
+    d.set(b"Contents".to_vec(), PdfString::text(text));
+    d.set(b"DA".to_vec(), PdfString::literal(b"/Helv 12 Tf 0 0 1 rg".to_vec()));
+    d.set(b"Q".to_vec(), Object::Int(q));
+    d
+}
+
+/// Text WinAnsi covers is written exactly as it was before Type 3 fallback fonts existed. The
+/// expected streams were taken from the output of the code before that change.
+#[test]
+fn winansi_text_is_written_byte_for_byte_as_before() {
+    let cases: [(&str, i64, &str); 4] = [
+        ("Plain", 0, r"100 100 120 50 re W n\nBT\n/Helv 12 Tf\n0 0 1 rg\n1 0 0 1 102 137.2 Tm (Plain) Tj\nET\n"),
+        ("Café — 5€", 0, r"100 100 120 50 re W n\nBT\n/Helv 12 Tf\n0 0 1 rg\n1 0 0 1 102 137.2 Tm (Caf\xe9 \x97 5\x80) Tj\nET\n"),
+        ("Café — 5€", 1, r"100 100 120 50 re W n\nBT\n/Helv 12 Tf\n0 0 1 rg\n1 0 0 1 133.618 137.2 Tm (Caf\xe9 \x97 5\x80) Tj\nET\n"),
+        (
+            "Plain text that wraps onto a second line (ok)\nnew para",
+            2,
+            r"100 100 120 50 re W n\nBT\n/Helv 12 Tf\n0 0 1 rg\n1 0 0 1 106.892 137.2 Tm (Plain text that wraps) Tj\n1 0 0 1 119.684 122.8 Tm (onto a second line) Tj\n1 0 0 1 197.336 108.4 Tm (\\(ok\\)) Tj\n1 0 0 1 168.86 94 Tm (new para) Tj\nET\n",
+        ),
+    ];
+    for (text, q, expected) in cases {
+        let stream = appearance::build(&free_text(text, q)).expect("builds");
+        assert_eq!(stream.decoded().unwrap().escape_ascii().to_string(), expected, "{text:?} (Q {q})");
+        let fonts = stream.dict.get(b"Resources").and_then(Object::as_dict).and_then(|r| r.get(b"Font")).and_then(Object::as_dict).unwrap();
+        assert_eq!(fonts.len(), 1, "only Helvetica for {text:?}");
+    }
+}
+
+/// The text a FreeText appearance shows, one string per line, read back the way a viewer does:
+/// each string through the map of the font selected at that point.
+fn drawn_lines(doc: &Document, d: &Dict) -> Vec<String> {
+    use pdfcraft_fonts::pdf::Metrics;
+    let n = d.get(b"AP").map(|a| doc.resolve(a)).and_then(|a| a.as_dict().and_then(|a| a.reference(b"N"))).expect("has /AP /N");
+    let Object::Stream(s) = &*doc.get(n) else { panic!("AP is not a stream") };
+    let res = s.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).expect("resources");
+    let fonts = res.get(b"Font").map(|f| doc.resolve(f)).and_then(|f| f.as_dict().cloned()).expect("fonts");
+    let metrics = |name: &[u8]| {
+        let font = fonts.get(name).map(|f| doc.resolve(f)).and_then(|f| f.as_dict().cloned()).expect("font in resources");
+        Metrics::from_dict(doc, &font)
+    };
+    let content = s.decoded().unwrap();
+    let mut lines = Vec::new();
+    // The font selected by `Tf` stays selected on the next line.
+    let mut font = metrics(b"Helv");
+    for line in content.split(|b| *b == b'\n') {
+        let Some(at) = line.windows(4).position(|w| w == b" Tm ") else { continue };
+        let mut rest = &line[at + 4..];
+        let mut text = String::new();
+        while let Some(&c) = rest.first() {
+            match c {
+                b' ' => rest = &rest[1..],
+                b'/' => {
+                    let end = rest.iter().position(|b| *b == b' ').unwrap();
+                    font = metrics(&rest[1..end]);
+                    // Skip "/Name size Tf".
+                    let tf = rest.windows(2).position(|w| w == b"Tf").unwrap();
+                    rest = &rest[tf + 2..];
+                }
+                b'(' => {
+                    let mut bytes = Vec::new();
+                    let mut i = 1;
+                    while rest[i] != b')' {
+                        if rest[i] == b'\\' {
+                            i += 1;
+                        }
+                        bytes.push(rest[i]);
+                        i += 1;
+                    }
+                    text.push_str(&font.decode(&bytes));
+                    rest = &rest[i + 1..];
+                }
+                b'<' => {
+                    let end = rest.iter().position(|b| *b == b'>').unwrap();
+                    let hex = std::str::from_utf8(&rest[1..end]).unwrap();
+                    let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+                    text.push_str(&font.decode(&bytes));
+                    rest = &rest[end + 1..];
+                }
+                _ => {
+                    // The Tj operator.
+                    assert!(rest.starts_with(b"Tj"), "unexpected {:?}", String::from_utf8_lossy(rest));
+                    rest = &rest[2..];
+                }
+            }
+        }
+        lines.push(text);
+    }
+    lines
+}
+
+/// A text box holding `text`, saved and reopened.
+fn saved_text_box(text: &str) -> (Document, usize) {
+    let mut doc = fixture();
+    let t = add_annotation(&mut doc, &new(0, Shape::TextBox { rect: [20.0, 500.0, 320.0, 560.0], font_size: 12.0 }), &meta("t")).unwrap();
+    set_contents(&mut doc, 0, t, text, &meta("")).unwrap();
+    (reopen(&doc), t)
+}
+
+fn normal_stream(doc: &Document, d: &Dict) -> pdfcraft_cos::Stream {
+    let n = d.get(b"AP").map(|a| doc.resolve(a)).and_then(|a| a.as_dict().and_then(|a| a.reference(b"N"))).expect("has /AP /N");
+    let Object::Stream(s) = &*doc.get(n) else { panic!("AP is not a stream") };
+    s.clone()
+}
+
+#[test]
+fn non_winansi_text_is_drawn_with_type3_fonts_and_reads_back() {
+    if without_craft_fonts("non_winansi_text_is_drawn_with_type3_fonts_and_reads_back") {
+        return;
+    }
+    for text in ["日本語のテキスト", "Dvořák", "Ελληνικά", "Hello 日本語 world (ok)", "Café — 5€ と ř"] {
+        let (doc, t) = saved_text_box(text);
+        let d = &list(&doc, 0)[t];
+        assert_eq!(self::text(d, b"Contents"), text);
+        assert_eq!(drawn_lines(&doc, d).concat(), text, "{text:?}");
+        assert!(!ap_content(&doc, d).contains('?'), "{text:?} has no question marks");
+    }
+}
+
+#[test]
+fn type3_parts_of_an_appearance_are_indirect_objects() {
+    if without_craft_fonts("type3_parts_of_an_appearance_are_indirect_objects") {
+        return;
+    }
+    let (doc, t) = saved_text_box("日本語 Dvořák");
+    let s = normal_stream(&doc, &list(&doc, 0)[t]);
+    let res = s.dict.get(b"Resources").and_then(Object::as_dict).unwrap();
+    let fonts = res.get(b"Font").and_then(Object::as_dict).unwrap();
+    assert!(fonts.contains(b"Helv"));
+    let font = doc.resolve(fonts.get(b"PCJp0").expect("a Type 3 fallback font")).as_dict().cloned().unwrap();
+    assert_eq!(font.name(b"Subtype"), Some(&b"Type3"[..]));
+    assert!(font.reference(b"ToUnicode").is_some(), "ToUnicode is an indirect stream");
+    assert!(font.reference(b"FontDescriptor").is_some(), "the descriptor is indirect");
+    let procs = doc.resolve(font.get(b"CharProcs").unwrap()).as_dict().cloned().unwrap();
+    assert!(!procs.is_empty());
+    for (name, proc) in procs.iter() {
+        let r = proc.as_ref().unwrap_or_else(|| panic!("glyph {} is inline", String::from_utf8_lossy(name)));
+        assert!(matches!(&*doc.get(r), Object::Stream(_)));
+    }
+}
+
+#[test]
+fn make_nested_indirect_leaves_references_and_stops_at_the_depth_limit() {
+    // The number the next added object gets.
+    fn next(doc: &mut Document) -> u32 {
+        doc.add(Object::Null).num
+    }
+    let mut doc = fixture();
+    let shared = ObjRef::new(6, 0);
+    let mut procs = Dict::new();
+    procs.set(b"a".to_vec(), Object::Stream(pdfcraft_cos::Stream::from_raw(Dict::new(), b"0 0 d0".to_vec())));
+    procs.set(b"b".to_vec(), Object::Ref(shared));
+    let mut descriptor = Dict::new();
+    descriptor.set(b"FontName".to_vec(), Object::name("X"));
+    let mut font = Dict::new();
+    font.set(b"Subtype".to_vec(), Object::name("Type3"));
+    font.set(b"CharProcs".to_vec(), Object::Dict(procs));
+    font.set(b"FontDescriptor".to_vec(), Object::Dict(descriptor));
+    let mut fonts = Dict::new();
+    fonts.set(b"F".to_vec(), Object::Dict(font));
+    let mut res_dict = Dict::new();
+    res_dict.set(b"Font".to_vec(), Object::Dict(fonts));
+    let mut res = Object::Dict(res_dict);
+    let before = next(&mut doc);
+    make_nested_indirect(&mut doc, &mut res, 0);
+    assert_eq!(next(&mut doc), before + 3, "the glyph and the descriptor are added; the shared reference is not");
+    let font = res.as_dict().and_then(|r| r.get(b"Font")).and_then(Object::as_dict).and_then(|f| f.get(b"F")).and_then(Object::as_dict).unwrap();
+    assert!(font.reference(b"FontDescriptor").is_some());
+    let procs = font.get(b"CharProcs").and_then(Object::as_dict).unwrap();
+    assert!(procs.reference(b"a").is_some());
+    assert_eq!(procs.reference(b"b"), Some(shared));
+
+    // A very deep dictionary is not followed past the limit (and does not overflow the stack).
+    let mut deep = Object::Stream(pdfcraft_cos::Stream::from_raw(Dict::new(), Vec::new()));
+    for _ in 0..10_000 {
+        let mut d = Dict::new();
+        d.set(b"K".to_vec(), deep);
+        deep = Object::Dict(d);
+    }
+    let before = next(&mut doc);
+    make_nested_indirect(&mut doc, &mut deep, 0);
+    assert_eq!(next(&mut doc), before + 1, "nothing was added");
+}
+
+#[test]
+fn a_japanese_text_box_keeps_every_line_inside_its_rectangle() {
+    if without_craft_fonts("a_japanese_text_box_keeps_every_line_inside_its_rectangle") {
+        return;
+    }
+    // Helvetica's estimate for these is about half of a full-width character's real advance, so a
+    // box fitted that way would lose its last lines to the clip.
+    let text = "これは長い日本語の文章です。折り返しがあっても、すべての行が枠の中に描かれなければなりません。".repeat(3);
+    let (doc, t) = saved_text_box(&text);
+    let d = &list(&doc, 0)[t];
+    let lines = drawn_lines(&doc, d);
+    assert_eq!(lines.concat(), text, "no line is dropped");
+    let r = rect(d);
+    let content = ap_content(&doc, d);
+    let lowest = content
+        .lines()
+        .filter(|l| l.contains(" Tm "))
+        .filter_map(|l| l.split_whitespace().nth(5).and_then(|y| y.parse::<f64>().ok()))
+        .fold(f64::MAX, f64::min);
+    assert!(lowest >= r[1], "the last line's baseline {lowest} is inside the box (bottom {})", r[1]);
+    assert_eq!(lines.len(), appearance::text_wrap(&text, 12.0, r[2] - r[0] - 4.0).len());
+}
+
+#[test]
+fn text_measure_uses_the_fallback_advances() {
+    assert_eq!(appearance::text_measure("Plain text", 12.0), appearance::text_width("Plain text", 12.0));
+    assert_eq!(appearance::text_measure("one\nlonger line", 10.0), appearance::text_width("longer line", 10.0));
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    if without_craft_fonts("text_measure_uses_the_fallback_advances") {
+        // Without a fallback face the characters are drawn as `?` and measured as before.
+        assert_eq!(appearance::text_measure("日本", 10.0), appearance::text_width("日本", 10.0));
+        return;
+    }
+    let w = appearance::text_measure("日本語", 10.0);
+    assert!((25.0..=35.0).contains(&w), "three ideographs are about three ems wide: {w}");
+    // WinAnsi letters outside ASCII are Helvetica too, not fallback glyphs.
+    let accented = appearance::text_measure("é日", 10.0);
+    assert!(close(accented, appearance::text_width("é", 10.0) + appearance::text_measure("日", 10.0)));
+    let mixed = appearance::text_measure("ab日", 10.0);
+    assert!((mixed - (appearance::text_width("ab", 10.0) + appearance::text_measure("日", 10.0))).abs() < 1e-9);
+    // A character no face has is measured as `?`, as it is drawn.
+    assert!(close(appearance::text_measure("日\u{10fffe}", 10.0) - appearance::text_measure("日", 10.0), appearance::text_width("?", 10.0)));
+}
+
+#[test]
+fn more_than_240_distinct_characters_use_more_fonts_and_the_rest_becomes_question_marks() {
+    if without_craft_fonts("more_than_240_distinct_characters_use_more_fonts_and_the_rest_becomes_question_marks") {
+        return;
+    }
+    let chars: Vec<char> = (0x4E00u32..0x4E00 + 1000).filter_map(char::from_u32).collect();
+    let text: String = chars.iter().collect();
+    let (doc, t) = saved_text_box(&text);
+    let d = &list(&doc, 0)[t];
+    let s = normal_stream(&doc, d);
+    let fonts = s.dict.get(b"Resources").and_then(Object::as_dict).and_then(|r| r.get(b"Font")).and_then(Object::as_dict).unwrap();
+    // Not every ideograph is in the face, so the plan says how many fonts the glyphs fill.
+    let plan = pdfcraft_fonts::japanese_type3_plan(&chars, false, false).expect("plan");
+    let count = plan.font_count();
+    assert!((2..=pdfcraft_fonts::MAX_TYPE3_FONTS).contains(&count), "more than 240 characters need more fonts: {count}");
+    assert!(fonts.contains(format!("PCJp{}", count - 1).as_bytes()) && !fonts.contains(format!("PCJp{count}").as_bytes()));
+    let drawn: Vec<char> = drawn_lines(&doc, d).concat().chars().collect();
+    assert_eq!(drawn.len(), chars.len());
+    for (got, want) in drawn.iter().zip(&chars) {
+        assert_eq!(*got, if plan.can_draw(*want) { *want } else { '?' }, "{want}");
+    }
+    let limit = pdfcraft_fonts::MAX_TYPE3_GLYPHS * pdfcraft_fonts::MAX_TYPE3_FONTS;
+    assert!(drawn[limit..].iter().all(|c| *c == '?'), "characters past the limit are `?`");
+}
+
+#[test]
+fn without_craft_fonts_non_winansi_text_is_still_question_marks() {
+    if pdfcraft_fonts::document_japanese_font().is_some() {
+        eprintln!("skipping without_craft_fonts_non_winansi_text_is_still_question_marks: built with craft-fonts");
+        return;
+    }
+    let stream = appearance::build(&free_text("日本 Dvořák", 0)).expect("builds");
+    let content = stream.decoded().unwrap();
+    let needle = b"(?? Dvo?\xe1k) Tj";
+    assert!(content.windows(needle.len()).any(|w| w == needle), "{}", content.escape_ascii());
+    let fonts = stream.dict.get(b"Resources").and_then(Object::as_dict).and_then(|r| r.get(b"Font")).and_then(Object::as_dict).unwrap();
+    assert_eq!(fonts.len(), 1);
+}
+
+/// A box whose old width is unusable is re-fitted to its text at creation-time proportions, and
+/// the text is measured with the advances it is drawn with.
+#[test]
+fn refitting_a_zero_width_box_measures_text_outside_winansi_by_its_real_advances() {
+    if without_craft_fonts("refitting_a_zero_width_box_measures_text_outside_winansi_by_its_real_advances") {
+        return;
+    }
+    let mut doc = fixture();
+    let t = add_annotation(&mut doc, &new(0, Shape::TextBox { rect: [20.0, 500.0, 320.0, 560.0], font_size: 12.0 }), &meta("t")).unwrap();
+    let page = page_refs(&doc).unwrap()[0];
+    let r = annots(&doc, page)[t].as_ref().unwrap();
+    doc.update_dict(r, |d| d.set(b"Rect".to_vec(), Object::Array([20.0, 500.0, 20.0, 560.0].iter().map(|x| Object::Real(*x)).collect()))).unwrap();
+    let text = "日本語日本語";
+    set_contents(&mut doc, 0, t, text, &meta("")).unwrap();
+    let d = &list(&doc, 0)[t];
+    let rect = rect(d);
+    let width = rect[2] - rect[0];
+    let measured = appearance::text_measure(text, 12.0);
+    assert!(width >= measured + 4.0, "the box ({width}) holds the text ({measured})");
+    assert!(width > appearance::text_width(text, 12.0) + 12.0, "not sized by Helvetica's estimate: {width}");
+    assert_eq!(drawn_lines(&doc, d), [text], "on one line");
+}

@@ -1250,6 +1250,53 @@ pub fn orient_image_stamp(doc: &mut Document, page: usize, index: usize, rotatio
     Ok(())
 }
 
+/// How deep into `/Resources` [`set_appearance`] looks for inline objects that must be indirect:
+/// resources → fonts → font → char procs → glyph, with room to spare.
+const MAX_INLINE_DEPTH: usize = 8;
+
+/// Make the streams nested in `o`, and the font descriptor of a Type 3 font, indirect objects.
+///
+/// [`appearance::build`] returns a self-contained stream; a stream or a Type 3 font descriptor
+/// inside a dictionary must be an indirect object (ISO 32000-2 §7.3.8, §9.6.5), but the writer
+/// would write it inline. Existing references are left alone (the target is shared and already
+/// indirect), and so is anything deeper than [`MAX_INLINE_DEPTH`].
+fn make_nested_indirect(doc: &mut Document, o: &mut Object, depth: usize) {
+    if depth >= MAX_INLINE_DEPTH {
+        return;
+    }
+    match o {
+        Object::Dict(d) => {
+            let type3 = d.name(b"Subtype") == Some(b"Type3");
+            let keys: Vec<Vec<u8>> = d.iter().map(|(k, _)| k.clone()).collect();
+            for key in keys {
+                let descriptor = type3 && key == b"FontDescriptor";
+                if let Some(v) = d.get_mut(&key) {
+                    make_value_indirect(doc, v, depth, descriptor);
+                }
+            }
+        }
+        Object::Array(items) => {
+            for v in items {
+                make_value_indirect(doc, v, depth, false);
+            }
+        }
+        Object::Stream(s) => {
+            if let Some(res) = s.dict.get_mut(b"Resources") {
+                make_nested_indirect(doc, res, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn make_value_indirect(doc: &mut Document, v: &mut Object, depth: usize, descriptor: bool) {
+    make_nested_indirect(doc, v, depth + 1);
+    if matches!(v, Object::Stream(_)) || (descriptor && matches!(v, Object::Dict(_))) {
+        let inline = std::mem::replace(v, Object::Null);
+        *v = Object::Ref(doc.add(inline));
+    }
+}
+
 /// (Re)generate `/AP /N` for the annotation `r` from its dictionary.
 /// Regenerate an annotation's normal appearance from its dictionary.
 pub fn set_appearance(doc: &mut Document, r: ObjRef) -> Result<(), AnnotError> {
@@ -1267,6 +1314,10 @@ pub fn set_appearance(doc: &mut Document, r: ObjRef) -> Result<(), AnnotError> {
         if let Some(matrix) = matrix {
             stream.dict.set(b"Matrix".to_vec(), matrix);
         }
+    }
+    // Fonts the appearance carries (Type 3 fallback glyphs) arrive inline; they must be indirect.
+    if let Some(res) = stream.dict.get_mut(b"Resources") {
+        make_nested_indirect(doc, res, 0);
     }
     let ap = doc.add(Object::Stream(stream));
     // A copy (a shared /AP is left alone) that keeps unknown entries; the old down and rollover
@@ -1439,10 +1490,10 @@ fn fitted_box(doc: &Document, r: ObjRef, text: &str) -> Option<[f64; 4]> {
         w
     } else {
         // No usable old width: fall back to the creation-time width (at most 300 pt).
-        let longest = text.lines().map(|l| appearance::text_width(l, size)).fold(0.0, f64::max);
+        let longest = appearance::text_measure(text, size);
         (longest + 2.0 * pad + 4.0).clamp(40.0, 300.0)
     };
-    let lines = appearance::wrap(text, size, (w - 2.0 * pad).max(1.0)).len().max(1) as f64;
+    let lines = appearance::text_wrap(text, size, (w - 2.0 * pad).max(1.0)).len().max(1) as f64;
     Some([x0, top - lines * size * 1.2 - 2.0 * pad - 2.0, x0 + w, top])
 }
 

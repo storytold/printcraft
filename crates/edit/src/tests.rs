@@ -656,6 +656,180 @@ fn japanese_paragraph_uses_unicode_type3_fallback() {
     assert_eq!(text::text_blocks(&reopened, 0).unwrap()[0].text, replacement);
 }
 
+/// The first `n` Japanese characters, in code point order, that every craft-fonts face can draw, so
+/// whichever face an edit picks has them all. Without craft-fonts there are no faces, every character
+/// passes, and the text is still long.
+fn covered_japanese_chars(n: usize) -> String {
+    let faces = pdfcraft_fonts::document_japanese_fonts_for_style(false, false);
+    (0x4E00..0xA000)
+        .filter_map(char::from_u32)
+        .filter(|ch| faces.iter().all(|face| pdfcraft_fonts::japanese_glyph_from(face, *ch).is_ok()))
+        .take(n)
+        .collect()
+}
+
+/// The page's Type 3 fallback fonts (`PCJp`, `PCJp1`, ...) by resource name.
+fn fallback_fonts(doc: &Document) -> Vec<(Vec<u8>, Dict)> {
+    let p = pdfcraft_model::pages(doc).swap_remove(0);
+    let res = doc.resolve(p.dict.get(b"Resources").unwrap());
+    let fonts = doc.resolve(res.as_dict().unwrap().get(b"Font").unwrap());
+    fonts
+        .as_dict()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name.starts_with(b"PCJp"))
+        .map(|(name, font)| (name.clone(), doc.resolve(font).as_dict().unwrap().clone()))
+        .collect()
+}
+
+/// More unique fallback glyphs than one Type 3 font holds (240) are split across several generated
+/// fonts, each within that limit, and the text still reads back as one line.
+#[test]
+fn japanese_replacement_over_240_unique_glyphs_is_split_across_fallback_fonts() {
+    let replacement = covered_japanese_chars(300);
+    let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    if without_craft_fonts("japanese_replacement_over_240_unique_glyphs_is_split_across_fallback_fonts") {
+        // Without craft-fonts the long text gets the clear error, not the old limit message.
+        let err = text::replace_line(&mut doc, 0, 0, &replacement).unwrap_err().to_string();
+        assert!(err.contains("CRAFT_FONTS_DIR"), "{err}");
+        return;
+    }
+    text::replace_line(&mut doc, 0, 0, &replacement).unwrap();
+    let reopened = reopen(&doc);
+    let lines = text::text_lines(&reopened, 0).unwrap();
+    assert_eq!(lines.len(), 1, "one line: {:?}", lines.iter().map(|l| &l.text).collect::<Vec<_>>());
+    assert_eq!(lines[0].text, replacement);
+    let fonts = fallback_fonts(&reopened);
+    assert_eq!(fonts.len(), 2, "300 glyphs take a 240-glyph font and a 60-glyph font");
+    let mut glyphs = 0;
+    for (name, font) in &fonts {
+        let procs = reopened.resolve(font.get(b"CharProcs").unwrap());
+        let count = procs.as_dict().unwrap().len();
+        let last = font.get(b"LastChar").and_then(|o| o.as_int()).unwrap_or(i64::MAX);
+        assert!(count <= 240 && last <= 240, "{name:?}: {count} glyphs, LastChar {last}");
+        glyphs += count;
+    }
+    assert_eq!(glyphs, 300);
+}
+
+/// A replacement whose last glyph no face draws (in a later font) changes nothing: neither the
+/// document nor a snapshot taken before the edit, which is what undo restores.
+#[test]
+fn japanese_replacement_missing_a_glyph_after_240_changes_nothing() {
+    if without_craft_fonts("japanese_replacement_missing_a_glyph_after_240_changes_nothing") {
+        return;
+    }
+    // The first CJK character that no face draws: the 242nd unique character, in a second font.
+    let faces = pdfcraft_fonts::document_japanese_fonts_for_style(false, false);
+    let missing = (0x4E00u32..0x9FFF)
+        .filter_map(char::from_u32)
+        .find(|ch| faces.iter().all(|face| pdfcraft_fonts::japanese_glyph_from(face, *ch).is_err()))
+        .expect("some CJK character is outside every face");
+    let replacement = format!("{}{missing}", covered_japanese_chars(241));
+    let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
+    let snapshot = doc.clone();
+    let err = text::replace_line(&mut doc, 0, 0, &replacement).unwrap_err().to_string();
+    assert!(err.contains(&format!("U+{:04X}", missing as u32)), "{err}");
+    assert_eq!(write_incremental(&doc, &SaveOptions::default()).unwrap(), saved);
+    assert_eq!(write_incremental(&snapshot, &SaveOptions::default()).unwrap(), saved);
+}
+
+/// Runs that change font move nothing: with two glyphs per font the text reads back the same, in the
+/// same box as with one font, and the font is switched only where the text moves to another font.
+#[test]
+fn japanese_fallback_split_across_fonts_keeps_order_and_positions() {
+    if without_craft_fonts("japanese_fallback_split_across_fonts_keeps_order_and_positions") {
+        return;
+    }
+    // 見 and 商 are in the first font, 御 in the second: runs [見商], [御], [見], three switches.
+    let replacement = "見商御見";
+    let mut whole = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    let mut split = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    text::replace_line_with_limit(&mut whole, 0, 0, replacement, 240).unwrap();
+    text::replace_line_with_limit(&mut split, 0, 0, replacement, 2).unwrap();
+    let (whole, split) = (reopen(&whole), reopen(&split));
+    assert_eq!(fallback_fonts(&whole).len(), 1);
+    assert_eq!(fallback_fonts(&split).len(), 2);
+    let (one, many) = (text::text_lines(&whole, 0).unwrap(), text::text_lines(&split, 0).unwrap());
+    assert_eq!(many.len(), 1, "one line: {:?}", many.iter().map(|l| &l.text).collect::<Vec<_>>());
+    assert_eq!(many[0].text, replacement);
+    for (a, b) in one[0].rect.iter().zip(many[0].rect.iter()) {
+        assert!((a - b).abs() < 1e-6, "box {:?} vs {:?}", one[0].rect, many[0].rect);
+    }
+    // One `Tf` per run plus the page's own switch to F2 and the switch back after the text.
+    let content = String::from_utf8_lossy(&page_content_bytes(&split, 0)).into_owned();
+    assert_eq!(content.matches(" Tf").count(), 5, "{content}");
+    let content = String::from_utf8_lossy(&page_content_bytes(&whole, 0)).into_owned();
+    assert_eq!(content.matches(" Tf").count(), 3, "{content}");
+}
+
+/// Only a change of font gets a `Tf`: alternating characters with one glyph per font switch at every
+/// character, and a run of one font's characters switches nowhere.
+#[test]
+fn japanese_fallback_switches_font_only_between_runs() {
+    if without_craft_fonts("japanese_fallback_switches_font_only_between_runs") {
+        return;
+    }
+    let alternating = "見商".repeat(500);
+    let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    text::replace_line_with_limit(&mut doc, 0, 0, &alternating, 1).unwrap();
+    let reopened = reopen(&doc);
+    assert_eq!(text::text_lines(&reopened, 0).unwrap()[0].text, alternating);
+    let content = String::from_utf8_lossy(&page_content_bytes(&reopened, 0)).into_owned();
+    assert_eq!(content.matches(" Tf").count(), 1000 + 2, "1000 runs, the F2 switch before and after");
+    let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    text::replace_line_with_limit(&mut doc, 0, 0, "見見見", 1).unwrap();
+    let content = String::from_utf8_lossy(&page_content_bytes(&reopen(&doc), 0)).into_owned();
+    assert_eq!(content.matches(" Tf").count(), 1 + 1 + 1, "{content}");
+}
+
+/// A paragraph set in several fallback fonts reads back as one block with the same text, and it
+/// wraps across lines.
+#[test]
+fn japanese_paragraph_split_across_fonts_reads_back_as_one_block() {
+    if without_craft_fonts("japanese_paragraph_split_across_fonts_reads_back_as_one_block") {
+        return;
+    }
+    // Spaces are glyphs too, so two glyphs per font needs several fonts; the narrow box wraps the text.
+    let replacement = "見 商 御 見 商";
+    let style = text::BlockStyle { width: Some(40.0), ..Default::default() };
+    let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    text::rewrite_block_with_limit(&mut doc, 0, 0, Some(replacement), &style, 2).unwrap();
+    let reopened = reopen(&doc);
+    assert!(fallback_fonts(&reopened).len() >= 2);
+    let blocks = text::text_blocks(&reopened, 0).unwrap();
+    assert_eq!(blocks.len(), 1, "one paragraph: {:?}", blocks.iter().map(|b| &b.text).collect::<Vec<_>>());
+    assert_eq!(blocks[0].text, replacement);
+    assert!(blocks[0].lines.len() > 1, "wrapped to {} line(s)", blocks[0].lines.len());
+}
+
+/// A paragraph whose move or width is refused (not finite, or drawn in a space it cannot be moved in)
+/// leaves the document as it was: the fallback fonts are written only once the edit is accepted.
+#[test]
+fn japanese_paragraph_refused_before_its_fallback_fonts_are_written() {
+    if without_craft_fonts("japanese_paragraph_refused_before_its_fallback_fonts_are_written") {
+        return;
+    }
+    let plain = "BT /F2 12 Tf 72 700 Td (ab) Tj ET";
+    let cases = [
+        (plain, text::BlockStyle { offset: Some([f64::NAN, 0.0]), ..Default::default() }, "can't be moved that far"),
+        (plain, text::BlockStyle { width: Some(f64::INFINITY), ..Default::default() }, "width must be a number"),
+        (
+            "0 0 0 0 0 0 cm BT /F2 12 Tf 72 700 Td (ab) Tj ET",
+            text::BlockStyle { offset: Some([5.0, 0.0]), ..Default::default() },
+            "can't be moved in",
+        ),
+    ];
+    for (content, style, message) in cases {
+        let mut doc = text_page(content);
+        let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
+        let err = text::rewrite_block(&mut doc, 0, 0, Some("見本商会　御中"), &style).unwrap_err().to_string();
+        assert!(err.contains(message), "{err}");
+        assert_eq!(write_incremental(&doc, &SaveOptions::default()).unwrap(), saved, "{message}: the document changed");
+    }
+}
+
 /// Every Type 3 fallback glyph starts with a well-formed `d1`: six operands, the second 0, and a
 /// box that encloses every point of the glyph. Acrobat shows a bullet for a glyph whose `d1`
 /// has the wrong operand count.

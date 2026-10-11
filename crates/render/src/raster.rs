@@ -69,7 +69,7 @@ impl RenderConfig {
         InterpreterSettings {
             ocg_overrides: self.layers.clone(),
             hide_comments: self.hide_comments,
-            font_resolver: Arc::new(move |query| japanese_fallback(query).or_else(|| standard(query))),
+            font_resolver: Arc::new(move |query| japanese_fallback(query).or_else(|| standard_or_fallback_font(query)).or_else(|| standard(query))),
             ..InterpreterSettings::default()
         }
     }
@@ -119,6 +119,167 @@ fn japanese_face(name: &str, serif: bool, bold: bool) -> JapaneseFace {
         JapaneseFace::Gothic { bold }
     } else {
         JapaneseFace::Mincho
+    }
+}
+
+/// Larger files are not read: a font path is still untrusted input.
+const MAX_FONT_BYTES: u64 = 32 << 20;
+
+fn read_font_file(path: &Path) -> Option<FontData> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_FONT_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    Some(Arc::new(bytes))
+}
+
+fn system_font(names: &[&str]) -> Option<FontData> {
+    if std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0") {
+        return None;
+    }
+    for dir in system_font_dirs() {
+        for &name in names {
+            let p = dir.join(name);
+            if let Some(data) = read_font_file(&p) {
+                return Some(data);
+            }
+        }
+    }
+    None
+}
+
+fn system_font_dirs() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        let dir = std::env::var_os("WINDIR").or_else(|| std::env::var_os("SystemRoot")).map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        let mut dirs = vec![dir.join("Fonts")];
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("Microsoft").join("Windows").join("Fonts"));
+        }
+        dirs
+    } else if cfg!(target_os = "macos") {
+        vec![PathBuf::from("/System/Library/Fonts/Supplemental"), PathBuf::from("/System/Library/Fonts"), PathBuf::from("/Library/Fonts")]
+    } else {
+        vec![
+            PathBuf::from("/usr/share/fonts/truetype/liberation"),
+            PathBuf::from("/usr/share/fonts/truetype/dejavu"),
+            PathBuf::from("/usr/share/fonts/liberation"),
+            PathBuf::from("/usr/share/fonts/dejavu"),
+            PathBuf::from("/usr/share/fonts/truetype"),
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/usr/local/share/fonts"),
+        ]
+    }
+}
+
+fn sans_fallback(bold: bool, italic: bool) -> (FontData, u32) {
+    static SANS_REGULAR: OnceLock<FontData> = OnceLock::new();
+    static SANS_BOLD: OnceLock<FontData> = OnceLock::new();
+    static SANS_ITALIC: OnceLock<FontData> = OnceLock::new();
+    static SANS_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
+
+    let cell = match (bold, italic) {
+        (true, true) => &SANS_BOLD_ITALIC,
+        (true, false) => &SANS_BOLD,
+        (false, true) => &SANS_ITALIC,
+        (false, false) => &SANS_REGULAR,
+    };
+
+    let data = cell.get_or_init(|| {
+        let names = match (bold, italic) {
+            (true, true) => &["Arial Bold Italic.ttf", "arialbi.ttf", "LiberationSans-BoldItalic.ttf", "DejaVuSans-BoldOblique.ttf"][..],
+            (true, false) => &["Arial Bold.ttf", "arialbd.ttf", "LiberationSans-Bold.ttf", "DejaVuSans-Bold.ttf"][..],
+            (false, true) => &["Arial Italic.ttf", "ariali.ttf", "LiberationSans-Italic.ttf", "DejaVuSans-Oblique.ttf"][..],
+            (false, false) => &["Arial.ttf", "arial.ttf", "LiberationSans-Regular.ttf", "DejaVuSans.ttf", "Helvetica.ttc"][..],
+        };
+        if let Some(data) = system_font(names) {
+            return data;
+        }
+        if bold { Arc::new(pdfcraft_fonts::INTER_SEMIBOLD) } else { Arc::new(pdfcraft_fonts::INTER_REGULAR) }
+    });
+
+    (data.clone(), 0)
+}
+
+fn mono_fallback(bold: bool, italic: bool) -> (FontData, u32) {
+    static MONO_REGULAR: OnceLock<FontData> = OnceLock::new();
+    static MONO_BOLD: OnceLock<FontData> = OnceLock::new();
+
+    let cell = if bold || italic { &MONO_BOLD } else { &MONO_REGULAR };
+    let data = cell.get_or_init(|| {
+        let names = if bold && italic {
+            &["Courier New Bold Italic.ttf", "courbi.ttf", "LiberationMono-BoldItalic.ttf", "DejaVuSansMono-BoldOblique.ttf"][..]
+        } else if bold {
+            &["Courier New Bold.ttf", "courbd.ttf", "LiberationMono-Bold.ttf", "DejaVuSansMono-Bold.ttf"][..]
+        } else if italic {
+            &["Courier New Italic.ttf", "couri.ttf", "LiberationMono-Italic.ttf", "DejaVuSansMono-Oblique.ttf"][..]
+        } else {
+            &["Courier New.ttf", "cour.ttf", "LiberationMono-Regular.ttf", "DejaVuSansMono.ttf"][..]
+        };
+        if let Some(data) = system_font(names) {
+            return data;
+        }
+        Arc::new(pdfcraft_fonts::JETBRAINS_MONO)
+    });
+
+    (data.clone(), 0)
+}
+
+fn serif_fallback(bold: bool, italic: bool) -> Option<(FontData, u32)> {
+    static SERIF_REGULAR: OnceLock<Option<FontData>> = OnceLock::new();
+    static SERIF_BOLD: OnceLock<Option<FontData>> = OnceLock::new();
+    static SERIF_ITALIC: OnceLock<Option<FontData>> = OnceLock::new();
+    static SERIF_BOLD_ITALIC: OnceLock<Option<FontData>> = OnceLock::new();
+
+    let cell = match (bold, italic) {
+        (true, true) => &SERIF_BOLD_ITALIC,
+        (true, false) => &SERIF_BOLD,
+        (false, true) => &SERIF_ITALIC,
+        (false, false) => &SERIF_REGULAR,
+    };
+
+    let data = cell.get_or_init(|| {
+        let names = match (bold, italic) {
+            (true, true) => &["Times New Roman Bold Italic.ttf", "timesbi.ttf", "LiberationSerif-BoldItalic.ttf", "DejaVuSerif-BoldItalic.ttf"][..],
+            (true, false) => &["Times New Roman Bold.ttf", "timesbd.ttf", "LiberationSerif-Bold.ttf", "DejaVuSerif-Bold.ttf"][..],
+            (false, true) => &["Times New Roman Italic.ttf", "timesi.ttf", "LiberationSerif-Italic.ttf", "DejaVuSerif-Italic.ttf"][..],
+            (false, false) => &["Times New Roman.ttf", "times.ttf", "LiberationSerif-Regular.ttf", "DejaVuSerif.ttf", "Times.ttc"][..],
+        };
+        system_font(names)
+    });
+
+    data.as_ref().map(|d| (d.clone(), 0))
+}
+
+fn standard_or_fallback_font(query: &FontQuery) -> Option<(FontData, u32)> {
+    match query {
+        FontQuery::Standard(s) => match s {
+            StandardFont::Helvetica => Some(sans_fallback(false, false)),
+            StandardFont::HelveticaBold => Some(sans_fallback(true, false)),
+            StandardFont::HelveticaOblique => Some(sans_fallback(false, true)),
+            StandardFont::HelveticaBoldOblique => Some(sans_fallback(true, true)),
+            StandardFont::Courier => Some(mono_fallback(false, false)),
+            StandardFont::CourierBold => Some(mono_fallback(true, false)),
+            StandardFont::CourierOblique => Some(mono_fallback(false, true)),
+            StandardFont::CourierBoldOblique => Some(mono_fallback(true, true)),
+            StandardFont::TimesRoman => serif_fallback(false, false).or_else(|| Some(sans_fallback(false, false))),
+            StandardFont::TimesBold => serif_fallback(true, false).or_else(|| Some(sans_fallback(true, false))),
+            StandardFont::TimesItalic => serif_fallback(false, true).or_else(|| Some(sans_fallback(false, true))),
+            StandardFont::TimesBoldItalic => serif_fallback(true, true).or_else(|| Some(sans_fallback(true, true))),
+            StandardFont::Symbol | StandardFont::ZapfDingBats => None,
+        },
+        FontQuery::Fallback(f) => {
+            let name = f.post_script_name.as_deref().or(f.font_name.as_deref()).unwrap_or_default().to_ascii_lowercase();
+            let bold = f.is_bold || f.font_weight >= 600 || name.contains("bold");
+            let italic = f.is_italic || name.contains("italic") || name.contains("oblique");
+            if f.is_fixed_pitch || name.contains("mono") || name.contains("courier") {
+                Some(mono_fallback(bold, italic))
+            } else if f.is_serif || name.contains("serif") || name.contains("times") {
+                serif_fallback(bold, italic).or_else(|| Some(sans_fallback(bold, italic)))
+            } else {
+                Some(sans_fallback(bold, italic))
+            }
+        }
     }
 }
 
@@ -4898,5 +5059,56 @@ trailer << /Root 1 0 R >>
             let p = render(content);
             assert!([(5, 5), (50, 50), (95, 95)].iter().all(|(x, y)| px(&p, *x, *y) == red), "{content}: no stray clip");
         }
+    }
+
+    /// Non-embedded standard/fallback fonts with extended Latin glyphs (such as Romanian `ă`,
+    /// mapped via /Differences to /abreve) draw real glyphs rather than disappearing.
+    #[test]
+    fn non_embedded_fonts_with_extended_latin_glyphs_render() {
+        let content = "BT /F1 20 Tf 10 20 Td (\\343) Tj ET";
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 60] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /TrueType /BaseFont /Arial /FirstChar 32 /LastChar 255 /FontDescriptor 6 0 R /Encoding 7 0 R >> endobj
+6 0 obj << /Type /FontDescriptor /FontName /Arial /Flags 32 /FontBBox [-664 1005 2000 -324] /Ascent 905 /Descent -211 /ItalicAngle 0 /StemV 0 >> endobj
+7 0 obj << /BaseEncoding /WinAnsiEncoding /Differences [227 /abreve] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            content.len()
+        );
+        let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let inked = p.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+        assert!(inked > 30, "the Romanian abreve (ă) glyph is drawn ({inked} dark pixels)");
+    }
+
+    #[test]
+    fn type1_helvetica_with_differences_renders() {
+        let content = "BT /F1 20 Tf 10 20 Td (\\001\\002\\003) Tj ET";
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 60] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 7 0 R >> endobj
+7 0 obj << /BaseEncoding /WinAnsiEncoding /Differences [1 /abreve /scommaaccent /tcommaaccent] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            content.len()
+        );
+        let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let inked = p.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+        assert!(inked > 60, "the Romanian diacritics (ă, ș, ț) at codes 1, 2, 3 are drawn ({inked} dark pixels)");
     }
 }

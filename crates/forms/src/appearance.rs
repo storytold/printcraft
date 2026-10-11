@@ -157,12 +157,20 @@ fn dr_font(doc: &Document, name: &str) -> Option<(Object, FontText)> {
     Some((entry, FontText::WinAnsi))
 }
 
-fn helvetica() -> Object {
+pub(crate) fn appearance_font(base_font: &str, diffs: Option<Vec<Object>>) -> Object {
     let mut f = Dict::new();
     f.set(b"Type".to_vec(), Object::name("Font"));
     f.set(b"Subtype".to_vec(), Object::name("Type1"));
-    f.set(b"BaseFont".to_vec(), Object::name("Helvetica"));
-    f.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
+    f.set(b"BaseFont".to_vec(), Object::name(base_font));
+    if let Some(diffs) = diffs {
+        let mut enc = Dict::new();
+        enc.set(b"Type".to_vec(), Object::name("Encoding"));
+        enc.set(b"BaseEncoding".to_vec(), Object::name("WinAnsiEncoding"));
+        enc.set(b"Differences".to_vec(), Object::Array(diffs));
+        f.set(b"Encoding".to_vec(), Object::Dict(enc));
+    } else {
+        f.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
+    }
     Object::Dict(f)
 }
 
@@ -291,7 +299,8 @@ pub fn field_appearance_as(doc: &Document, f: &Field, w: &Widget, values: &[Stri
     let inner_w = (width - 2.0 * pad).max(1.0);
     let q = wd.get(b"Q").and_then(|o| doc.resolve(o).as_int()).unwrap_or(f.quadding);
     let mut body: Vec<u8> = Vec::new();
-    let show = |body: &mut Vec<u8>, x: f64, y: f64, text: &str| {
+    let mut encoder = AppearanceEncoder::new();
+    let mut show = |body: &mut Vec<u8>, x: f64, y: f64, text: &str| {
         body.extend(format!("1 0 0 1 {} {} Tm ", n(x), n(y)).bytes());
         body.extend(literal(&enc.encode(text)));
         body.extend_from_slice(b" Tj\n");
@@ -372,6 +381,20 @@ pub fn field_appearance_as(doc: &Document, f: &Field, w: &Widget, values: &[Stri
             }
         }
     }
+    let (font_name, font_obj) = if encoder.diffs.is_empty() {
+        match dr_font(doc, Some(&wd), &da.font) {
+            Some(o) => (da.font.clone(), o),
+            None => ("Helv".to_string(), appearance_font("Helvetica", None)),
+        }
+    } else {
+        let base_font = match da.font.to_ascii_lowercase().as_str() {
+            s if s.contains("tiro") || s.contains("times") => "Times-Roman",
+            s if s.contains("cour") || s.contains("mono") => "Courier",
+            _ => "Helvetica",
+        };
+        let font_name = if da.font.is_empty() { "Helv".to_string() } else { da.font.clone() };
+        (font_name, appearance_font(base_font, Some(encoder.diffs)))
+    };
     let mut content = c.into_bytes();
     content.extend(
         format!(

@@ -882,6 +882,9 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
     if let Ok(i) = crate::encodings::NAMES.binary_search_by(|(n, _)| (*n).cmp(name)) {
         return char::from_u32(crate::encodings::NAMES[i].1);
     }
+    if let Some(c) = crate::adobe_glyph_name_to_unicode(name) {
+        return Some(c);
+    }
     let hex = name.strip_prefix("uni").filter(|h| h.len() == 4).or_else(|| name.strip_prefix('u').filter(|h| (4..=6).contains(&h.len())))?;
     u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
 }

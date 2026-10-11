@@ -6,7 +6,7 @@
 //! immediately so every viewer shows the empty field.
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
-use pdfcraft_fonts::{helvetica_width, literal, win_ansi};
+use pdfcraft_fonts::{helvetica_width, literal};
 
 use crate::{Field, FieldKind, FormError, Widget, appearance, fields, flags, page_refs};
 
@@ -762,20 +762,18 @@ fn button_appearance(doc: &Document, w: &Widget) -> Stream {
             xobjects.set(b"Icon".to_vec(), Object::Ref(icon));
         }
     }
+    let mut encoder = crate::appearance::AppearanceEncoder::new();
     if !icon_only && !caption.is_empty() {
         let size = ((height - 4.0) * 0.6).clamp(4.0, 14.0);
         let tw = helvetica_width(&caption, size);
         content.extend(format!("BT /Helv {size:.2} Tf 0 g 1 0 0 1 {:.3} {:.3} Tm ", (width - tw) / 2.0, (height - size * 0.7) / 2.0).bytes());
-        content.extend(literal(&win_ansi(&caption)));
+        let encoded = encoder.encode(&caption);
+        content.extend(literal(&encoded));
         content.extend_from_slice(b" Tj ET\n");
     }
-    let mut font = Dict::new();
-    font.set(b"Type".to_vec(), Object::name("Font"));
-    font.set(b"Subtype".to_vec(), Object::name("Type1"));
-    font.set(b"BaseFont".to_vec(), Object::name("Helvetica"));
-    font.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
+    let font = crate::appearance::appearance_font("Helvetica", if encoder.diffs.is_empty() { None } else { Some(encoder.diffs) });
     let mut fonts = Dict::new();
-    fonts.set(b"Helv".to_vec(), Object::Dict(font));
+    fonts.set(b"Helv".to_vec(), font);
     let mut res = Dict::new();
     res.set(b"Font".to_vec(), Object::Dict(fonts));
     if !xobjects.is_empty() {

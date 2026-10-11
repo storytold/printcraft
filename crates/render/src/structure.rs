@@ -115,9 +115,9 @@ impl Structure for lopdf::Document {
     fn encrypted(&self) -> bool {
         self.is_encrypted() || self.was_encrypted() || self.trailer.has(b"Encrypt")
     }
-    fn get_pages(&self) -> BTreeMap<u32, ObjectId> {
-        self.get_pages()
-    }
+    // `get_pages` is not overridden: lopdf's own page-tree walk trusts /Count and pre-allocates
+    // by it, so a hostile /Count (a fuzz finding: 4294967295) aborted the process with a 48 GiB
+    // allocation. The trait's bounded default walk counts the real pages instead.
     fn get_page_fonts(&self, page: ObjectId) -> Result<BTreeMap<Vec<u8>, &Dictionary>> {
         self.get_page_fonts(page)
     }
@@ -205,6 +205,31 @@ fn convert(object: &CosObject, depth: usize) -> Result<Object> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A hostile page-tree /Count must not abort the process: lopdf's own `get_pages`
+    /// pre-allocates by it (fuzz finding: /Count 4294967295 -> a 48 GiB allocation),
+    /// the bounded default walk counts the real pages instead.
+    #[test]
+    fn a_hostile_page_count_does_not_abort_inspection() {
+        let pdf = b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 4294967295 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>
+endobj
+trailer
+<< /Size 4 /Root 1 0 R >>
+%%EOF";
+        let doc = lopdf::Document::load_mem(&pdf[..]).unwrap();
+        let pages = Structure::get_pages(&doc);
+        assert_eq!(pages.len(), 1, "the walk counts the one real page, not /Count");
+    }
+
     use super::*;
 
     #[test]

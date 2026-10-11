@@ -1,0 +1,24 @@
+[package]
+name = "pdfcraft-sdk"
+description = "Unified Document Processing SDK for PdfCraft (Issue #872)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pdfcraft-automation = { workspace = true }
+pdfcraft-engine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+pdfcraft-filters = { workspace = true }
+
+[[example]]
+name = "sdk_capability_tour"
+path = "../../docs/sdk/examples/rust/sdk_capability_tour.rs"

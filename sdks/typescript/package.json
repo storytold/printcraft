@@ -1,0 +1,27 @@
+{
+  "name": "@pdfcraft/sdk",
+  "version": "0.5.0",
+  "type": "module",
+  "description": "Unified Document Processing SDK for PdfCraft (Issue #872)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test tests/*.test.js",
+    "typecheck:examples": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck --types node ../../docs/sdk/examples/typescript/sdk_capability_tour.ts",
+    "example:tour": "npm run build && node ../../docs/sdk/examples/typescript/sdk_capability_tour.ts --render-previews"
+  },
+  "keywords": [
+    "pdf",
+    "sdk",
+    "document-processing",
+    "pdfl-alternative",
+    "rest"
+  ],
+  "author": "ArtCraft Team",
+  "license": "MIT OR Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^5.9.3"
+  }
+}

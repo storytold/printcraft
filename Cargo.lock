@@ -3870,6 +3870,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdfcraft-rest"
+version = "0.5.0"
+dependencies = [
+ "pdfcraft-automation",
+ "pdfcraft-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pdfcraft-sdk"
+version = "0.5.0"
+dependencies = [
+ "pdfcraft-automation",
+ "pdfcraft-engine",
+ "pdfcraft-filters",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pdfcraft-sign"
 version = "0.5.0"
 dependencies = [

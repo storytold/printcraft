@@ -69,3 +69,8 @@ OpenGL can't start either, PdfCraft exits with both errors in the log. The fallb
 | `PDFCRAFT_RENDERER` | `gl` starts with OpenGL (glow) and never loads wgpu; `wgpu` reports a wgpu failure instead of retrying with OpenGL; unset, wgpu is retried with OpenGL when it can't start (see [Renderer fallback](#renderer-fallback)) |
 | `CRAFT_FONTS_DIR` | Build time: a [craft-fonts](https://github.com/storytold/craft-fonts) checkout to embed (Japanese fonts) |
 | `PDFCRAFT_SYSTEM_FONTS` | `0` stops the desktop app from using an installed font for characters its embedded fonts lack (`cargo xtask screenshots` sets it) |
+
+## Related documentation
+
+- [SDK & REST Service Guide](sdk.md) — Programmatic SDK (Rust, Python, TypeScript) and on-premise REST daemon.
+- [MCP Conventions](mcp.md) — Headless tool control protocol for AI agents (`pdfcraft-cli mcp`).

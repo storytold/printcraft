@@ -334,6 +334,8 @@ PdfCraft is a Cargo workspace of focused crates, layered so the core never depen
 | `pdfcraft-render` | Rendering, inspection and text extraction with reading order |
 | `pdfcraft-engine` | The façade every frontend uses: sessions, edits, undo, saving, the tool catalogue |
 | `pdfcraft-automation` | Agent control: the headless tool table, `pdfcraft-cli run`, and the opt-in MCP server |
+| `pdfcraft-sdk` | In-process document processing SDK for Rust with resource quotas and panic containment (see [docs/sdk/README.md](docs/sdk/README.md)) |
+| `pdfcraft-rest` | On-premise HTTP REST service and async job repository with OpenAPI 3.1 (see [docs/sdk/README.md](docs/sdk/README.md)) |
 | `pdfcraft-ui-egui` | The desktop and web interface |
 
 **Quality gates.** Every change passes the same automated checks:

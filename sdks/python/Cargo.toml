@@ -1,0 +1,17 @@
+[package]
+name = "pdfcraft-pyo3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pdfcraft-sdk = { path = "../../crates/sdk", version = "0.5.0" }
+serde_json = { workspace = true }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[lints]
+workspace = true

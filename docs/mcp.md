@@ -43,3 +43,7 @@ resources and their templates are preserved.
 Unknown top-level argument keys are refused with JSON-RPC `-32602` (invalid params) instead of
 being ignored, so a misspelled argument is reported rather than silently dropped. Clients that
 sent extra keys before get an error now.
+
+## Related documentation
+
+- [SDK & REST Service Guide](sdk.md) — Programmatic SDK (Rust, Python, TypeScript) and on-premise REST daemon for application developers.

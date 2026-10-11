@@ -9,3 +9,25 @@ plan/
 /assets/models
 # A craft-fonts checkout used as the optional CRAFT_FONTS_DIR build input (CI and releases put it here).
 /craft-fonts
+
+# Agent skills, configuration, and lockfiles
+/.agents/
+/.agent/
+/plugin-sources.json
+/skills-lock.json
+
+# Local planning docs and review artifacts
+/docs/plans/
+
+# Local sample documents (gitignored per AGENTS.md §1)
+/sample-docs/
+
+# Local diagnostic and test scripts
+/scripts/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local-only reference material derived from third-party (Datalogics/Adobe PDF Library) docs; never commit
+/parity/apdfl-*

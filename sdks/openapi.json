@@ -1,0 +1,487 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PdfCraft On-Premise Document Processing Service",
+    "version": "0.5.0",
+    "description": "Enterprise-grade PDF processing service providing 1:1 parity with in-process LocalClient (Issue #872)."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8080",
+      "description": "Default local loopback daemon"
+    }
+  ],
+  "paths": {
+    "/v1/merged-pdf": {
+      "post": {
+        "summary": "Merge multiple PDF documents",
+        "operationId": "mergePdf",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Synchronous merged PDF document",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Asynchronous job accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProblemResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ProblemResponse"
+          },
+          "413": {
+            "$ref": "#/components/responses/ProblemResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/ProblemResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ProblemResponse"
+          }
+        }
+      }
+    },
+    "/v1/split-pdf": {
+      "post": {
+        "summary": "Split a PDF document",
+        "operationId": "splitPdf",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Split file paths result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SplitResult"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Asynchronous job accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProblemResponse"
+          }
+        }
+      }
+    },
+    "/v1/page-preview": {
+      "post": {
+        "summary": "Render a PDF page to image preview at specified DPI",
+        "operationId": "renderPagePreview",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rendered page image",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProblemResponse"
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}": {
+      "get": {
+        "summary": "Get processing job status",
+        "operationId": "getJob",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/ProblemResponse"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel a queued or running job",
+        "operationId": "cancelJob",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canceled job record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/ProblemResponse"
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}/result": {
+      "get": {
+        "summary": "Fetch completed job result artifact",
+        "operationId": "getJobResult",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job output document or data"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProblemResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ProblemResponse"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "ProblemResponse": {
+        "description": "RFC 7807 Problem Details response",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "MergePayload": {
+        "type": "object",
+        "required": ["files"],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourcePayload"
+            }
+          },
+          "options": {
+            "$ref": "#/components/schemas/MergeOptions"
+          },
+          "async_job": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "SplitPayload": {
+        "type": "object",
+        "required": ["file", "mode"],
+        "properties": {
+          "file": {
+            "$ref": "#/components/schemas/SourcePayload"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SplitMode"
+          },
+          "async_job": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "RenderPayload": {
+        "type": "object",
+        "required": ["file", "page"],
+        "properties": {
+          "file": {
+            "$ref": "#/components/schemas/SourcePayload"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "options": {
+            "$ref": "#/components/schemas/RenderOptions"
+          },
+          "async_job": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "SourcePayload": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["data_base64"],
+            "properties": {
+              "data_base64": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "MergeOptions": {
+        "type": "object",
+        "properties": {
+          "output_filename": {
+            "type": "string"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        }
+      },
+      "SplitMode": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["EveryNPages"],
+            "properties": {
+              "EveryNPages": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["BeforePages"],
+            "properties": {
+              "BeforePages": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["AtBookmarks"],
+            "properties": {
+              "AtBookmarks": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "SplitResult": {
+        "type": "object",
+        "required": ["files"],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RenderOptions": {
+        "type": "object",
+        "properties": {
+          "dpi": {
+            "type": "number",
+            "default": 150.0
+          },
+          "image_format": {
+            "type": "string",
+            "enum": ["png", "jpeg"],
+            "default": "png"
+          }
+        }
+      },
+      "JobState": {
+        "type": "string",
+        "enum": ["queued", "running", "succeeded", "failed", "canceled"]
+      },
+      "JobResponse": {
+        "type": "object",
+        "required": ["id", "operation", "status", "progress", "created_at", "updated_at"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobState"
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "result_url": {
+            "type": "string"
+          }
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "required": ["type", "title", "status", "detail", "code"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "invalid_params": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvalidParam"
+            }
+          }
+        }
+      },
+      "InvalidParam": {
+        "type": "object",
+        "required": ["name", "reason"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

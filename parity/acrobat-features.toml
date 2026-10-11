@@ -5751,6 +5751,18 @@ evidence = ["crates/redact/src/tests.rs::hidden_information_is_counted_and_remov
 notes = "every category, then a full rewrite on save"
 
 [[feature]]
+id = "protect.audit-faux-redactions"
+title = "Audit: detect faux redactions (opaque covers over extractable text, unapplied marks)"
+area = "G"
+tier = "P2"
+milestone = "M8"
+status = "partial"
+commands = []
+tools = ["doc_audit_redactions"]
+evidence = ["crates/audit/src/tests.rs::faux_redaction_is_found", "crates/audit/src/tests.rs::background_before_text_is_not_flagged", "crates/audit/src/tests.rs::light_shading_after_text_is_not_flagged", "crates/audit/src/tests.rs::graphics_state_carries_across_streams", "crates/audit/src/tests.rs::audit_fails_closed_on_undecodable_stream", "crates/audit/src/tests.rs::unapplied_redact_mark_is_found", "crates/automation/tests/automation.rs::auditing_faux_redactions_through_tools"]
+notes = "New pdfcraft-audit crate. A filled rectangle (re + fill, opaque) counts as a cover only when painted after the text it overlaps and dark enough to hide it (WCAG contrast < 3.0); page backgrounds, table shading and highlights are not flagged. Graphics state carries across a page's content streams. Fails closed: undecodable content is an error, never a clean bill. Also flags /Redact annotations never applied. CLI: pdfcraft-cli audit (fails when findings exist)."
+
+[[feature]]
 id = "protect.remove-hidden-on-close"
 title = "Remove hidden information when closing or sending"
 area = "G"

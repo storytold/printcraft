@@ -18,6 +18,7 @@ pdfcraft-annot = { workspace = true }
 pdfcraft-forms = { workspace = true }
 pdfcraft-xfa = { workspace = true }
 pdfcraft-edit = { workspace = true }
+pdfcraft-audit = { workspace = true }
 pdfcraft-redact = { workspace = true }
 pdfcraft-print = { workspace = true }
 pdfcraft-xfdf = { workspace = true }

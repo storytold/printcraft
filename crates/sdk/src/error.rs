@@ -40,6 +40,9 @@ pub enum SdkError {
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Resource quota exceeded: {0}")]
     QuotaExceeded(String),
 
@@ -58,6 +61,7 @@ impl SdkError {
     pub fn http_status(&self) -> u16 {
         match self {
             Self::InvalidArgument(_) => 400,
+            Self::Unauthorized(_) => 401,
             Self::PageOutOfBounds { .. } => 400,
             Self::FileNotFound { .. } => 404,
             Self::QuotaExceeded(_) => 413,
@@ -70,6 +74,7 @@ impl SdkError {
     pub fn error_code(&self) -> &'static str {
         match self {
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
+            Self::Unauthorized(_) => "UNAUTHORIZED",
             Self::PageOutOfBounds { .. } => "PAGE_OUT_OF_BOUNDS",
             Self::FileNotFound { .. } => "FILE_NOT_FOUND",
             Self::QuotaExceeded(_) => "QUOTA_EXCEEDED",

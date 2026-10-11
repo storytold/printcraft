@@ -185,6 +185,7 @@ fn parse_problem_error(body: &[u8], status: u16) -> SdkError {
     if let Ok(problem) = serde_json::from_slice::<ProblemDetails>(body) {
         match problem.status {
             400 => SdkError::InvalidArgument(problem.detail),
+            401 => SdkError::Unauthorized(problem.detail),
             404 => SdkError::FileNotFound { path: problem.detail },
             413 => SdkError::QuotaExceeded(problem.detail),
             429 => SdkError::QuotaExceeded(problem.detail),

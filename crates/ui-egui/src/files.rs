@@ -172,6 +172,16 @@ impl Default for RotateDraft {
     }
 }
 
+/// A picked file's name and bytes, or its name and why it can't be read.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_named(path: &std::path::Path) -> Result<(String, Vec<u8>), (String, String)> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file.pdf".into());
+    match std::fs::read(path) {
+        Ok(bytes) => Ok((name, bytes)),
+        Err(e) => Err((name, e.to_string())),
+    }
+}
+
 impl PdfCraftApp {
     /// Ask for files to add to the Combine files list (its Add files… button).
     pub fn combine_dialog(&mut self) {
@@ -239,6 +249,13 @@ impl PdfCraftApp {
     /// Read the picked files and use them.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn use_paths(&mut self, purpose: FilePurpose, paths: &[std::path::PathBuf]) {
+        if purpose == FilePurpose::CreateMultiple {
+            // Each file is read when its turn comes, so the selection's bytes are not all held at once.
+            if !paths.is_empty() {
+                self.stage_create_multiple(paths.iter().map(|p| read_named(p)));
+            }
+            return;
+        }
         let mut files = Vec::new();
         let mut modified = Vec::new();
         for p in paths {
@@ -359,7 +376,7 @@ impl PdfCraftApp {
                 }
             }
             FilePurpose::Ocr => self.ocr_files(files),
-            FilePurpose::CreateMultiple => self.stage_create_multiple(files),
+            FilePurpose::CreateMultiple => self.stage_create_multiple(files.into_iter().map(Ok)),
             FilePurpose::RedactWords => {
                 let Some((name, bytes)) = files.into_iter().next() else { return };
                 if bytes.len() > crate::redact_ui::MAX_WORD_LIST_BYTES {
@@ -406,13 +423,29 @@ impl PdfCraftApp {
     /// Insert the pages of `files` (PDFs, images, text), in order, at the gap a "+" in the page
     /// grid chose, or else after the selection (or the current page); then select them.
     pub fn insert_files(&mut self, files: Vec<(String, Vec<u8>)>) {
+        self.insert_each(files.into_iter().map(Ok));
+    }
+
+    /// [`Self::insert_files`] for files read as their turn comes: one that can't be read is skipped
+    /// and named.
+    pub(crate) fn insert_each<I>(&mut self, files: I)
+    where
+        I: IntoIterator<Item = Result<(String, Vec<u8>), (String, String)>>,
+    {
         let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return };
         let (id, chosen) = (view.id, view.insert_at.take());
         let after = view.target_pages().last().map_or(0, |p| p + 1);
         let count = self.session.get(id).map_or(0, |d| d.info.pages.len());
         let start = chosen.unwrap_or(after).min(count);
         let mut at = start;
-        for (name, bytes) in files {
+        for file in files {
+            let (name, bytes) = match file {
+                Ok(file) => file,
+                Err((name, error)) => {
+                    self.notify_fmt("Couldn't read {name}: {e}", &[("name", &name), ("e", &error)]);
+                    continue;
+                }
+            };
             let converted =
                 self.session.convert_to_pdf(&name, &Arc::new(bytes)).and_then(|(_, pdf)| Ok((self.session.page_count_of(&name, &pdf)?, pdf)));
             match converted {

@@ -505,6 +505,43 @@ fn a_file_split_around_another_combines_in_order_with_one_bookmark() {
 }
 
 #[test]
+fn create_multiple_reads_each_source_only_after_the_previous_one_is_released() {
+    let mut s = Session::new();
+    let mut earlier: Vec<std::sync::Weak<Vec<u8>>> = Vec::new();
+    let texts = ["Alpha", "Beta", "Gamma"];
+    let sources = texts.iter().map(|text| {
+        // The combine has finished with every earlier source, so their bytes are gone by now.
+        assert!(earlier.iter().all(|w| w.upgrade().is_none()), "a source is released before the next is read");
+        let (_, pdf) = s.convert_to_pdf(&format!("{text}.txt"), &Arc::new(text.as_bytes().to_vec())).unwrap();
+        earlier.push(Arc::downgrade(&pdf));
+        Ok::<CombineSource, EditError>((text.to_string(), pdf, None))
+    });
+    let combined = s.combine_each(sources).unwrap().unwrap();
+    assert!(earlier.iter().all(|w| w.upgrade().is_none()));
+    let id = s.open_new("Combined.pdf", combined).unwrap();
+    assert_eq!(page_texts(&s, id), ["Alpha", "Beta", "Gamma"]);
+    assert_eq!(outline_titles(&s.get(id).unwrap().info.outline), ["Alpha→1", "Beta→2", "Gamma→3"]);
+}
+
+#[test]
+fn create_multiple_gives_the_bytes_of_combine_ranges_and_refuses_a_bad_source() {
+    let s = Session::new();
+    let (a, b) = (Arc::new(fixture(3)), Arc::new(fixture(2)));
+    let sources: Vec<CombineSource> =
+        vec![("a".into(), a.clone(), Some("1-2".into())), ("b".into(), b, None), ("a".into(), a.clone(), Some("3".into()))];
+    let by_ranges = s.combine_ranges(&sources).unwrap();
+    let streamed = s.combine_each(sources.into_iter().map(Ok::<_, EditError>)).unwrap().unwrap();
+    assert_eq!(*streamed, *by_ranges);
+    // A bad range, or a file that isn't a PDF, stops the combine with an error naming that source.
+    let bad_range: Vec<Result<CombineSource, EditError>> = vec![Ok(("a".into(), a.clone(), None)), Ok(("c".into(), a.clone(), Some("9".into())))];
+    assert!(matches!(s.combine_each(bad_range), Err(EditError::Print(e)) if e.starts_with("c:")));
+    let junk: Vec<Result<CombineSource, EditError>> = vec![Ok(("junk".into(), Arc::new(b"not a pdf".to_vec()), None))];
+    assert!(matches!(s.combine_each(junk), Err(EditError::Source(m)) if m.starts_with("junk:")));
+    // Nothing to combine is `None`, not an empty document.
+    assert!(matches!(s.combine_each(Vec::<Result<CombineSource, EditError>>::new()), Ok(None)));
+}
+
+#[test]
 fn a_page_with_a_form_field_shown_twice_keeps_one_field() {
     // Regression (found by review): the repeated page copied the whole field again, so the
     // result had two fields named "shared", filled in separately.

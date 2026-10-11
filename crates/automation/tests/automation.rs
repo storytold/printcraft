@@ -1938,6 +1938,17 @@ fn creating_from_multiple_files_through_tools() {
 }
 
 #[test]
+fn create_multiple_has_no_file_count_limit() {
+    let dir = workdir("create-many");
+    let mut a = auto(&dir);
+    // The same 3-page PDF listed 1,001 times: every listed file is a source, however many there are.
+    let paths = vec!["a.pdf"; 1001];
+    let made = ok(&mut a, "doc_create_multiple", json!({ "paths": paths, "out": "many.pdf", "open": true }));
+    assert_eq!(made["document"]["pages"], 3 * 1001, "{made}");
+    assert!(dir.join("many.pdf").is_file());
+}
+
+#[test]
 fn creating_images_with_dpi_through_tools() {
     let dir = workdir("image-dpi");
     let mut png = Vec::new();

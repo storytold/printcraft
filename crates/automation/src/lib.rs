@@ -73,6 +73,12 @@ fn failed(e: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(e.to_string())
 }
 
+impl From<pdfcraft_engine::EditError> for ToolError {
+    fn from(e: pdfcraft_engine::EditError) -> Self {
+        failed(e)
+    }
+}
+
 /// Default and maximum resolution for `page_render`.
 const DEFAULT_DPI: f64 = 96.0;
 const MAX_DPI: f64 = 600.0;
@@ -1212,8 +1218,8 @@ impl Automation {
 
     fn doc_create_multiple(&mut self, a: &Args) -> Result<Value> {
         let paths = a.strs("paths")?;
-        if paths.is_empty() || paths.len() > pdfcraft_engine::MAX_CREATE_FILES {
-            return Err(ToolError::InvalidArgs(format!("paths must list 1 to {} files", pdfcraft_engine::MAX_CREATE_FILES)));
+        if paths.is_empty() {
+            return Err(ToolError::InvalidArgs("paths must list at least one file".into()));
         }
         let separate = match a.opt_str("mode")? {
             None | Some("combine") => false,
@@ -1228,16 +1234,16 @@ impl Automation {
             Some(Value::Array(v)) if v.len() == paths.len() => v.iter().map(|x| x.as_str().map(str::to_owned)).collect(),
             Some(_) => return Err(ToolError::InvalidArgs("pages must list a range (or null) for each path".into())),
         };
-        let mut sources = Vec::new();
-        for (p, range) in paths.into_iter().zip(ranges) {
+        // Each file is read, converted and copied in turn, so a long list holds one file at a time.
+        let sources = paths.into_iter().zip(ranges).map(|(p, range)| -> std::result::Result<pdfcraft_engine::CombineSource, ToolError> {
             let path = self.resolve(p, false)?;
             let bytes = std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let (_, pdf) = self.session.convert_to_pdf(&name, &Arc::new(bytes)).map_err(failed)?;
             let title = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            sources.push((title, pdf, range));
-        }
-        let bytes = self.session.combine_ranges(&sources).map_err(failed)?;
+            Ok((title, pdf, range))
+        });
+        let bytes = self.session.combine_each(sources)?.ok_or_else(|| ToolError::InvalidArgs("paths must list at least one file".into()))?;
         self.deliver(a, "Combined", bytes)
     }
 

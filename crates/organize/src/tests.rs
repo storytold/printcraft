@@ -417,6 +417,41 @@ fn combine_concatenates_with_a_bookmark_per_file() {
 }
 
 #[test]
+fn combiner_adds_each_source_then_releases_it() {
+    let bytes = Arc::new(fixture());
+    let src = Document::open(bytes.clone()).unwrap();
+    let mut combiner = crate::Combiner::new();
+    combiner.add("A", &src, None).unwrap();
+    drop(src);
+    // No output intents to copy, so the combine keeps nothing of the source's file.
+    assert_eq!(Arc::strong_count(&bytes), 1);
+    let picked: &[usize] = &[1];
+    combiner.add("B", &open(fixture()), Some(picked)).unwrap();
+    let streamed = combiner.finish().unwrap();
+    let whole = combine_selected(&[("A", &open(fixture()), None), ("B", &open(fixture()), Some(picked))]).unwrap();
+    assert_eq!(write_full(&streamed, &SaveOptions::default()).unwrap(), write_full(&whole, &SaveOptions::default()).unwrap());
+}
+
+#[test]
+fn combining_hostile_outlines_ends_their_runs_too() {
+    // The bookmark cases of `hostile_outlines_end_their_runs_and_never_loop`, combined: each run ends
+    // where it would repeat, and the source's bookmarks sit under its own entry.
+    let cases: [(&[&str], &str); 3] = [
+        (&["<< /Title (Self) /Parent 3 0 R /Next 5 0 R >>"], "H[Self]"),
+        (&["<< /Title (A) /Parent 3 0 R /Next 6 0 R >>", "<< /Title (B) /Parent 3 0 R /Next 5 0 R >>"], "H[A,B]"),
+        (&["<< /Title (A) /Parent 3 0 R /Next 99 0 R >>"], "H[A]"),
+    ];
+    for (items, listed) in cases {
+        let out = full_roundtrip(&combine(&[("H", &outline_with(items))]).unwrap());
+        assert_eq!(titles(&crate::bookmarks(&out)), [listed]);
+    }
+    // A bookmark whose first child is itself: nesting is cut off, so the combine still ends.
+    let looped = outline_with(&["<< /Title (Self) /Parent 3 0 R /First 5 0 R >>"]);
+    let out = full_roundtrip(&combine(&[("H", &looped)]).unwrap());
+    assert_eq!(crate::bookmarks(&out).first().map(|b| b.title.as_str()), Some("H"));
+}
+
+#[test]
 fn inherited_attributes_travel_with_copied_pages() {
     let out = full_roundtrip(&extract_pages(&doc_b(), &[1]).unwrap());
     let p = page_dict(&out, 0);

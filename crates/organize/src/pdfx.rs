@@ -73,6 +73,11 @@ impl PrintStandard {
         }
     }
 
+    /// Whether the document declares output intents (its printing condition and profile).
+    pub(crate) fn declares_output_intents(&self) -> bool {
+        self.intents.is_some()
+    }
+
     /// Whether `other` declares the same standard: the same version and trapping, and the same
     /// output intents (type, printing condition and profile).
     pub(crate) fn same_as(&self, other: &Self) -> bool {
@@ -82,10 +87,12 @@ impl PrintStandard {
 
 /// Give `dst` the print standard `src` declares: its output intents, copied with their profiles
 /// (through `map`, what the pages already brought along), and, for PDF/X, the document
-/// information entries and the XMP metadata that identify it.
-pub(crate) fn carry(dst: &mut Document, src: &Document, standard: &PrintStandard, map: HashMap<ObjRef, ObjRef>) -> Result<(), OrganizeError> {
+/// information entries and the XMP metadata that identify it. The output intents are copied from
+/// `src`, so a standard that declares them needs the source document (`None` otherwise).
+pub(crate) fn carry(dst: &mut Document, src: Option<&Document>, standard: &PrintStandard, map: HashMap<ObjRef, ObjRef>) -> Result<(), OrganizeError> {
     let root = dst.root().ok_or(OrganizeError::NoPageTree)?;
     if let Some(intents) = &standard.intents {
+        let src = src.ok_or_else(|| OrganizeError::Invalid("the output intents' source document was not kept".into()))?;
         let copied = crate::import::copy_object(dst, src, intents, map);
         dst.update_dict(root, |c| c.set(b"OutputIntents".to_vec(), copied))?;
     }

@@ -250,3 +250,15 @@ fn multiple_files_that_cannot_be_converted_open_nothing() {
     assert!(app.views.is_empty());
     assert!(app.toast.is_some());
 }
+
+#[test]
+fn multiple_files_past_a_thousand_are_all_used() {
+    let mut app = PdfCraftApp::new();
+    app.set_option("language", "en").unwrap();
+    let pdf = app.session.create_from_text("a", "from a pdf").unwrap();
+    let files: Vec<(String, Vec<u8>)> = (0..1001).map(|i| (format!("f{i}.pdf"), pdf.to_vec())).collect();
+    app.use_files(pdfcraft_ui_egui::FilePurpose::CreateMultiple, files);
+    assert_eq!(app.views.len(), 1);
+    let doc = app.session.get(app.views[0].id).unwrap();
+    assert_eq!(doc.info.pages.len(), 1001, "every picked file is used, in order");
+}

@@ -214,10 +214,23 @@ pub enum QuickTool {
     ColumnSelect,
 }
 
+/// A file dropped on a page grid: its name, and its bytes or, for a file on disk, the path they are
+/// read from when the file's turn to be inserted comes (so a long drop holds one file at a time).
+type GridFile = (String, Result<Vec<u8>, std::path::PathBuf>);
+
+/// Read a file dropped on a page grid (see [`GridFile`]).
+fn read_grid_file((name, source): GridFile) -> Result<(String, Vec<u8>), (String, String)> {
+    let bytes = match source {
+        Ok(bytes) => bytes,
+        Err(path) => std::fs::read(&path).map_err(|e| (name.clone(), e.to_string()))?,
+    };
+    Ok((name, bytes))
+}
+
 /// Files dropped on a document's page grid.
 struct GridDrop {
     doc: pdfcraft_engine::DocId,
-    files: Vec<(String, Vec<u8>)>,
+    files: Vec<GridFile>,
     /// When to stop waiting for the pointer (egui time, seconds).
     deadline: f64,
 }
@@ -1004,11 +1017,14 @@ impl PdfCraftApp {
     fn drop_on_grid(&mut self, dropped: Vec<egui::DroppedFileHandle>, ctx: &egui::Context) -> Vec<egui::DroppedFileHandle> {
         let Some(id) = self.grid_target().filter(|_| !dropped.is_empty()) else { return dropped };
         let mut files = Vec::new();
-        for f in dropped.iter().take(pdfcraft_engine::MAX_CREATE_FILES) {
+        for f in &dropped {
             let name = f.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "dropped.pdf".into());
-            let bytes = if f.path().is_absolute() { std::fs::read(f.path()).map_err(|e| e.to_string()) } else { f.bytes() };
-            match bytes {
-                Ok(b) => files.push((name, b)),
+            if f.path().is_absolute() {
+                files.push((name, Err(f.path().to_path_buf())));
+                continue;
+            }
+            match f.bytes() {
+                Ok(b) => files.push((name, Ok(b))),
                 Err(e) => self.notify_fmt("Couldn't read {name}: {e}", &[("name", &name), ("e", &e)]),
             }
         }
@@ -1038,7 +1054,7 @@ impl PdfCraftApp {
         };
         view.insert_at = Some(gap);
         if let Some(drop) = self.grid_drop.take() {
-            self.insert_files(drop.files);
+            self.insert_each(drop.files.into_iter().map(read_grid_file));
         }
     }
 

@@ -1915,9 +1915,6 @@ pub fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     })
 }
 
-/// The most files Create ▸ Multiple files takes in one run.
-pub const MAX_CREATE_FILES: usize = 1000;
-
 /// Parse another PDF to copy pages from.
 fn open_source(name: &str, bytes: &Arc<Vec<u8>>) -> Result<pdfcraft_cos::Document, EditError> {
     open_source_with(name, bytes, None)
@@ -2864,6 +2861,43 @@ impl Session {
     /// Combine Files with a page range per file ("1-3, 6"; `None` or empty for all pages).
     pub fn combine_ranges(&self, sources: &[CombineSource]) -> Result<Arc<Vec<u8>>, EditError> {
         self.combine_unlocked(sources, &[])
+    }
+
+    /// Combine sources one at a time, in order (Create ▸ Multiple files), to the same result as
+    /// [`Self::combine_ranges`]. Each item is a source's bookmark title, its PDF bytes (see
+    /// [`Self::convert_to_pdf`]) and its page range (`None` for all pages). Items are pulled one at a
+    /// time: a source is opened, its pages are copied into the result, and its bytes are released
+    /// before the next item is read. So the number of sources is not limited, and one source's
+    /// document is held at a time. An item's error stops the combine and is returned as it is.
+    /// `Ok(None)` when there are no sources.
+    pub fn combine_each<I, E>(&self, sources: I) -> Result<Option<Arc<Vec<u8>>>, E>
+    where
+        I: IntoIterator<Item = Result<CombineSource, E>>,
+        E: From<EditError>,
+    {
+        let mut combiner = pdfcraft_organize::Combiner::new();
+        let mut added = false;
+        for source in sources {
+            let (title, bytes, range) = source?;
+            let doc = open_source(&title, &bytes)?;
+            let range = range.as_deref().map(str::trim).filter(|r| !r.is_empty());
+            let pages = match range {
+                Some(r) => {
+                    let n = pdfcraft_organize::page_count(&doc).map_err(EditError::from)?;
+                    let p = pdfcraft_print::select_pages(n, Some(r), &[], pdfcraft_print::Subset::All, false)
+                        .map_err(|e| EditError::Print(format!("{title}: {e}")))?;
+                    Some(p)
+                }
+                None => None,
+            };
+            combiner.add(&title, &doc, pages.as_deref()).map_err(EditError::from)?;
+            added = true;
+        }
+        if !added {
+            return Ok(None);
+        }
+        let out = combiner.finish().map_err(EditError::from)?;
+        Ok(Some(self.write_new(&out)?))
     }
 
     /// [`Self::combine_ranges`] with the password each encrypted source is opened with, by

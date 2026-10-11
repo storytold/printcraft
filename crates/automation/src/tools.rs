@@ -222,7 +222,7 @@ pub fn tools() -> Vec<ToolDef> {
             .cmd("create.multiple")
             .with(schema(
                 json!({
-                    "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": pdfcraft_engine::MAX_CREATE_FILES },
+                    "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
                     "mode": { "type": "string", "enum": ["combine", "separate"] },
                     "pages": { "type": "array", "items": { "type": ["string", "null"] } },
                     "out": save_out.clone(),

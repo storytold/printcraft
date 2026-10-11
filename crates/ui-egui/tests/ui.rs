@@ -504,6 +504,43 @@ fn dropping_a_pdf_on_the_window_opens_it() {
 }
 
 #[test]
+fn a_file_dropped_on_the_page_grid_is_read_from_disk_and_inserted() {
+    // The grid's drop reads a file from its path when its turn to be inserted comes, and inserts it
+    // at the end when the pointer doesn't say where it went (about a second).
+    let dir = std::env::temp_dir().join(format!("pdfcraft-grid-drop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dropped.pdf");
+    let setup = PdfCraftApp::new();
+    let pdf = setup.session.create_from_text("dropped", "from disk").unwrap();
+    std::fs::write(&path, pdf.as_slice()).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        let grid = app.session.create_from_text("grid", "one page").unwrap();
+        app.open_bytes("grid.pdf", None, grid.to_vec()).unwrap();
+        app.views[0].organize = true;
+        app
+    });
+    h.run_steps(3);
+    let pages = |h: &egui_kittest::Harness<'_, PdfCraftApp>| {
+        let app = h.state();
+        app.session.get(app.views[0].id).unwrap().info.pages.len()
+    };
+    assert_eq!(pages(&h), 1);
+    let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped { path: path.clone(), bytes: Vec::new() });
+    h.input_mut().dropped_files.push(file);
+    for _ in 0..300 {
+        h.run_steps(1);
+        if pages(&h) == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(pages(&h), 2, "the dropped file's page is inserted at the end of the grid");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn pdfs_dropped_on_the_combine_tab_join_its_list() {
     let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(|_cc| {
         let mut app = PdfCraftApp::new();

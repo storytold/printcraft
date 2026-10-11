@@ -2193,3 +2193,7 @@ key	Space	Spazio
 	Collapse all	Comprimi tutto
 	Remove page	Rimuovi pagina
 	Remove {n} pages	Rimuovi {n} pagine
+	Reload documents when their files change on disk	Ricarica i documenti quando i loro file cambiano sul disco
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Questo file è cambiato sul disco. Ricaricalo per vedere la nuova versione; le modifiche non salvate andranno perse.
+	Reload	Ricarica
+	Couldn't reload {name}: {e}	Impossibile ricaricare {name}: {e}

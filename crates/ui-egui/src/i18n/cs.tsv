@@ -121,6 +121,10 @@
 	Fit one full page	Celá jedna stránka
 	Used when a PDF doesn't ask for a layout or zoom. Continuous scrolling never snaps between pages.	Používá se, když PDF nepožaduje rozložení ani zvětšení. Plynulé posouvání mezi stránkami neskáče.
 	Reopen the files that were open when PdfCraft last closed	Znovu otevřít soubory, které byly otevřené při posledním zavření aplikace PdfCraft
+	Reload documents when their files change on disk	Znovu načítat dokumenty při změně jejich souborů na disku
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Tento soubor se na disku změnil. Znovu jej načtěte, abyste viděli novou verzi; neuložené změny budou ztraceny.
+	Reload	Znovu načíst
+	Couldn't reload {name}: {e}	Soubor {name} nelze znovu načíst: {e}
 	Choose a PNG or JPEG image (up to 4 MiB). Transparency is preserved.	Vyberte obrázek PNG nebo JPEG (nejvýše 4 MiB). Průhlednost bude zachována.
 	Couldn't import the signature image: {e}	Obrázek podpisu nelze importovat: {e}
 	Portable mode is off: {folder} can't be written ({error}). Settings are kept in your user folder instead.	Přenosný režim je vypnutý: do složky {folder} nelze zapisovat ({error}). Nastavení se místo toho ukládá do vaší uživatelské složky.

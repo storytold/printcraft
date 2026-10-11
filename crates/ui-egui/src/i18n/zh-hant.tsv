@@ -2070,3 +2070,7 @@ key	Space	空格
 	Collapse all	全部摺疊
 	Remove page	刪除頁面
 	Remove {n} pages	刪除 {n} 頁
+	Reload documents when their files change on disk	檔案在磁碟上變更時重新載入對應的文件
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	此檔案已在磁碟上變更。請重新載入以查看新版本；未儲存的變更將會遺失。
+	Reload	重新載入
+	Couldn't reload {name}: {e}	無法重新載入{name}：{e}

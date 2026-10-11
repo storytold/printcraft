@@ -2005,6 +2005,10 @@
 	Default zoom	Zoom predeterminado
 	Used when a PDF doesn't ask for a layout or zoom. Continuous scrolling never snaps between pages.	Se usa cuando un PDF no pide una presentación ni un zoom. El desplazamiento continuo nunca salta de página en página.
 	Reopen the files that were open when PdfCraft last closed	Volver a abrir los archivos que estaban abiertos al cerrar PdfCraft por última vez
+	Reload documents when their files change on disk	Recargar los documentos cuando sus archivos cambien en el disco
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Este archivo ha cambiado en el disco. Recárgalo para ver la nueva versión; se perderán tus cambios sin guardar.
+	Reload	Recargar
+	Couldn't reload {name}: {e}	No se pudo recargar {name}: {e}
 	Created a PDF from {n} files	Se creó un PDF a partir de {n} archivos
 	PDF, images and text	PDF, imágenes y texto
 	Insert a file before page {label}	Insertar un archivo antes de la página {label}

@@ -1926,6 +1926,10 @@ action wizard	Start	ప్రారంభించు
 	Default zoom	డిఫాల్ట్ జూమ్
 	Used when a PDF doesn't ask for a layout or zoom. Continuous scrolling never snaps between pages.	PDF ఏ లేఅవుట్‌ను గానీ జూమ్‌ను గానీ కోరనప్పుడు ఉపయోగించబడుతుంది. నిరంతర స్క్రోలింగ్ పేజీల మధ్య ఎప్పుడూ స్నాప్ అవ్వదు.
 	Reopen the files that were open when PdfCraft last closed	PdfCraftను చివరిసారి మూసివేసినప్పుడు తెరిచి ఉన్న ఫైల్‌లను మళ్లీ తెరువు
+	Reload documents when their files change on disk	డిస్క్‌లో వాటి ఫైల్‌లు మారినప్పుడు పత్రాలను మళ్లీ లోడ్ చేయి
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	ఈ ఫైల్ డిస్క్‌లో మారింది. కొత్త వెర్షన్‌ను చూడటానికి దాన్ని మళ్లీ లోడ్ చేయండి; సేవ్ చేయని మీ మార్పులు పోతాయి.
+	Reload	మళ్లీ లోడ్ చేయి
+	Couldn't reload {name}: {e}	{name}ను మళ్లీ లోడ్ చేయడం సాధ్యం కాలేదు: {e}
 	About	పరిచయం
 	Contributors	సహకారులు
 	Models	మోడల్‌లు

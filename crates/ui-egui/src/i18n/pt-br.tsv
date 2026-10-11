@@ -2185,3 +2185,7 @@ key	Space	Espaço
 	Collapse all	Recolher tudo
 	Remove page	Remover página
 	Remove {n} pages	Remover {n} páginas
+	Reload documents when their files change on disk	Recarregar documentos quando os arquivos mudarem no disco
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Este arquivo foi alterado no disco. Recarregue-o para ver a nova versão; suas alterações não salvas serão perdidas.
+	Reload	Recarregar
+	Couldn't reload {name}: {e}	Não foi possível recarregar {name}: {e}

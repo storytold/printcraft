@@ -626,6 +626,18 @@ evidence = ["crates/ui-egui/tests/viewer.rs::revert_after_confirming", "crates/e
 notes = "with confirmation; clears undo, as Acrobat"
 
 [[feature]]
+id = "core.reload-changed-files"
+title = "Reload a document when its file changes on disk"
+area = "A"
+tier = "P2"
+milestone = "M4"
+status = "shipped"
+commands = []
+tools = []
+evidence = ["crates/engine/src/tests.rs::reload_reads_the_new_file_into_the_same_document", "crates/ui-egui/tests/reload.rs::a_rebuilt_file_reloads_in_place_keeping_the_page_and_zoom", "crates/ui-egui/tests/reload.rs::a_half_written_file_waits_until_the_pdf_is_whole", "crates/ui-egui/tests/reload.rs::saving_does_not_reload_or_lose_undo", "crates/ui-egui/tests/reload.rs::unsaved_changes_are_kept_until_reload_is_chosen", "crates/ui-egui/tests/reload.rs::a_deleted_file_leaves_the_document_open", "crates/ui-egui/tests/reload.rs::nothing_reloads_with_the_preference_off", "crates/ui-egui/tests/reload.rs::a_shorter_new_version_drops_what_pointed_into_the_old_one"]
+notes = "Desktop, on by default (Preferences ▸ Documents and view, #431), for LaTeX/Typst builds: a worker thread checks each open file's metadata every 250 ms and reads a change once it has settled and ends in %%EOF; a clean document reloads in place (same tab, page, zoom, scroll; old page images stay until new ones are drawn), one with unsaved changes gets a Reload notice; PdfCraft's own saves never reload. Measured on Windows: one check 11 µs per file, reload of a 417-page 0.9 MB pdflatex file 16 ms. Not yet: OS change notifications (polling adds up to 250 ms), the web build; a reload clears undo history, like Revert."
+
+[[feature]]
 id = "core.signed-save-policy"
 title = "Force incremental saves for signed documents"
 area = "A"

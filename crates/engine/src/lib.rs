@@ -2761,6 +2761,29 @@ impl Session {
         Self::refresh(doc)
     }
 
+    /// The document's file changed on disk (a LaTeX or Typst build rewrote it, #431): open
+    /// `bytes`, the file as it is now, in its place. Everything opening does runs again (XFA
+    /// layout and scripts, signatures, repairs), but the document keeps its id, name and path,
+    /// so its tab and view stay with it. Undo history goes, as with Revert. The password it was
+    /// opened with is tried; on any failure the document is left as it was.
+    pub fn reload(&mut self, id: DocId, bytes: Arc<Vec<u8>>) -> Result<(), OpenError> {
+        let old = self.docs.iter().position(|d| d.id == id).ok_or_else(|| OpenError::Invalid("the document is not open".into()))?;
+        let doc = &self.docs[old];
+        let (name, path, generation) = (doc.name.clone(), doc.path.clone(), doc.generation);
+        let password = doc.editor.as_ref().and_then(|e| e.keys.reopen.clone()).or_else(|| doc.password.clone());
+        let new_id = self.open(name, path, bytes, password.as_deref())?;
+        let at = self.docs.iter().position(|d| d.id == new_id).ok_or_else(|| OpenError::Invalid("the new version was not kept".into()))?;
+        let mut doc = self.docs.remove(at);
+        doc.id = id;
+        // Caches keyed by the edit generation (edit lines, images, measurements) must see a new
+        // one; there is nothing new to autosave.
+        doc.generation = generation + 1;
+        doc.snapshot_generation = doc.generation;
+        // `open` pushed the new version last, so the old one is still at `old`.
+        *self.docs.get_mut(old).ok_or_else(|| OpenError::Invalid("the document is not open".into()))? = doc;
+        Ok(())
+    }
+
     /// The page count of another PDF (Replace Pages, Insert Pages dialogs).
     pub fn page_count_of(&self, name: &str, bytes: &Arc<Vec<u8>>) -> Result<usize, EditError> {
         Ok(pdfcraft_organize::page_count(&open_source(name, bytes)?)?)

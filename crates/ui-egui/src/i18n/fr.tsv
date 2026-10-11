@@ -1934,6 +1934,10 @@
 	Default zoom	Zoom par défaut
 	Used when a PDF doesn't ask for a layout or zoom. Continuous scrolling never snaps between pages.	Utilisé lorsqu'un PDF ne demande ni présentation ni zoom. Le défilement continu ne saute jamais d'une page à l'autre.
 	Reopen the files that were open when PdfCraft last closed	Rouvrir les fichiers qui étaient ouverts lors de la dernière fermeture de PdfCraft
+	Reload documents when their files change on disk	Recharger les documents lorsque leurs fichiers sont modifiés sur le disque
+	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Ce fichier a été modifié sur le disque. Rechargez-le pour voir la nouvelle version ; vos modifications non enregistrées seront perdues.
+	Reload	Recharger
+	Couldn't reload {name}: {e}	Impossible de recharger {name} : {e}
 	Show	Afficher
 	Sort	Trier
 	Reverse the order	Inverser l'ordre

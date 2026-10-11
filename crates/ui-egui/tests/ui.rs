@@ -598,6 +598,29 @@ fn default_workspace_mode_persists_and_tolerates_invalid_settings() {
 }
 
 #[test]
+fn bookmarks_open_in_read_mode() {
+    use pdfcraft_ui_egui::{Mode, RightPanel};
+    // #932: a PDF opened with /PageMode /UseOutlines sets Bookmarks even in Read mode, and the
+    // panel must actually render there; the rail hides the tool-only buttons in Read mode.
+    let pdf = String::from_utf8(FIXTURE.to_vec()).unwrap().replace("/Outlines 6 0 R", "/Outlines 6 0 R /PageMode /UseOutlines");
+    let mut h = harness(move |app| {
+        app.set_option("mode", "read").unwrap();
+        app.open_bytes("outlines.pdf", None, pdf.into_bytes()).unwrap();
+    });
+    h.run_steps(2);
+    let app = h.state();
+    assert_eq!(app.mode, Mode::Read);
+    assert_eq!(app.right, Some(RightPanel::Bookmarks));
+    // The panel is on screen: its two bookmarks are clickable rows.
+    h.get_by_label("Alpha section");
+    h.get_by_label("Beta section");
+    // The tool-only rail buttons are hidden in Read mode.
+    assert_eq!(h.query_all_by_label("Form fields").count(), 0);
+    // The panel heading is there too (the rail button and the heading both read Bookmarks).
+    assert!(h.query_all_by_label("Bookmarks").count() >= 2);
+}
+
+#[test]
 fn newly_opened_pdfs_use_the_default_workspace() {
     use pdfcraft_ui_egui::{LeftPanel, Mode};
     let mut app = PdfCraftApp::new();

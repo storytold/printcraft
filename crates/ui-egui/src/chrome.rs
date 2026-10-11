@@ -412,6 +412,9 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     );
     let page_count = doc.info.pages.len();
     let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
+    // Read mode is for reading: only the reading panels' buttons stay on the rail, the
+    // tool-only ones would be dead there (their panels do not open in Read; #932).
+    let read_mode = app.mode == Mode::Read;
     egui::Panel::right("rail")
         .resizable(false)
         .exact_size(48.0)
@@ -429,15 +432,21 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     app.choose_right_panel(if selected { None } else { Some(panel) });
                 }
             };
-            rail_button(ui, RightPanel::Comments, "message-square-text", "Comments", has_comments);
+            // Read mode is for reading: only the reading panels' buttons stay on the rail, the
+            // tool-only ones would be dead there (their panels do not open in Read; #932).
+            if !read_mode {
+                rail_button(ui, RightPanel::Comments, "message-square-text", "Comments", has_comments);
+            }
             rail_button(ui, RightPanel::Bookmarks, "bookmark", "Bookmarks", has_outline);
             rail_button(ui, RightPanel::Pages, "files", "Page thumbnails", false);
-            rail_button(ui, RightPanel::Fields, "text-cursor-input", "Form fields", has_fields);
-            rail_button(ui, RightPanel::Layers, "layers", "Layers", has_layers);
-            rail_button(ui, RightPanel::Attachments, "paperclip", "Attachments", has_files);
-            rail_button(ui, RightPanel::Signatures, "signature", "Signatures", has_signatures);
-            if has_check {
-                rail_button(ui, RightPanel::Accessibility, "accessibility", "Accessibility Checker", false);
+            if !read_mode {
+                rail_button(ui, RightPanel::Fields, "text-cursor-input", "Form fields", has_fields);
+                rail_button(ui, RightPanel::Layers, "layers", "Layers", has_layers);
+                rail_button(ui, RightPanel::Attachments, "paperclip", "Attachments", has_files);
+                rail_button(ui, RightPanel::Signatures, "signature", "Signatures", has_signatures);
+                if has_check {
+                    rail_button(ui, RightPanel::Accessibility, "accessibility", "Accessibility Checker", false);
+                }
             }
 
             // Page navigation cluster at the bottom (as in Acrobat's rail).

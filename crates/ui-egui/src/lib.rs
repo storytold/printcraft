@@ -2057,7 +2057,11 @@ impl eframe::App for PdfCraftApp {
         chrome::mode_bar(self, ui);
         if self.active.is_some() {
             chrome::right_rail(self, ui);
-            if self.right.is_some() && self.mode != Mode::Read {
+            // Read mode hides the tool panels but keeps the reading ones: bookmarks and page
+            // thumbnails (a PDF opened with /PageMode /UseOutlines sets Bookmarks right in Read
+            // mode, and the rail's buttons must not be dead there; #932).
+            let reading = self.right.is_some_and(|p| matches!(p, RightPanel::Bookmarks | RightPanel::Pages));
+            if self.right.is_some() && (self.mode != Mode::Read || reading) {
                 panels::right_panel(self, ui);
             }
         }

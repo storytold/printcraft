@@ -1114,7 +1114,12 @@
 	Apply redactions	Aplicar censuras
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Vas a aplicar 1 marca de censura. El texto, las imágenes y los dibujos que hay bajo las marcas, y los comentarios y campos de formulario que se solapan con ellas, se eliminan de forma permanente.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Vas a aplicar {n} marcas de censura. El texto, las imágenes y los dibujos que hay bajo las marcas, y los comentarios y campos de formulario que se solapan con ellas, se eliminan de forma permanente.
-	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	Guarda el documento después: al guardar se reescribe todo el archivo para que no quede rastro del contenido eliminado.
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	Al aplicar también se sanea el documento: se eliminan los marcadores, los destinos con nombre, los archivos adjuntos, la información del documento, los metadatos y los datos de formulario XFA, y las capas ocultas quedan ocultas para siempre.
+	This cannot be undone: applying redactions clears the undo history.	Esta acción no se puede deshacer: al aplicar las censuras se borra el historial de deshacer.
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	Guarda el resultado con otro nombre: al guardar se reescribe todo el archivo para que no quede rastro del contenido eliminado, y el archivo original queda como estaba.
+	I understand that the redacted content is removed for good	Entiendo que el contenido censurado se elimina de forma definitiva
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	Comprobado al aplicar: 1 región sin rastro del texto eliminado. El texto que existe solo como píxeles de una imagen no se busca.
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	Comprobado al aplicar: {n} regiones sin rastro del texto eliminado. El texto que existe solo como píxeles de una imagen no se busca.
 	Select the items to remove from this document.	Selecciona los elementos que quieres quitar de este documento.
 	Metadata	Metadatos
 	File attachments	Archivos adjuntos

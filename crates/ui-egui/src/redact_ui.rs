@@ -419,8 +419,10 @@ pub(crate) fn props_body(ui: &mut egui::Ui, d: &mut RedactPrefs, _t: &Tokens) ->
     buttons(ui, "OK", true)
 }
 
-/// Apply redactions confirmation. Returns (apply, cancel).
-pub(crate) fn apply_body(ui: &mut egui::Ui, marks: usize, t: &Tokens) -> (bool, bool) {
+/// Apply redactions confirmation. Applying can't be undone, so it asks for an explicit
+/// acknowledgement (`ack`); `blocked` is why redaction isn't possible in this document, if so.
+/// Returns (apply, cancel).
+pub(crate) fn apply_body(ui: &mut egui::Ui, marks: usize, blocked: Option<&str>, ack: &mut bool, t: &Tokens) -> (bool, bool) {
     ui.set_width(420.0);
     ui.label(egui::RichText::new(tl!("Apply redactions")).font(crate::theme::semibold(18.0)));
     ui.add_space(8.0);
@@ -431,12 +433,39 @@ pub(crate) fn apply_body(ui: &mut egui::Ui, marks: usize, t: &Tokens) -> (bool, 
     });
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new(tl!("Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it."))
+        egui::RichText::new(tl!("Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good."))
             .small()
             .color(t.text_muted),
     );
-    ui.add_space(12.0);
-    buttons(ui, "Apply", true)
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tl!("This cannot be undone: applying redactions clears the undo history.")).color(t.text_muted));
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(tl!(
+            "Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is."
+        ))
+        .small()
+        .color(t.text_muted),
+    );
+    ui.add_space(8.0);
+    if let Some(reason) = blocked {
+        ui.label(egui::RichText::new(reason).color(Color32::from_rgb(0xC0, 0x30, 0x30)));
+        ui.add_space(8.0);
+    } else {
+        ui.checkbox(ack, tl!("I understand that the redacted content is removed for good"));
+        ui.add_space(8.0);
+    }
+    let go = blocked.is_none() && *ack;
+    let (mut a, mut c) = (false, false);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui.add_enabled_ui(go, |ui| widgets::pill_button(ui, "Apply", true)).inner.clicked() {
+            a = true;
+        }
+        if widgets::pill_button(ui, "Cancel", false).clicked() {
+            c = true;
+        }
+    });
+    (a, c)
 }
 
 fn buttons(ui: &mut egui::Ui, ok: &str, primary: bool) -> (bool, bool) {

@@ -675,6 +675,15 @@ impl DocView {
         }
     }
 
+    /// After redactions were applied: forget every raster and thumbnail instead of keeping the
+    /// old ones on screen until their replacements arrive (they still show the removed content).
+    pub fn drop_rasters(&mut self) {
+        self.pages.clear();
+        self.thumbs.clear();
+        self.stale_thumbs.clear();
+        self.tiles.clear();
+    }
+
     /// Only `page` changed (a comment was added, edited or removed): re-render that page and
     /// re-read its text, keep everything else.
     pub fn page_changed(&mut self, page: usize) {

@@ -5251,7 +5251,6 @@ status = "shipped"
 commands = ["sign.fill.signature", "sign.fill.initials", "sign.fill.signature.change", "sign.fill.initials.change", "sign.fill.signature.remove", "sign.fill.initials.remove"]
 tools = ["fill_sign_add", "comment_edit", "comment_image_preview"]
 evidence = ["crates/ui-egui/tests/fill_sign.rs::drawn_signatures_resize_from_their_corners", "crates/ui-egui/tests/fill_sign.rs::drawn_and_typed_signatures_stay_upright_on_rotated_pages", "crates/automation/tests/automation.rs::typed_signatures_stay_upright_on_rotated_pages", "crates/ui-egui/tests/fill_sign.rs::image_signature_corners_restore_original_aspect_after_edge_resize_and_reopen", "crates/ui-egui/src/comments.rs::proportional_corners_keep_the_opposite_anchor_and_edges_stretch_one_axis", "crates/ui-egui/tests/fill_sign.rs::image_signature_live_resize_and_move_preserve_background_and_hide_moving_handles", "crates/ui-egui/tests/fill_sign.rs::embedded_image_signature_live_gestures_follow_document_and_view_rotation", "crates/automation/tests/automation.rs::image_signature_preview_layers_are_read_only_and_survive_encrypted_save", "crates/engine/src/signature_image.rs::embedded_signature_preview_preserves_alpha_without_editing_the_document", "crates/engine/src/signature_image.rs::oversized_embedded_signature_preview_is_rejected_before_decoding", "crates/ui-egui/tests/fill_sign.rs::image_signature_preview_follows_pointer_at_page_size_with_zoom_and_rotation", "crates/ui-egui/tests/fill_sign.rs::image_signature_placement_selects_resize_handles_and_requires_reselecting_to_repeat", "crates/ui-egui/tests/fill_sign.rs::typed_signatures_and_initials", "crates/ui-egui/tests/fill_sign.rs::signing_draws_a_signature_once_and_places_it", "crates/ui-egui/tests/fill_sign.rs::changing_saved_signatures_and_initials_preserves_placed_marks", "crates/ui-egui/tests/fill_sign.rs::changing_drawn_signatures_can_be_cancelled_or_switched_to_type", "crates/ui-egui/tests/fill_sign.rs::saved_signature_cards_remove_and_add_without_changing_the_document", "crates/ui-egui/tests/fill_sign.rs::long_typed_names_fit_the_placed_signature_and_keep_every_outline", "crates/ui-egui/src/fill_sign.rs::long_signature_previews_have_clear_margins", "crates/ui-egui/tests/control.rs::saved_signature_can_be_changed_through_the_control_channel", "crates/fonts/src/script.rs::a_name_becomes_outlines", "crates/fonts/src/script.rs::long_names_keep_every_glyph_with_bounded_outline_work", "crates/automation/tests/automation.rs::fill_and_sign_through_tools", "crates/ui-egui/tests/fill_sign.rs::image_signatures_and_initials_can_be_imported_placed_and_remembered", "crates/ui-egui/tests/fill_sign.rs::image_import_cancel_clear_and_errors_preserve_saved_signatures", "crates/engine/src/signature_image.rs::image_signatures_preserve_alpha_and_fit_the_signature_box", "crates/engine/src/signature_image.rs::invalid_and_oversized_signature_images_are_rejected", "crates/engine/src/signature_image.rs::jpeg_signatures_are_normalized_to_png", "crates/engine/src/signature_image.rs::jpeg_signature_orientation_is_applied_before_preview_and_embedding", "crates/engine/src/signature_image.rs::very_wide_image_signatures_keep_the_requested_rectangle", "crates/automation/tests/automation.rs::image_signatures_through_tools_preserve_transparency_and_survive_save", "crates/ui-egui/tests/fill_sign.rs::fill_and_sign_tools_pick_up_placed_marks_to_move_and_resize_them"]
-evidence = ["crates/ui-egui/tests/fill_sign.rs::select_tool_picks_up_a_signature_over_a_form_field", "crates/ui-egui/tests/fill_sign.rs::drawn_and_typed_signatures_stay_upright_on_rotated_pages", "crates/automation/tests/automation.rs::typed_signatures_stay_upright_on_rotated_pages", "crates/ui-egui/tests/fill_sign.rs::image_signature_corners_restore_original_aspect_after_edge_resize_and_reopen", "crates/ui-egui/src/comments.rs::proportional_corners_keep_the_opposite_anchor_and_edges_stretch_one_axis", "crates/ui-egui/tests/fill_sign.rs::image_signature_live_resize_and_move_preserve_background_and_hide_moving_handles", "crates/ui-egui/tests/fill_sign.rs::embedded_image_signature_live_gestures_follow_document_and_view_rotation", "crates/automation/tests/automation.rs::image_signature_preview_layers_are_read_only_and_survive_encrypted_save", "crates/engine/src/signature_image.rs::embedded_signature_preview_preserves_alpha_without_editing_the_document", "crates/engine/src/signature_image.rs::oversized_embedded_signature_preview_is_rejected_before_decoding", "crates/ui-egui/tests/fill_sign.rs::image_signature_preview_follows_pointer_at_page_size_with_zoom_and_rotation", "crates/ui-egui/tests/fill_sign.rs::image_signature_placement_selects_resize_handles_and_requires_reselecting_to_repeat", "crates/ui-egui/tests/fill_sign.rs::typed_signatures_and_initials", "crates/ui-egui/tests/fill_sign.rs::signing_draws_a_signature_once_and_places_it", "crates/ui-egui/tests/fill_sign.rs::changing_saved_signatures_and_initials_preserves_placed_marks", "crates/ui-egui/tests/fill_sign.rs::changing_drawn_signatures_can_be_cancelled_or_switched_to_type", "crates/ui-egui/tests/fill_sign.rs::saved_signature_cards_remove_and_add_without_changing_the_document", "crates/ui-egui/tests/fill_sign.rs::long_typed_names_fit_the_placed_signature_and_keep_every_outline", "crates/ui-egui/src/fill_sign.rs::long_signature_previews_have_clear_margins", "crates/ui-egui/tests/control.rs::saved_signature_can_be_changed_through_the_control_channel", "crates/fonts/src/script.rs::a_name_becomes_outlines", "crates/fonts/src/script.rs::long_names_keep_every_glyph_with_bounded_outline_work", "crates/automation/tests/automation.rs::fill_and_sign_through_tools", "crates/ui-egui/tests/fill_sign.rs::image_signatures_and_initials_can_be_imported_placed_and_remembered", "crates/ui-egui/tests/fill_sign.rs::image_import_cancel_clear_and_errors_preserve_saved_signatures", "crates/engine/src/signature_image.rs::image_signatures_preserve_alpha_and_fit_the_signature_box", "crates/engine/src/signature_image.rs::invalid_and_oversized_signature_images_are_rejected", "crates/engine/src/signature_image.rs::jpeg_signatures_are_normalized_to_png", "crates/engine/src/signature_image.rs::jpeg_signature_orientation_is_applied_before_preview_and_embedding", "crates/engine/src/signature_image.rs::very_wide_image_signatures_keep_the_requested_rectangle", "crates/automation/tests/automation.rs::image_signatures_through_tools_preserve_transparency_and_survive_save", "crates/ui-egui/tests/fill_sign.rs::fill_and_sign_tools_pick_up_placed_marks_to_move_and_resize_them"]
 notes = "signature and initials, typed (Dancing Script outlines as filled paths, no font embedded), drawn or imported from local PNG/JPEG images; all three are placed upright and anchored as displayed on pages with /Rotate (#299); saved in settings with preview cards and add/change/remove controls; changes leave placed annotations untouched; images preserve alpha, aspect ratio and EXIF orientation, fit within 150 pt by 32 pt (24 pt for initials), and are normalized without source paths or metadata; image previews follow the pointer at placement size with zoom and rotation; signatures/initials place once then select the new annotation; while a Fill & Sign tool is active, marks already placed are picked up as with Select (hover shows the move cursor, a click selects, a drag moves, the selected mark's handles resize) and the tool places only away from them; embedded image signatures resize and move live, hiding the frame during movement and restoring it on release; corner handles preserve the original aspect ratio of the embedded image with the opposite corner anchored, while edge midpoint handles stretch width or height independently; cached background layers preserve page content and alpha, including reopened/encrypted documents; Escape cancels a gesture without committing; stamps resize through selection handles or comment_edit with their original appearance; native and web asynchronous pickers; fill_sign_add accepts path instead of text; image imports capped at 4 MiB, 4 megapixels and 4096 pixels per side"
 
 [[feature]]
@@ -5548,15 +5547,15 @@ notes = "Find text and redact ▸ Multiple words or phrases: one per line, typed
 
 [[feature]]
 id = "protect.redact-patterns"
-title = "Redact patterns (phone, email, card, SSN, dates)"
+title = "Redact patterns (phone, email, card, SSN, IBAN, addresses, dates)"
 area = "G"
 tier = "P0"
 milestone = "M8"
 status = "shipped"
 commands = ["redact.search"]
 tools = ["redact_mark"]
-evidence = ["crates/redact/src/patterns.rs::phone_numbers", "crates/redact/src/patterns.rs::credit_cards_need_a_valid_checksum", "crates/automation/tests/automation.rs::redacting_through_tools"]
-notes = "phone (North American, E.164 with + country code, national with trunk 0), e-mail, credit card (Luhn), SSN, dates (English US forms)"
+evidence = ["crates/redact/src/tests_patterns.rs::phone_numbers", "crates/redact/src/tests_patterns.rs::credit_cards_need_a_valid_checksum", "crates/redact/src/tests_patterns.rs::iban_recall", "crates/redact/src/tests_patterns.rs::uk_postcodes", "crates/automation/tests/automation.rs::redacting_through_tools"]
+notes = "phone (US and international), e-mail, credit card (Luhn), SSN, IBAN (length and mod-97 checked), IPv4, IPv6, UK postcode, US ZIP, dates (ISO and US forms)"
 
 [[feature]]
 id = "protect.redact-pattern-locales"
@@ -5568,7 +5567,7 @@ status = "planned"
 commands = []
 tools = []
 evidence = []
-notes = ""
+notes = "international phone numbers and IBANs are covered by the built-in patterns; selectable per-locale sets are not"
 
 [[feature]]
 id = "protect.redact-partial-words"
@@ -5627,8 +5626,8 @@ milestone = "M8"
 status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
-evidence = ["crates/ui-egui/tests/redact.rs::marking_applying_and_clearing", "crates/engine/src/tests.rs::redaction_marks_apply_for_good_and_undo", "crates/automation/tests/automation.rs::redacting_through_tools"]
-notes = "confirmation; one undo step; next save is a full rewrite"
+evidence = ["crates/ui-egui/tests/redact.rs::marking_applying_and_clearing", "crates/engine/src/tests.rs::redaction_marks_apply_for_good", "crates/automation/tests/automation.rs::redacting_through_tools", "crates/engine/src/tests_redact.rs::signed_documents_refuse_redaction_without_changing", "crates/engine/src/tests_redact.rs::verify_save_sweeps_the_bytes_against_the_redaction_snapshot", "crates/cos/tests/redacted_rewrite.rs::a_redacted_rewrite_gets_a_new_file_identity", "crates/redact/src/tests_failclosed.rs::a_signed_document_is_refused_up_front_and_left_alone", "crates/redact/src/tests_failclosed.rs::a_failure_after_the_work_started_leaves_the_document_unchanged"]
+notes = "confirmation with acknowledgement; not undoable (history is cleared); sanitizes by default; independent proof of the output; refused for signed documents (document left unchanged); XFA form data is removed by the default sanitizing; saved as a full rewrite with a new /ID, to a new path or with overwrite_source. Still missing: no comparison against Acrobat's output; redaction codes; standard fonts other than Courier without /Widths (Helvetica included) and outside WinAnsi 32..255 are refused; image-only text is not recognised"
 
 [[feature]]
 id = "protect.redact-glyph-removal"
@@ -5688,7 +5687,7 @@ status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
 evidence = ["crates/redact/src/tests.rs::tags_lose_what_redaction_removed"]
-notes = "marked content changed by redaction is found by comparing each MCID before and after; its elements lose Alt, ActualText and E, and references to now-empty marked content are dropped; untouched tags stay"
+notes = "marked content changed by redaction is found by comparing each MCID before and after; its elements lose Alt, ActualText and E, and references to now-empty marked content (including form-XObject /Stm references and object references to removed annotations) are dropped; untouched tags stay"
 
 [[feature]]
 id = "protect.redaction-verification"
@@ -5699,8 +5698,8 @@ milestone = "M8"
 status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
-evidence = ["crates/redact/src/tests.rs::unreadable_content_fails_closed", "crates/engine/src/tests.rs::redaction_marks_apply_for_good_and_undo"]
-notes = "re-reads redacted pages; residue or unreadable content fails the whole operation"
+evidence = ["crates/redact/src/tests.rs::unreadable_content_fails_closed", "crates/engine/src/tests.rs::redaction_marks_apply_for_good", "crates/redact/src/tests_verify.rs::a_clean_redaction_passes_and_the_neighbour_is_untouched", "crates/redact/src/tests_verify.rs::the_secret_in_each_encoding_is_found", "crates/redact/src/tests_verify.rs::an_incremental_remnant_fails_the_proof", "crates/redact/src/tests_verify.rs::the_proof_text_keeps_its_honesty_wording", "crates/redact/src/tests_failclosed.rs::a_truncated_content_stream_is_unreadable_not_a_shorter_page", "crates/redact/src/tests_failclosed.rs::the_decode_budget_runs_out_loudly", "crates/engine/src/tests_redact.rs::verify_save_sweeps_the_bytes_against_the_redaction_snapshot"]
+notes = "an independent check re-reads the output (and the saved bytes) against what was marked; residue or unreadable content fails the whole operation; the saved bytes are swept against the redaction snapshot. Still missing: image-only text is not checked; the proof is our own second reader, not yet compared with an external tool (veraPDF, MuPDF or Poppler as oracle) on a corpus"
 
 [[feature]]
 id = "protect.redact-filename-suffix"
@@ -5736,7 +5735,7 @@ status = "shipped"
 commands = ["protect.remove_hidden"]
 tools = ["doc_hidden_info", "doc_remove_hidden"]
 evidence = ["crates/redact/src/tests.rs::hidden_information_is_counted_and_removed", "crates/ui-egui/tests/redact.rs::removing_hidden_information_and_sanitizing", "crates/automation/tests/automation.rs::removing_hidden_information_through_tools"]
-notes = "metadata, attachments, comments, form fields (flattened), hidden text, hidden layers, bookmarks, links/actions/scripts, private data; overlapping objects and cropped content pending"
+notes = "metadata, attachments, comments, form fields (flattened), XFA form data, hidden text, hidden layers, bookmarks, links/actions/scripts, private data; overlapping objects and cropped content pending"
 
 [[feature]]
 id = "protect.sanitize"
@@ -5748,7 +5747,7 @@ status = "shipped"
 commands = ["redact.sanitize"]
 tools = ["doc_remove_hidden"]
 evidence = ["crates/redact/src/tests.rs::hidden_information_is_counted_and_removed", "crates/ui-egui/tests/redact.rs::removing_hidden_information_and_sanitizing", "crates/automation/tests/automation.rs::removing_hidden_information_through_tools"]
-notes = "every category, then a full rewrite on save"
+notes = "every category, including XFA form data, then a full rewrite on save with a new /ID"
 
 [[feature]]
 id = "protect.remove-hidden-on-close"

@@ -637,3 +637,30 @@ fn damaged_masks_and_sizes_never_panic() {
         let _ = image_file(&doc, r);
     }
 }
+
+#[test]
+fn text_documents_carry_the_widths_of_their_font() {
+    let doc = reopen(&from_text("notes", "Page 1", LETTER, 11.0).unwrap());
+    let page = &pages(&doc)[0];
+    let res = doc.resolve(page.get(b"Resources").unwrap()).as_dict().unwrap().clone();
+    let fonts = doc.resolve(res.get(b"Font").unwrap()).as_dict().unwrap().clone();
+    let font = doc.resolve(fonts.get(b"F1").unwrap()).as_dict().unwrap().clone();
+    let widths = doc.resolve(font.get(b"Widths").unwrap()).as_array().unwrap().clone();
+    let (first, last) = (font.int(b"FirstChar").unwrap(), font.int(b"LastChar").unwrap());
+    assert_eq!((first, last, widths.len() as i64), (32, 255, last - first + 1));
+    // "1" is 556 units wide, the space 278.
+    assert_eq!((widths[(b'1' - 32) as usize].as_int(), widths[0].as_int()), (Some(556), Some(278)));
+}
+
+#[test]
+fn accented_letters_have_their_exact_widths() {
+    let doc = reopen(&from_text("notes", "café ñandú", LETTER, 11.0).unwrap());
+    let page = &pages(&doc)[0];
+    let res = doc.resolve(page.get(b"Resources").unwrap()).as_dict().unwrap().clone();
+    let fonts = doc.resolve(res.get(b"Font").unwrap()).as_dict().unwrap().clone();
+    let font = doc.resolve(fonts.get(b"F1").unwrap()).as_dict().unwrap().clone();
+    let widths = doc.resolve(font.get(b"Widths").unwrap()).as_array().unwrap().clone();
+    let at = |code: usize| widths[code - 32].as_int();
+    // é (0xE9), ñ (0xF1) and ú (0xFA) are as wide as e, n and u; 'a' as 556 too.
+    assert_eq!((at(0xE9), at(0xF1), at(0xFA), at(b'e' as usize), at(b'n' as usize)), (Some(556), Some(556), Some(556), Some(556), Some(556)));
+}

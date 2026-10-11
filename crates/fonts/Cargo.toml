@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 pdfcraft-cos = { workspace = true }
+# The exact standard-14 metrics and the WinAnsi encoding (Adobe AFM data, attributed there).
+hayro-interpret = { workspace = true }
 # Glyph outlines of the bundled script font (typed signatures); already in the tree via egui.
 skrifa = "0.44"
 # Arabic shaping for text written into PDFs; already in the tree via egui, on the same read-fonts.

@@ -421,6 +421,7 @@ impl PdfCraftApp {
                 if marks == 0 {
                     self.notify_tr("There are no redaction marks to apply");
                 } else {
+                    self.redact_ack = false;
                     self.dialog = Some(Dialog::RedactApply);
                 }
             }

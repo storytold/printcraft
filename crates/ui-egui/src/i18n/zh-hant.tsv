@@ -768,7 +768,12 @@
 	Apply redactions	應用遮蔽內容
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	即將應用 1 個遮蔽內容標記。標記下的文字、圖片和繪圖，以及與其重疊的註解和表單欄位，將被永久刪除。
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	即將應用 {n} 個遮蔽內容標記。標記下的文字、圖片和繪圖，以及與其重疊的註解和表單欄位，將被永久刪除。
-	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	之後請儲存文件：儲存將重寫整個檔案，使刪除的內容不留痕跡。
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	套用時也會清理文件：書籤、命名目的地、附件、文件資訊、中繼資料和 XFA 表單資料會被刪除，隱藏的圖層會永久鎖定為隱藏。
+	This cannot be undone: applying redactions clears the undo history.	此操作無法復原：套用遮蔽內容會清除復原記錄。
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	請將結果另存為新名稱：儲存將重寫整個檔案，使刪除的內容不留痕跡，原檔案保持不變。
+	I understand that the redacted content is removed for good	我了解被遮蔽的內容將被永久刪除
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	套用時已檢查：1 個區域中未發現已刪除的文字。僅以影像像素形式存在的文字不會被搜尋。
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	套用時已檢查：{n} 個區域中未發現已刪除的文字。僅以影像像素形式存在的文字不會被搜尋。
 	Select the items to remove from this document.	選擇要從本文件中刪除的專案。
 	Metadata	中繼資料
 	File attachments	檔案附件

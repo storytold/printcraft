@@ -122,6 +122,9 @@ pub struct Document {
     encryption_changed: bool,
     /// Set by edits that must not leave earlier revisions in the file (redaction).
     full_save: bool,
+    /// The next full save must give the file a new identity (`/ID`), see
+    /// [`Document::require_full_save_with_new_id`].
+    new_id: bool,
     /// The handler and `/Encrypt` object number that saves use, when encryption changed.
     out_security: Option<Arc<pdfcraft_crypt::SecurityHandler>>,
     out_encrypt_num: Option<u32>,
@@ -229,6 +232,7 @@ impl Document {
             encrypt_num: None,
             encryption_changed: false,
             full_save: false,
+            new_id: false,
             out_security: None,
             out_encrypt_num: None,
         };
@@ -292,6 +296,7 @@ impl Document {
             encrypt_num: None,
             encryption_changed: false,
             full_save: false,
+            new_id: false,
             out_security: None,
             out_encrypt_num: None,
         };
@@ -388,9 +393,142 @@ impl Document {
         self.full_save = true;
     }
 
+    /// Like [`Document::require_full_save`], and the rewritten file also gets a fresh file
+    /// identifier, so that a redacted or sanitized copy never claims to be the original (§14.4).
+    /// Unencrypted files get both `/ID` strings regenerated; for an encrypted file the first
+    /// string is part of the key derivation and stays, only the second one changes.
+    pub fn require_full_save_with_new_id(&mut self) {
+        self.full_save = true;
+        self.new_id = true;
+    }
+
+    /// The next full save regenerates the file identifier.
+    pub fn new_id_required(&self) -> bool {
+        self.new_id
+    }
+
     /// The next save must rewrite the whole file (see [`Document::require_full_save`]).
     pub fn full_save_required(&self) -> bool {
         self.full_save
+    }
+
+    /// Whether the document carries, or may carry, a digital signature. Fails closed: anything
+    /// that cannot be read with certainty (a malformed catalog, `/AcroForm`, `/Fields` tree or
+    /// field, a dangling reference) counts as signed, so a guard built on this never lets a
+    /// rewrite through because the form was damaged. Signed means any of: `/SigFlags` bit 1,
+    /// a signature field holding a value, a value with a `/ByteRange`, or a `/DocMDP` or `/UR3`
+    /// permission in the catalog.
+    pub fn is_signed(&self) -> bool {
+        self.signed_inner(true).unwrap_or(true)
+    }
+
+    /// Whether the document is known to be signed: [`Document::is_signed`] without the
+    /// fail-closed fallback, so a damaged (unreadable) `/AcroForm` or `/Fields` tree is *not*
+    /// signed here. For guards on ordinary rewrites (Save As, Combine, Optimize), where a
+    /// malformed form must not make the document look signed; redaction keeps using
+    /// [`Document::is_signed`].
+    ///
+    /// A `/Perms /UR3` entry alone does not count here: it is a usage-rights signature added by
+    /// a producer for a reader, not a signature the user applied, and ordinary rewrites never
+    /// refused such files before the guard existed. `/DocMDP` (certification), `/SigFlags` bit
+    /// 1 and signature values still do. Redaction keeps the stricter [`Document::is_signed`],
+    /// which counts `/UR3`: a redacted copy must not keep claiming valid usage rights over
+    /// content that was removed.
+    pub fn is_signed_definitely(&self) -> bool {
+        matches!(self.signed_inner(false), Ok(true))
+    }
+
+    /// Whether the document has an XFA form (`/AcroForm /XFA`). Fails closed like
+    /// [`Document::is_signed`]: an unreadable catalog or `/AcroForm` counts as XFA.
+    pub fn has_xfa(&self) -> bool {
+        match self.acroform() {
+            Ok(Some(af)) => matches!(af.get(b"XFA"), Some(o) if !matches!(o, Object::Null)),
+            Ok(None) => false,
+            Err(()) => true,
+        }
+    }
+
+    /// The catalog's `/AcroForm` dictionary: `Ok(None)` when there is none, `Err` when the
+    /// catalog or the entry cannot be read.
+    fn acroform(&self) -> Result<Option<Dict>, ()> {
+        let root = self.root().ok_or(())?;
+        let Object::Dict(catalog) = &*self.get(root) else { return Err(()) };
+        match catalog.get(b"AcroForm") {
+            None | Some(Object::Null) => Ok(None),
+            Some(o) => match &*self.resolve(o) {
+                Object::Dict(d) => Ok(Some(d.clone())),
+                _ => Err(()),
+            },
+        }
+    }
+
+    fn signed_inner(&self, ur3_counts: bool) -> Result<bool, ()> {
+        /// Bound on the fields visited, against hostile or looping trees.
+        const MAX_FIELDS: usize = 1 << 20;
+        let root = self.root().ok_or(())?;
+        let Object::Dict(catalog) = &*self.get(root) else { return Err(()) };
+        match catalog.get(b"Perms") {
+            None | Some(Object::Null) => {}
+            Some(o) => match &*self.resolve(o) {
+                Object::Dict(p) if p.contains(b"DocMDP") || (ur3_counts && p.contains(b"UR3")) => return Ok(true),
+                Object::Dict(_) => {}
+                _ => return Err(()),
+            },
+        }
+        let Some(af) = self.acroform()? else { return Ok(false) };
+        // `/SigFlags` may be an indirect reference; anything but an integer is unreadable.
+        match af.get(b"SigFlags") {
+            None | Some(Object::Null) => {}
+            Some(o) => match self.resolve(o).as_int() {
+                Some(f) if f & 1 != 0 => return Ok(true),
+                Some(_) => {}
+                None => return Err(()),
+            },
+        }
+        let fields = match af.get(b"Fields") {
+            None | Some(Object::Null) => return Ok(false),
+            Some(o) => o.clone(),
+        };
+        let Object::Array(top) = &*self.resolve(&fields) else { return Err(()) };
+        // (field, inherited /FT)
+        let mut stack: Vec<(Object, Option<Vec<u8>>)> = top.iter().map(|o| (o.clone(), None)).collect();
+        let mut seen: std::collections::HashSet<ObjRef> = std::collections::HashSet::new();
+        let mut visited = 0usize;
+        while let Some((node, inherited)) = stack.pop() {
+            visited += 1;
+            if visited > MAX_FIELDS {
+                return Err(());
+            }
+            if let Object::Ref(r) = node
+                && !seen.insert(r)
+            {
+                return Err(()); // a field reachable twice: a loop or a malformed tree
+            }
+            let Object::Dict(f) = &*self.resolve(&node) else { return Err(()) };
+            let ft = match f.get(b"FT") {
+                None | Some(Object::Null) => inherited,
+                Some(o) => match &*self.resolve(o) {
+                    Object::Name(n) => Some(n.clone()),
+                    _ => return Err(()),
+                },
+            };
+            if let Some(v) = f.get(b"V")
+                && !matches!(v, Object::Null)
+            {
+                let by_range = matches!(&*self.resolve(v), Object::Dict(d) if d.contains(b"ByteRange"));
+                if ft.as_deref() == Some(b"Sig") || by_range {
+                    return Ok(true);
+                }
+            }
+            match f.get(b"Kids") {
+                None | Some(Object::Null) => {}
+                Some(k) => match &*self.resolve(k) {
+                    Object::Array(kids) => stack.extend(kids.iter().map(|o| (o.clone(), ft.clone()))),
+                    _ => return Err(()),
+                },
+            }
+        }
+        Ok(false)
     }
 
     /// Security was set or removed since the document was opened (the next save applies it).

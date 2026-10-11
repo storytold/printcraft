@@ -1,7 +1,9 @@
 //! pdfcraft-fonts — font metrics and encodings for generated appearances (L2).
 //!
 //! See the README: the metrics are approximations by character class (no vendor metrics files
-//! are bundled). The full font subsystem lands in M2.2/M7.
+//! are bundled). Exact standard-14 WinAnsi widths come from the attributed `hayro-interpret`
+//! metrics; the class-based approximation remains for other text. The full font subsystem lands
+//! in M2.2/M7.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -68,6 +70,25 @@ fn is_wide(c: char) -> bool {
         | '\u{ffe0}'..='\u{ffe6}'
         | '\u{20000}'..='\u{3fffd}' // supplementary ideographic planes
     )
+}
+
+/// The advance widths (1/1000 em) of Helvetica for the codes 32 to 255 of WinAnsiEncoding, the
+/// values of the font's metrics (unlike [`helvetica_width`], which is an approximation by
+/// character class). The data is the attributed standard-14 AFM metrics of `hayro-interpret`
+/// (ATTRIBUTION.toml), read through the WinAnsi encoding it carries: the codes WinAnsi leaves
+/// undefined (127, 129, 141, 143, 144, 157) draw a bullet, as in the PDF specification (§D.2),
+/// and have its width, and the no-break space and the soft hyphen take the width of the space
+/// and of the hyphen, whose glyphs they stand for. Index `code - 32`.
+pub fn helvetica_win_ansi_widths() -> [u16; 224] {
+    use hayro_interpret::font::{StandardFont, win_ansi_glyph};
+    let mut out = [0u16; 224];
+    for (code, w) in (32u8..=255).zip(out.iter_mut()) {
+        let Some(name) = win_ansi_glyph(code) else { continue };
+        let Some(units) = StandardFont::Helvetica.get_width(name) else { continue };
+        // The AFM widths are whole numbers below 1100; the round keeps a stray fraction exact.
+        *w = u16::try_from(f64::from(units).round() as i64).unwrap_or(0);
+    }
+    out
 }
 
 /// Greedy line breaking within `width` points (paragraphs split on newlines; words longer
@@ -216,6 +237,23 @@ mod tests {
         }
         assert_eq!(first_non_win_ansi("Café — 5€"), None);
         assert_eq!(first_non_win_ansi("Dvořák"), Some('ř'));
+    }
+
+    #[test]
+    fn exact_winansi_widths_cover_the_latin_range() {
+        let t = helvetica_win_ansi_widths();
+        let w = |code: usize| t.get(code - 32).copied();
+        assert_eq!((w(32), w(65), w(105), w(126)), (Some(278), Some(667), Some(222), Some(584)));
+        // é, ñ, ü, Ç and the euro sign are the glyphs of their base letters / known values.
+        assert_eq!((w(0xE9), w(0xF1), w(0xFC), w(0xC7), w(128)), (Some(556), Some(556), Some(556), Some(722), Some(556)));
+        assert_eq!((w(255), w(127), w(0xE6)), (Some(500), Some(350), Some(889)));
+        // The no-break space and the soft hyphen have the width of the glyphs they stand for.
+        assert_eq!((w(160), w(173)), (Some(278), Some(333)));
+        // Every code the encoding leaves undefined draws the bullet (PDF §D.2).
+        for code in [127, 129, 141, 143, 144, 157] {
+            assert_eq!(w(code), Some(350), "code {code}");
+        }
+        assert!(t.iter().all(|w| (190..=1100).contains(w)));
     }
 
     #[test]

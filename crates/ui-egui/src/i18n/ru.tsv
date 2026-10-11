@@ -1121,7 +1121,12 @@
 	Apply redactions	Применить сокрытия
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Вы собираетесь применить 1 метку сокрытия. Текст, изображения и рисунки под метками, а также комментарии и поля формы, которые с ними пересекаются, удаляются безвозвратно.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Вы собираетесь применить {n} меток сокрытия. Текст, изображения и рисунки под метками, а также комментарии и поля формы, которые с ними пересекаются, удаляются безвозвратно.
-	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	Сохраните документ после этого: сохранение перезаписывает весь файл, чтобы не осталось следов удалённого содержимого.
+	Applying also sanitizes the document: bookmarks, named destinations, attachments, document information, metadata and XFA form data are deleted, and hidden layers are locked hidden for good.	Применение также очищает документ: удаляются закладки, именованные назначения, вложения, сведения о документе, метаданные и данные формы XFA, а скрытые слои навсегда остаются скрытыми.
+	This cannot be undone: applying redactions clears the undo history.	Это действие нельзя отменить: после применения сокрытия журнал отмены очищается.
+	Save the result under a new name: saving rewrites the whole file so no trace of the removed content stays in it, and the original file stays as it is.	Сохраните результат под новым именем: сохранение перезаписывает весь файл, чтобы не осталось следов удалённого содержимого, а исходный файл остаётся без изменений.
+	I understand that the redacted content is removed for good	Я понимаю, что скрытое содержимое удаляется безвозвратно
+	Checked when applied: 1 region found clear of the removed text. Text that exists only as pixels of an image is not searched.	Проверено при применении: в 1 области не найдено удалённого текста. Текст, существующий только как пиксели изображения, не ищется.
+	Checked when applied: {n} regions found clear of the removed text. Text that exists only as pixels of an image is not searched.	Проверено при применении: удалённого текста не найдено ни в одной из {n} областей. Текст, существующий только как пиксели изображения, не ищется.
 	Select the items to remove from this document.	Выберите элементы для удаления из этого документа.
 	Metadata	Метаданные
 	File attachments	Вложенные файлы

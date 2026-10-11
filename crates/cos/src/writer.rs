@@ -146,11 +146,19 @@ pub struct SaveOptions {
     /// Full saves: pack non-stream objects into compressed object streams with a cross-reference
     /// stream (PDF 1.5+, §7.5.7–7.5.8). Off writes a classic table that any reader accepts.
     pub object_streams: bool,
+    /// Entropy for a regenerated file identifier (see `Document::require_full_save_with_new_id`),
+    /// mixed with process randomness. Supply it where the standard library has none (WebAssembly)
+    /// or to make tests deterministic in combination with `id_seed`.
+    pub id_entropy: Option<[u8; 16]>,
+    /// Allow a full rewrite of a signed document. Off by default: a rewrite invalidates every
+    /// signature, so `write_full` (and `write_incremental` when it has to fall back to one)
+    /// returns `CosError::SignedDocument` instead.
+    pub allow_signed_rewrite: bool,
 }
 
 impl Default for SaveOptions {
     fn default() -> Self {
-        Self { mod_date: None, id_seed: 0x5052_494E_5443_5241, object_streams: true }
+        Self { mod_date: None, id_seed: 0x5052_494E_5443_5241, object_streams: true, id_entropy: None, allow_signed_rewrite: false }
     }
 }
 
@@ -182,7 +190,13 @@ pub fn write_incremental(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, 
     }
     // Reconstructed files have no chain to append to; added or removed encryption must
     // rewrite every object; redaction must not leave the old revision behind. All need a full save.
-    if doc.revisions().is_empty() || doc.encryption_changed() || doc.full_save_required() {
+    let rewrite_requested = doc.encryption_changed() || doc.full_save_required();
+    if doc.revisions().is_empty() && !rewrite_requested {
+        // Repair of a file with no usable chain (e.g. signing one): nothing to append to, and not
+        // a rewrite anybody requested, so the signed-document guard does not apply.
+        return write_full_unguarded(doc, opts);
+    }
+    if rewrite_requested {
         return write_full(doc, opts);
     }
     let mut doc = doc.clone();
@@ -236,13 +250,24 @@ pub fn write_incremental(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, 
     Ok(file)
 }
 
-/// Write only reachable objects, renumbered from 1, with a table or cross-reference stream.
+/// Write reachable objects in full; signed rewrites require explicit permission.
 pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosError> {
     if doc.stream_limited() {
         return Err(CosError::ReadOnlyLimit);
     }
-    // A full traversal must not fill the editor's shared caches (which undo snapshots also
-    // own). Parsed objects and decoded object streams are temporary working data here.
+    if !opts.allow_signed_rewrite {
+        let signed = if doc.full_save_required() { doc.is_signed() } else { doc.is_signed_definitely() };
+        if signed {
+            return Err(CosError::SignedDocument);
+        }
+    }
+    write_full_unguarded(doc, opts)
+}
+
+fn write_full_unguarded(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosError> {
+    if doc.stream_limited() {
+        return Err(CosError::ReadOnlyLimit);
+    }
     let mut reader = doc.object_reader();
     stamp_mod_date(&mut reader.document, opts);
     let trailer_in = reader.document.trailer().clone();
@@ -339,6 +364,10 @@ pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosErro
     }
     if reader.document.output_security().0.is_none() {
         ensure_id(&mut trailer, opts, reader.document.bytes());
+    }
+    if doc.new_id_required() {
+        // An encrypted file's first string is hashed into its key: keep it, change the second.
+        regenerate_id(&mut trailer, opts, &out, doc.output_security().0.is_some());
     }
     if opts.object_streams {
         write_xref_stream(&mut out, 0, &mut trailer, rows, next);
@@ -539,6 +568,44 @@ fn ensure_id(trailer: &mut Dict, opts: &SaveOptions, content: &[u8]) {
     id.extend_from_slice(&h.rotate_left(29).wrapping_mul(0x9E37_79B9_7F4A_7C15).to_be_bytes());
     let s = Object::String(PdfString { bytes: id, hex: true });
     trailer.set(b"ID".to_vec(), Object::Array(vec![s.clone(), s]));
+}
+
+/// Give the file a new identity (§14.4): `/ID` becomes a fresh pair, except that the first
+/// string is kept when `keep_first` (encryption keys depend on it).
+///
+/// The standard library offers randomness only through `RandomState`, which is seeded from the
+/// operating system on native targets (no RNG dependency is needed) but not on wasm32, where the
+/// seed is fixed. It is mixed with a process-wide counter (so two calls in one process never
+/// agree), the optional caller entropy and a hash of what was written, which is what makes the
+/// result differ from the source file's identifier. Where the seed is fixed (wasm32) two
+/// processes saving the same bytes get the same identifier unless the caller supplies
+/// [`SaveOptions::id_entropy`]; hosts that need identifiers unique across sessions must do so.
+/// The identifier only has to be unique, not unpredictable.
+fn regenerate_id(trailer: &mut Dict, opts: &SaveOptions, written: &[u8], keep_first: bool) {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let state = std::collections::hash_map::RandomState::new();
+    let mut id = Vec::with_capacity(16);
+    for lane in 0u8..2 {
+        let mut h = state.build_hasher();
+        h.write_u64(count);
+        h.write_u64(opts.id_seed);
+        h.write_u8(lane);
+        if let Some(e) = &opts.id_entropy {
+            h.write(e);
+        }
+        h.write_usize(written.len());
+        h.write(written.get(..written.len().min(1 << 16)).unwrap_or_default());
+        id.extend_from_slice(&h.finish().to_be_bytes());
+    }
+    let new = Object::String(PdfString { bytes: id, hex: true });
+    let first = match trailer.get(b"ID") {
+        Some(Object::Array(a)) if keep_first && a.len() == 2 => a.first().cloned().unwrap_or_else(|| new.clone()),
+        _ => new.clone(),
+    };
+    trailer.set(b"ID".to_vec(), Object::Array(vec![first, new]));
 }
 
 /// A PDF date string for "now" given seconds since the Unix epoch (UTC).

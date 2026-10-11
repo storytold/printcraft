@@ -72,11 +72,17 @@ fn marking_applying_and_clearing() {
     h.get_by_label("Redact all").click();
     h.run_steps(3);
     assert_eq!(h.state().dialog, Some(Dialog::RedactApply));
+    h.get_by_label_contains("cannot be undone");
+    // Apply stays disabled until the warning is acknowledged.
+    assert!(h.query_by(|n| n.label().as_deref() == Some("Apply") && n.is_disabled()).is_some());
+    h.get_by_label_contains("I understand").click();
+    h.run_steps(3);
+    assert!(h.query_by(|n| n.label().as_deref() == Some("Apply") && n.is_disabled()).is_none());
     h.get_by_label("Apply").click();
     h.run_steps(4);
     let s = h.state();
     let doc = s.session.get(s.views[0].id).unwrap();
-    assert_eq!((doc.redaction_marks(), doc.can_undo()), (0, Some("Apply redactions")));
+    assert_eq!((doc.redaction_marks(), doc.can_undo()), (0, None), "applying clears the undo history");
     assert!(doc.form.is_empty(), "the whole page was redacted, fields included");
 }
 
@@ -159,4 +165,56 @@ fn removing_hidden_information_and_sanitizing() {
     h.run_steps(3);
     let s = h.state();
     assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), Some("Sanitize document"));
+}
+
+#[test]
+fn the_apply_confirmation_asks_again_each_time() {
+    let mut h = harness();
+    h.state_mut().execute("redact.pages");
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    h.state_mut().execute("redact.apply");
+    h.run_steps(3);
+    h.get_by_label_contains("I understand").click();
+    h.run_steps(3);
+    assert!(h.state().redact_ack);
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert_eq!(marks(&h), 1, "cancelling applies nothing");
+    h.state_mut().execute("redact.apply");
+    h.run_steps(3);
+    assert!(!h.state().redact_ack, "a new confirmation starts unacknowledged");
+}
+
+#[test]
+fn applied_redactions_are_not_saved_over_the_source_without_asking() {
+    let dir = std::env::temp_dir().join(format!("pdfcraft-ui-redact-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("form.pdf");
+    std::fs::write(&source, include_bytes!("data/form.pdf")).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let mut app = PdfCraftApp::new();
+    app.open_bytes("form.pdf", Some(source.to_string_lossy().into_owned()), original.clone()).unwrap();
+    let id = app.views[0].id;
+    let (page, ok) = (0usize, app.session.get(id).is_some());
+    assert!(ok);
+    app.redact_pages_draft = pdfcraft_ui_egui::RedactPagesDraft { current: true, from: 1, to: 1 };
+    app.redact_pages();
+    assert!(app.apply_edit(pdfcraft_engine::Edit::ApplyRedactions { pages: Some(vec![page]) }));
+    assert_eq!(app.session.get(id).unwrap().can_undo(), None, "the history is purged");
+    assert!(app.session.get(id).unwrap().has_unsaved_redaction());
+    // The destination chosen by the user is written, owner-only, and the source stays.
+    let out = dir.join("redacted.pdf");
+    app.save_override = Some(out.to_string_lossy().into_owned());
+    assert!(app.save_active(pdfcraft_ui_egui::SaveTarget::InPlace));
+    assert_eq!(std::fs::read(&source).unwrap(), original, "the source file is untouched");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&out).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    assert!(!app.session.get(id).unwrap().has_unsaved_redaction());
+    let _ = std::fs::remove_dir_all(&dir);
 }

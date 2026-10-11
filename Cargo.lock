@@ -3582,6 +3582,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdfcraft-audit"
+version = "0.5.0"
+dependencies = [
+ "pdfcraft-content",
+ "pdfcraft-cos",
+ "pdfcraft-edit",
+ "pdfcraft-model",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pdfcraft-automation"
 version = "0.5.0"
 dependencies = [
@@ -3603,6 +3614,7 @@ name = "pdfcraft-cli"
 version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
+ "pdfcraft-audit",
  "pdfcraft-automation",
  "pdfcraft-cos",
  "pdfcraft-engine",
@@ -3685,6 +3697,7 @@ dependencies = [
  "image",
  "pdfcraft-a11y",
  "pdfcraft-annot",
+ "pdfcraft-audit",
  "pdfcraft-compare",
  "pdfcraft-cos",
  "pdfcraft-create",

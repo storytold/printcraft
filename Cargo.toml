@@ -20,6 +20,7 @@ pdfcraft-crypt = { path = "crates/crypt", version = "0.5.0" }
 pdfcraft-organize = { path = "crates/organize", version = "0.5.0" }
 pdfcraft-measure = { path = "crates/measure", version = "0.5.0" }
 pdfcraft-annot = { path = "crates/annot", version = "0.5.0" }
+pdfcraft-audit = { path = "crates/audit", version = "0.5.0" }
 pdfcraft-fonts = { path = "crates/fonts", version = "0.5.0" }
 pdfcraft-model = { path = "crates/model", version = "0.5.0" }
 pdfcraft-content = { path = "crates/content", version = "0.5.0" }

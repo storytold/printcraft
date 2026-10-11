@@ -127,6 +127,14 @@ impl TextLine {
     pub fn origin_baseline(&self) -> f64 {
         self.origin.baseline
     }
+
+    /// Paint position of the line's last text-showing operator: `(content-stream index,
+    /// operator index in the page's joined stream)`. Lines paint in order of this tuple.
+    /// (Lines from `text_lines` never come from form XObjects, so `stream` is always a
+    /// page content-stream index and `ops` are indices into the joined operator list.)
+    pub fn paint_pos(&self) -> (usize, usize) {
+        (self.stream, self.ops.iter().max().copied().unwrap_or(0))
+    }
 }
 
 /// What replacing a line did.

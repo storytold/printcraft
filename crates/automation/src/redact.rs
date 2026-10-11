@@ -163,6 +163,22 @@ impl Automation {
         Ok(json!({ "total": total, "categories": items }))
     }
 
+    pub(crate) fn doc_audit_redactions(&self, a: &Args) -> Result<Value> {
+        let findings = self.doc(a)?.audit_redactions().map_err(ToolError::Failed)?;
+        let items: Vec<Value> = findings
+            .into_iter()
+            .map(|f| {
+                json!({
+                    "page": f.page + 1,
+                    "kind": f.kind.id(),
+                    "rect": f.rect,
+                    "covered_text": f.covered_text,
+                })
+            })
+            .collect();
+        Ok(json!({ "findings": items, "count": items.len() }))
+    }
+
     pub(crate) fn doc_remove_hidden(&mut self, a: &Args) -> Result<Value> {
         let edit = match a.get("categories") {
             None => Edit::Sanitize,

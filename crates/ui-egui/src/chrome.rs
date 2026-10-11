@@ -519,6 +519,12 @@ fn page_display_menu(ui: &mut egui::Ui, view: &DocView) -> Option<&'static str> 
             picked = Some(l.command());
         }
     }
+    ui.separator();
+    // Continuous scrolling is an independent checkbox over the base layout, as in Acrobat (#752).
+    let mut continuous = view.continuous();
+    if ui.add(egui::Checkbox::new(&mut continuous, tl!("Continuous scrolling"))).changed() {
+        picked = Some("view.continuous");
+    }
     let mut cover = view.cover;
     if ui.add_enabled(view.cover_applies(), egui::Checkbox::new(&mut cover, tl!("Show cover page in two-page view"))).changed() {
         picked = Some("view.layout.cover");

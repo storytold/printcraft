@@ -869,12 +869,15 @@ impl PdfCraftApp {
         match v.layout {
             // The view opened in Default page display already.
             L::Default => {}
-            L::SinglePage => view.layout = canvas::PageLayout::Single,
-            L::SinglePageContinuous => view.layout = canvas::PageLayout::Continuous,
-            L::TwoUp | L::TwoUpContinuous => view.layout = canvas::PageLayout::TwoUp,
-            L::TwoUpCoverPage | L::TwoUpContinuousCoverPage => {
-                view.layout = canvas::PageLayout::TwoUp;
-                view.cover = true;
+            L::SinglePage => (view.layout, view.continuous) = (canvas::PageLayout::Single, false),
+            L::SinglePageContinuous => (view.layout, view.continuous) = (canvas::PageLayout::Single, true),
+            L::TwoUp => (view.layout, view.continuous) = (canvas::PageLayout::TwoUp, false),
+            L::TwoUpContinuous => (view.layout, view.continuous) = (canvas::PageLayout::TwoUp, true),
+            L::TwoUpCoverPage => {
+                (view.layout, view.continuous, view.cover) = (canvas::PageLayout::TwoUp, false, true);
+            }
+            L::TwoUpContinuousCoverPage => {
+                (view.layout, view.continuous, view.cover) = (canvas::PageLayout::TwoUp, true, true);
             }
         }
         match v.magnification {
@@ -1369,7 +1372,7 @@ impl PdfCraftApp {
             "pinned_folders": self.pinned.folders,
             "theme": self.theme_preference,
             "default_mode": self.default_mode,
-            "default_layout": self.view_defaults.layout.as_str(),
+            "default_layout": canvas::display_token(self.view_defaults.layout, self.view_defaults.continuous),
             "default_zoom": self.view_defaults.zoom_name(),
             "highlight_fields": self.view_defaults.highlight_fields,
             "language": self.language,
@@ -1439,8 +1442,8 @@ impl PdfCraftApp {
         if let Ok(mode) = serde_json::from_value::<Mode>(v["default_mode"].clone()) {
             self.default_mode = mode;
         }
-        if let Some(layout) = v["default_layout"].as_str().and_then(canvas::PageLayout::try_parse) {
-            self.view_defaults.layout = layout;
+        if let Some((layout, continuous)) = v["default_layout"].as_str().and_then(canvas::parse_display_token) {
+            (self.view_defaults.layout, self.view_defaults.continuous) = (layout, continuous);
         }
         if let Some(on) = v["highlight_fields"].as_bool() {
             self.view_defaults.highlight_fields = on;
@@ -1635,7 +1638,15 @@ impl PdfCraftApp {
             }
             ("page", Some(v)) => v.go_to_page(value.parse::<usize>().map_err(|e| e.to_string())?.saturating_sub(1)),
             ("zoom", Some(v)) => v.set_zoom(value.trim_end_matches('%').parse::<f32>().map_err(|e| e.to_string())? / 100.0),
-            ("layout", Some(v)) => v.set_layout(canvas::PageLayout::try_parse(value).ok_or("layout must be continuous, single or two-up")?),
+            ("layout", Some(v)) => {
+                let (layout, continuous) = canvas::parse_display_token(value).ok_or("layout must be single, continuous, two-up or two-page")?;
+                v.set_display(layout, continuous);
+            }
+            ("continuous", Some(v)) => match value {
+                "on" => v.set_continuous(true),
+                "off" => v.set_continuous(false),
+                _ => return Err("continuous must be on or off".into()),
+            },
             ("cover", Some(v)) => {
                 let on = match value {
                     "on" => true,
@@ -1648,7 +1659,16 @@ impl PdfCraftApp {
                 v.set_cover(on);
             }
             ("default-layout", _) => {
-                self.view_defaults.layout = canvas::PageLayout::try_parse(value).ok_or("default-layout must be continuous, single or two-up")?;
+                let (layout, continuous) =
+                    canvas::parse_display_token(value).ok_or("default-layout must be single, continuous, two-up or two-page")?;
+                (self.view_defaults.layout, self.view_defaults.continuous) = (layout, continuous);
+            }
+            ("default-continuous", _) => {
+                self.view_defaults.continuous = match value {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("default-continuous must be on or off".into()),
+                };
             }
             ("default-zoom", _) => {
                 self.view_defaults =
@@ -1771,8 +1791,22 @@ impl PdfCraftApp {
                 self.set_combine_zoom(percent / 100.0);
             }
             (k, None)
-                if ["page", "zoom", "layout", "cover", "organize", "grid-zoom", "fields", "find", "rotate", "select", "notice", "comment"]
-                    .contains(&k) =>
+                if [
+                    "page",
+                    "zoom",
+                    "layout",
+                    "continuous",
+                    "cover",
+                    "organize",
+                    "grid-zoom",
+                    "fields",
+                    "find",
+                    "rotate",
+                    "select",
+                    "notice",
+                    "comment",
+                ]
+                .contains(&k) =>
             {
                 return Err(format!("`{k}` needs an open document"));
             }

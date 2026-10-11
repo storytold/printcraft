@@ -548,7 +548,8 @@ fn arrow_and_page_keys_move_through_a_scrolling_document() {
     h.state_mut().active = Some(0);
     h.state_mut().views[0].fit = Fit::Width;
     h.run_steps(4);
-    assert_eq!(h.state().views[0].layout, PageLayout::Continuous);
+    assert_eq!(h.state().views[0].layout, PageLayout::Single);
+    assert!(h.state().views[0].continuous(), "the default view scrolls continuously");
     let press = |h: &mut Harness<'static, PdfCraftApp>, key, times: usize| {
         for _ in 0..times {
             h.key_press(key);
@@ -582,6 +583,7 @@ fn arrow_and_page_keys_move_through_a_scrolling_document() {
     assert_eq!(press(&mut h, Key::ArrowRight, 1), 2);
     // single-page view keeps Page Down for the next page
     h.state_mut().views[0].layout = PageLayout::Single;
+    h.state_mut().views[0].continuous = false;
     h.run_steps(4);
     assert_eq!(press(&mut h, Key::PageDown, 1), 3);
 }
@@ -595,6 +597,7 @@ fn up_and_down_turn_pages_in_single_page_view() {
     let mut h = harness();
     h.state_mut().active = Some(0);
     h.state_mut().views[0].layout = PageLayout::Single;
+    h.state_mut().views[0].continuous = false;
     h.state_mut().views[0].fit = Fit::Page;
     h.run_steps(4);
     let press = |h: &mut Harness<'static, PdfCraftApp>, key, times: usize| {

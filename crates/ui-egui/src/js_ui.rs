@@ -301,6 +301,7 @@ pub(crate) fn preferences_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tok
         for l in crate::canvas::PageLayout::ORDER {
             ui.radio_value(&mut defaults.layout, l, tl!(l.label()));
         }
+        ui.checkbox(&mut defaults.continuous, tl!("Continuous scrolling"));
     });
     ui.horizontal(|ui| {
         use crate::canvas::Fit;

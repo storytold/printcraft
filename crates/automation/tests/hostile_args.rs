@@ -81,8 +81,41 @@ fn zoo() -> Vec<Value> {
 
 /// Paths that must never resolve inside the root. Absolute ones point into the test's own temp
 /// `base` (the root's parent), never at real system files or network shares, so a confinement
+/// Plant `root/link-out` pointing at `base`. Returns whether it worked: on Linux and FreeBSD a
+/// symlink always can be made, but on Windows `symlink_dir` needs administrator rights or
+/// Developer Mode (#948), so a directory junction stands in - `mklink /J` works for a standard
+/// user and resolves through path lookups the same way. When neither is possible the caller
+/// drops the link-based escape attempts instead of reporting phantom leaks.
+fn plant_link(root: &std::path::Path, base: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(base, root.join("link-out")).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        if std::os::windows::fs::symlink_dir(base, root.join("link-out")).is_ok() {
+            return true;
+        }
+        std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(root.join("link-out"))
+            .arg(base)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (root, base);
+        false
+    }
+}
+
 /// bug can only touch what the test made.
-fn escapes(base: &std::path::Path) -> Vec<String> {
+fn escapes(base: &std::path::Path, linked: bool) -> Vec<String> {
     let mut out: Vec<String> = vec![
         "../outside.pdf".into(),
         "../../outside.pdf".into(),
@@ -92,8 +125,13 @@ fn escapes(base: &std::path::Path) -> Vec<String> {
         base.join("outside.pdf").to_string_lossy().into_owned(),
         base.join("new-outside.pdf").to_string_lossy().into_owned(),
         base.join("sub").join("new-outside.pdf").to_string_lossy().into_owned(),
-        "link-out/outside.pdf".into(), // through a planted symbolic link, when the system allows one
     ];
+    // Through a planted link pointing out of the root, where the system allowed one to be made.
+    // A standard Windows user can neither symlink nor (without Developer Mode) make a symbolic
+    // link, so a directory junction stands in for it (see `plant_link` below).
+    if linked {
+        out.push("link-out/outside.pdf".into());
+    }
     // Backslashes separate only on Windows; elsewhere this is an ordinary file name in the root.
     if cfg!(windows) {
         out.push(r"..\..\outside.pdf".into());
@@ -224,10 +262,7 @@ fn no_tool_escapes_the_root() {
     let before = listing(&base);
 
     // A link inside the root pointing out of it, where the system allows one to be made.
-    #[cfg(unix)]
-    let _ = std::os::unix::fs::symlink(&base, root.join("link-out"));
-    #[cfg(windows)]
-    let _ = std::os::windows::fs::symlink_dir(&base, root.join("link-out"));
+    let linked = plant_link(&root, &base);
 
     let mut a = Automation::new().with_root(&root).expect("root");
 
@@ -247,7 +282,7 @@ fn no_tool_escapes_the_root() {
 
     for def in tools() {
         for (prop, is_list) in path_props(&def) {
-            for escape in escapes(&base) {
+            for escape in escapes(&base, linked) {
                 let mut obj = plausible_with(&def, Some(doc));
                 obj.insert(prop.clone(), if is_list { json!([escape]) } else { json!(escape) });
                 let args = Value::Object(obj);

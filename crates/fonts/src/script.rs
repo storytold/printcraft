@@ -6,6 +6,13 @@ use skrifa::{FontRef, GlyphId, MetadataProvider};
 
 static FONT: &[u8] = include_bytes!("../../../assets/fonts/DancingScript.ttf");
 
+/// Inter Regular, the interface font. Typed signatures fall back to it, slanted, for characters
+/// the script font lacks (Dancing Script is Latin and Vietnamese only: no Cyrillic or Greek).
+pub static INTER_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+
+/// Forward slant of fallback glyphs in a typed signature (about 12°), so they lean like the script.
+const FALLBACK_SLANT: f64 = 0.21;
+
 /// Bound signature work while allowing long personal names.
 pub const MAX_SIGNATURE_CHARS: usize = 256;
 
@@ -51,6 +58,8 @@ struct Flatten {
     contours: Vec<Vec<[f64; 2]>>,
     cur: Vec<[f64; 2]>,
     scale: f64,
+    /// Horizontal shear applied to every point (x += slant × y), for slanted fallback glyphs.
+    slant: f64,
     dx: f64,
     points: usize,
     too_complex: bool,
@@ -59,11 +68,12 @@ struct Flatten {
 
 impl Flatten {
     fn new(scale: f64) -> Self {
-        Self { contours: Vec::new(), cur: Vec::new(), scale, dx: 0.0, points: 0, too_complex: false, max_points: 4096 }
+        Self { contours: Vec::new(), cur: Vec::new(), scale, slant: 0.0, dx: 0.0, points: 0, too_complex: false, max_points: 4096 }
     }
 
     fn pt(&self, x: f32, y: f32) -> [f64; 2] {
-        [self.dx + x as f64 * self.scale, y as f64 * self.scale]
+        let (x, y) = (x as f64 * self.scale, y as f64 * self.scale);
+        [self.dx + x + self.slant * y, y]
     }
 
     fn last(&self) -> [f64; 2] {
@@ -178,8 +188,9 @@ pub(crate) fn bounded_outline(font: &FontRef, gid: GlyphId, width: f64) -> Resul
     Ok(GlyphOutline { contours: pen.contours, width, bbox })
 }
 
-/// The outlines of `text` in the script font (characters it lacks are skipped).
-/// Over-limit input returns an empty outline instead of a silently truncated signature.
+/// The outlines of `text` in the script font. Characters it lacks (Cyrillic, Greek, …) are drawn
+/// from Inter, slanted and scaled to the script's capital height; characters neither font has are
+/// skipped. Over-limit input returns an empty outline instead of a silently truncated signature.
 pub fn script_outline(text: &str) -> ScriptOutline {
     if text.chars().take(MAX_SIGNATURE_CHARS + 1).count() > MAX_SIGNATURE_CHARS {
         return ScriptOutline::default();
@@ -191,17 +202,39 @@ pub fn script_outline(text: &str) -> ScriptOutline {
     let charmap = font.charmap();
     let glyphs = font.outline_glyphs();
     let advances = font.glyph_metrics(Size::unscaled(), loc);
+    // The fallback face, scaled so its capitals are as tall as the script's.
+    let fallback = FontRef::new(INTER_REGULAR).ok().map(|f| {
+        let m = f.metrics(Size::unscaled(), loc);
+        let em = 1.0 / m.units_per_em.max(1) as f64;
+        let ratio = match (metrics.cap_height, m.cap_height) {
+            (Some(ours), Some(theirs)) if ours > 0.0 && theirs > 0.0 => (ours as f64 * scale) / (theirs as f64 * em),
+            _ => 1.0,
+        };
+        let ratio = if ratio.is_finite() { ratio.clamp(0.5, 2.0) } else { 1.0 };
+        (f.charmap(), f.outline_glyphs(), f.glyph_metrics(Size::unscaled(), loc), em * ratio)
+    });
     let mut pen = Flatten::new(scale);
     // The 4096-point budget is for one untrusted document glyph (japanese_glyph), not a
     // whole signature in our bundled font. Keep a separate bounded budget for the line.
     pen.max_points = 262_144;
     for ch in text.chars() {
-        let Some(gid) = charmap.map(ch) else { continue };
-        if let Some(g) = glyphs.get(gid) {
-            let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), loc), &mut pen);
-            pen.close();
+        if let Some(gid) = charmap.map(ch) {
+            (pen.scale, pen.slant) = (scale, 0.0);
+            if let Some(g) = glyphs.get(gid) {
+                let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), loc), &mut pen);
+                pen.close();
+            }
+            pen.dx += advances.advance_width(gid).unwrap_or(0.0) as f64 * scale;
+        } else if let Some((map, outlines, adv, em)) = &fallback
+            && let Some(gid) = map.map(ch)
+        {
+            (pen.scale, pen.slant) = (*em, FALLBACK_SLANT);
+            if let Some(g) = outlines.get(gid) {
+                let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), loc), &mut pen);
+                pen.close();
+            }
+            pen.dx += adv.advance_width(gid).unwrap_or(0.0) as f64 * em;
         }
-        pen.dx += advances.advance_width(gid).unwrap_or(0.0) as f64 * scale;
     }
     pen.close();
     if pen.too_complex {
@@ -222,6 +255,30 @@ mod tests {
         assert!(max_x > o.width - 0.5, "ink reaches the last letter: {max_x} / {}", o.width);
         assert!(!super::script_outline(&"W".repeat(super::MAX_SIGNATURE_CHARS)).contours.is_empty());
         assert!(super::script_outline(&"W".repeat(super::MAX_SIGNATURE_CHARS + 1)).contours.is_empty());
+    }
+
+    /// Issue #846: Cyrillic (and Greek) names come out of the fallback face instead of vanishing.
+    #[test]
+    fn cyrillic_and_greek_names_are_drawn_from_the_fallback_face() {
+        for name in ["Саша Дермановић", "Љубица Ђорђевић", "Ђурђа Џаковић", "Νίκος"] {
+            let o = super::script_outline(name);
+            let letters = name.chars().filter(|c| !c.is_whitespace()).count();
+            assert!(o.contours.len() >= letters, "{name}: {} contours for {letters} letters", o.contours.len());
+            for ch in name.chars().filter(|c| !c.is_whitespace()) {
+                let one = super::script_outline(&ch.to_string());
+                assert!(!one.contours.is_empty() && one.width > 0.0, "{name}: {ch} has no outline");
+            }
+            let [_, bottom, right, top] = o.bounds();
+            assert!(right <= o.width + 0.5 && top <= o.ascent + 0.2 && bottom >= o.descent - 0.2, "{name}: {:?}", o.bounds());
+        }
+        // Capitals from the fallback are about as tall as the script's.
+        let cap = |c: &str| super::script_outline(c).contours.iter().flatten().map(|p| p[1]).fold(0.0, f64::max);
+        let (latin, cyrillic) = (cap("H"), cap("Н"));
+        assert!((cyrillic / latin - 1.0).abs() < 0.2, "Н {cyrillic} vs H {latin}");
+        // Mixed names keep every letter, in order: the Cyrillic follows the Latin.
+        let mixed = super::script_outline("Ana Ана");
+        let latin_only = super::script_outline("Ana ");
+        assert!(mixed.width > latin_only.width + 0.5, "{} vs {}", mixed.width, latin_only.width);
     }
 
     #[test]

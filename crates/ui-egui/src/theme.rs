@@ -152,7 +152,7 @@ pub fn installed_font_definitions(prefer_hans: bool) -> FontDefinitions {
     #[cfg_attr(target_arch = "wasm32", expect(unused_mut))]
     let mut fonts = font_definitions_for(prefer_hans);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(data) = crate::system_fonts::fallback() {
+    if let Some(data) = crate::system_fonts::fallback(prefer_hans) {
         fonts.font_data.insert(SYSTEM_FALLBACK.to_owned(), data);
         for stack in fonts.families.values_mut() {
             stack.push(SYSTEM_FALLBACK.to_owned());

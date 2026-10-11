@@ -114,6 +114,99 @@ fn opening_a_pdf_shows_comments_and_bookmarks() {
     h.get_by_label("Beta section");
 }
 
+/// Read mode hides the tools, not the navigation panes: the rail's Bookmarks button opens the
+/// bookmarks when Read is the default workspace (#932), and the left tool pane stays hidden.
+#[test]
+fn read_mode_rail_buttons_open_their_panels() {
+    use pdfcraft_ui_egui::{Mode, RightPanel};
+    let mut h = harness(|app| {
+        app.default_mode = Mode::Read;
+        app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens");
+    });
+    assert_eq!(h.state().mode, Mode::Read);
+    assert_eq!(h.state().right, None, "Read mode opens with the panes closed");
+    assert!(h.query_by_label("Alpha section").is_none());
+    h.get_by_label("Bookmarks").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, Some(RightPanel::Bookmarks));
+    h.get_by_label("Alpha section");
+    h.get_by_label("Beta section");
+    // The same button closes them again (the open panel's title is also "Bookmarks").
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Bookmarks").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, None);
+    assert!(h.query_by_label("Alpha section").is_none());
+    // A document that asks for its outline (/PageMode /UseOutlines) shows it in Read mode too.
+    let pdf = String::from_utf8(FIXTURE.to_vec()).unwrap().replace("/Outlines 6 0 R", "/Outlines 6 0 R /PageMode /UseOutlines");
+    h.state_mut().open_bytes("outline.pdf", None, pdf.into_bytes()).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().mode, Mode::Read);
+    h.get_by_label("Alpha section");
+}
+
+/// Switching to Read mode closes the open pane, and switching back reopens it.
+#[test]
+fn read_mode_closes_the_panes_and_leaving_it_brings_them_back() {
+    use pdfcraft_ui_egui::{Mode, RightPanel};
+    let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
+    assert_eq!(h.state().right, Some(RightPanel::Comments));
+    h.get_by_label("Read").click();
+    h.run_steps(3);
+    assert_eq!(h.state().mode, Mode::Read);
+    assert_eq!(h.state().right, None);
+    assert!(h.query_by_label_contains("Check the numbers").is_none(), "the Comments panel is hidden");
+    h.state_mut().run_command("view.read_mode");
+    h.run_steps(3);
+    assert_eq!(h.state().mode, Mode::AllTools);
+    assert_eq!(h.state().right, Some(RightPanel::Comments));
+    // A pane opened in Read mode stays open on the way out.
+    h.state_mut().run_command("view.read_mode");
+    h.run_steps(2);
+    h.get_by_label("Page thumbnails").click();
+    h.run_steps(2);
+    h.get_by_label("All tools").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, Some(RightPanel::Pages));
+}
+
+/// A pane closed in Read mode stays closed on the way out: leaving Read mode doesn't bring back the
+/// pane saved on the way in, and closing Comments keeps its close preference.
+#[test]
+fn a_pane_closed_in_read_mode_stays_closed_when_leaving_it() {
+    use pdfcraft_ui_egui::{Mode, RightPanel};
+    let mut h = harness(|app| app.open_bytes("fixture.pdf", None, FIXTURE.to_vec()).expect("fixture opens"));
+    assert_eq!(h.state().right, Some(RightPanel::Comments));
+    h.get_by_label("Read").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, None);
+    // Open Comments from the rail, then close it again.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, Some(RightPanel::Comments));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").click();
+    h.run_steps(3);
+    assert_eq!(h.state().right, None);
+    assert!(h.state().comments_panel_closed);
+    // Leave Read mode through the toolbar.
+    h.get_by_label("All tools").click();
+    h.run_steps(3);
+    assert_eq!(h.state().mode, Mode::AllTools);
+    assert_eq!(h.state().right, None, "the pane closed in Read mode stays closed");
+    assert!(h.state().comments_panel_closed);
+    // The same through the Read mode command.
+    h.state_mut().choose_right_panel(Some(RightPanel::Comments));
+    h.state_mut().run_command("view.read_mode");
+    h.run_steps(2);
+    assert_eq!(h.state().mode, Mode::Read);
+    h.state_mut().choose_right_panel(Some(RightPanel::Comments));
+    h.state_mut().choose_right_panel(None);
+    h.state_mut().run_command("view.read_mode");
+    h.run_steps(3);
+    assert_ne!(h.state().mode, Mode::Read);
+    assert_eq!(h.state().right, None);
+    assert!(h.state().comments_panel_closed);
+}
+
 /// A right-to-left file name opens, lays out and paints; the tab's accessible name keeps the
 /// logical text (only the painted label is put in visual order).
 #[test]
